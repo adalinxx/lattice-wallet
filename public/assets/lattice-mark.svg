@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Lattice">
+  <!-- One proof. Every chain. The ink center node (the proof) sits in a 3x3 lattice of chains. -->
+  <style>
+    .node { fill: #0a0a0a; }
+    @media (prefers-color-scheme: dark) { .node { fill: #ededed; } }
+  </style>
+  <circle class="node" cx="8"  cy="8"  r="2"/>
+  <circle class="node" cx="24" cy="8"  r="2"/>
+  <circle class="node" cx="40" cy="8"  r="2"/>
+  <circle class="node" cx="8"  cy="24" r="2"/>
+  <circle class="node" cx="40" cy="24" r="2"/>
+  <circle class="node" cx="8"  cy="40" r="2"/>
+  <circle class="node" cx="24" cy="40" r="2"/>
+  <circle class="node" cx="40" cy="40" r="2"/>
+  <circle class="node" cx="24" cy="24" r="4"/>
+</svg>

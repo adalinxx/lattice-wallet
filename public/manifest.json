@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Nexus Wallet",
+  "version": "0.1.0",
+  "description": "Non-custodial wallet for Nexus, the root chain of the Lattice network. Keys never leave your device.",
+  "action": {
+    "default_title": "Nexus Wallet",
+    "default_popup": "popup/index.html",
+    "default_icon": { "48": "assets/lattice-mark.svg", "128": "assets/lattice-mark.svg" }
+  },
+  "icons": { "48": "assets/lattice-mark.svg", "128": "assets/lattice-mark.svg" },
+  "background": { "service_worker": "background/service-worker.js", "type": "module" },
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://lattice-mainnet-iad.fly.dev/*",
+    "https://lattice-mainnet-ams.fly.dev/*",
+    "https://lattice-mainnet-sjc.fly.dev/*",
+    "https://lattice-testnet-iad.fly.dev/*",
+    "https://lattice-testnet-ams.fly.dev/*",
+    "https://lattice-testnet-sjc.fly.dev/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src https://lattice-mainnet-iad.fly.dev https://lattice-mainnet-ams.fly.dev https://lattice-mainnet-sjc.fly.dev https://lattice-testnet-iad.fly.dev https://lattice-testnet-ams.fly.dev https://lattice-testnet-sjc.fly.dev; object-src 'none'; base-uri 'none'"
+  }
+}

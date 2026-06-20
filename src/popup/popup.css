@@ -1,0 +1,53 @@
+/* Popup scaffolding over the Lattice design system (tokens.css): monochrome,
+   monospace, hairlines, radius 0, zero accent. Nothing here adds color. */
+
+body { width: 360px; min-height: 480px; }
+
+.bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--s-2) var(--s-3); border-bottom: var(--rule);
+}
+.brand { display: flex; align-items: center; gap: var(--s-2); }
+.brand .wordmark { font-size: var(--fs-16); }
+.brand-sub { font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); margin-left: var(--s-1); }
+
+.net {
+  font-size: var(--fs-12); padding: 2px var(--s-2);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.net.testnet { background: var(--ink); color: var(--paper); }
+
+main { padding: var(--s-4) var(--s-3); }
+
+h1 { font-size: var(--fs-20); margin: 0 0 var(--s-3); }
+.center { text-align: center; }
+.stack > * + * { margin-top: var(--s-3); }
+.muted { font-size: var(--fs-12); }
+
+.hero { padding: var(--s-5) 0 var(--s-4); text-align: center; }
+.hero .wordmark { font-size: var(--fs-28); display: block; }
+
+button.block, .btn.block { display: block; width: 100%; text-align: center; }
+
+textarea, input { width: 100%; font-size: var(--fs-14); }
+textarea { min-height: 84px; resize: vertical; }
+
+.mnemonic {
+  border: var(--rule); padding: var(--s-3);
+  font-size: var(--fs-16); line-height: 1.8; word-spacing: 6px;
+}
+.warn { border: var(--rule); padding: var(--s-2) var(--s-3); font-size: var(--fs-12); }
+
+.kv { border: var(--rule); }
+.kv .row { display: flex; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-3); border-bottom: var(--rule); }
+.kv .row:last-child { border-bottom: 0; }
+.kv .k { font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
+.kv .v { font-variant-numeric: tabular-nums; }
+
+.addr { word-break: break-all; font-size: var(--fs-12); border: var(--rule); padding: var(--s-2) var(--s-3); }
+.row-actions { display: flex; gap: var(--s-2); }
+.row-actions button { flex: 1; }
+
+.toast { font-size: var(--fs-12); min-height: 1.2em; }
+.err { border: var(--rule); padding: var(--s-2) var(--s-3); font-size: var(--fs-12); }
+.tag { font-size: var(--fs-12); border: var(--rule); padding: 0 var(--s-2); text-transform: uppercase; letter-spacing: 0.04em; }

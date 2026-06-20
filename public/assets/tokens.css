@@ -1,0 +1,78 @@
+/* Lattice — design tokens (v0, zero-accent)
+   Ultra-minimal: monochrome, one typeface, one unit, hairlines only.
+   The grid is the only graphic; nothing is ever drawn. */
+
+:root {
+  /* color — monochrome only, no accent */
+  --paper: #ffffff;
+  --ink:   #0a0a0a;
+  --line:  #e6e6e6;
+
+  /* type — one family (monospace) */
+  --font: ui-monospace, "Berkeley Mono", "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  --fs-12: 0.75rem;  --fs-14: 0.875rem; --fs-16: 1rem;
+  --fs-20: 1.25rem;  --fs-28: 1.75rem;  --fs-44: 2.75rem;
+  --lh-body: 1.5; --lh-display: 1.1; --track-display: 0.08em;
+
+  /* space — one 8px unit */
+  --s-1: 4px; --s-2: 8px; --s-3: 16px; --s-4: 24px;
+  --s-5: 40px; --s-6: 64px; --s-7: 96px;
+
+  /* structure — the hairline is the only decoration */
+  --rule: 1px solid var(--line);
+  --radius: 0;
+  --measure: 66ch;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #0a0a0a; --ink: #ededed; --line: #1c1c1c; }
+}
+
+* { box-sizing: border-box; }
+html { font-family: var(--font); font-size: 16px; line-height: var(--lh-body);
+  -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+/* type */
+h1, h2, h3 { text-transform: uppercase; letter-spacing: var(--track-display);
+  line-height: var(--lh-display); font-weight: 600; margin: 0 0 var(--s-3); }
+h1 { font-size: var(--fs-44); }
+h2 { font-size: var(--fs-28); }
+h3 { font-size: var(--fs-20); }
+p, li { max-width: var(--measure); margin: 0 0 var(--s-3); }
+small, .meta { font-size: var(--fs-12); }
+
+/* links & focus — zero-accent: underline + inverted focus, never color */
+a { color: inherit; text-decoration: underline; text-underline-offset: 2px;
+  text-decoration-thickness: 1px; }
+a:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* the only divider */
+hr { border: 0; border-top: var(--rule); margin: var(--s-5) 0; }
+
+/* button — text in a hairline box, radius 0, no shadow/gradient */
+button, .btn { font: inherit; text-transform: uppercase; letter-spacing: var(--track-display);
+  background: transparent; color: var(--ink); border: var(--rule);
+  border-radius: var(--radius); padding: var(--s-2) var(--s-3); cursor: pointer; }
+.btn--primary { background: var(--ink); color: var(--paper); }
+.btn:hover { background: var(--ink); color: var(--paper); }
+
+/* input — bottom hairline only */
+input, textarea, select { font: inherit; color: var(--ink); background: transparent;
+  border: 0; border-bottom: var(--rule); border-radius: 0; padding: var(--s-2) 0; }
+
+/* data — mono numerals, hairline rows */
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: var(--s-2) var(--s-3); border-bottom: var(--rule); }
+th { font-weight: 600; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+code, pre { font-family: var(--font); }
+
+/* the one permitted "graphic": the dot-lattice. use once (hero/footer). */
+.lattice-bg { background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: var(--s-2) var(--s-2); }
+
+/* wordmark — the logo is just the word */
+.wordmark { text-transform: uppercase; letter-spacing: var(--track-display); font-weight: 600; }
