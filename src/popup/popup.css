@@ -29,8 +29,10 @@ h1 { font-size: var(--fs-20); margin: 0 0 var(--s-3); }
 
 button.block, .btn.block { display: block; width: 100%; text-align: center; }
 
-textarea, input { width: 100%; font-size: var(--fs-14); }
+textarea, input, select.picker { width: 100%; font-size: var(--fs-14); }
 textarea { min-height: 84px; resize: vertical; }
+select.picker { border: var(--rule); padding: var(--s-2); }
+label.k { display: block; margin-bottom: var(--s-1); }
 
 .mnemonic {
   border: var(--rule); padding: var(--s-3);

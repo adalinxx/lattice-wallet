@@ -41,14 +41,24 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
 
 ## Status
 
-**v0 (this commit):** proven crypto core (conformance-gated), HD + raw-key
-derivation, multi-node RPC client with failover, MV3 manifest with strict CSP, and
-a styled popup slice (create/import → receive address + live balance, network
-switch). Keys are **in memory only** in v0.
+**Functional.** End to end:
 
-**Next:** encrypted keystore (Argon2id + AES-GCM) with persistence, background
-service-worker signer, send + clear-sign review, transaction history. See the
-plan for the full roadmap.
+- Conformance-gated crypto core; HD + raw-key derivation.
+- **Encrypted keystore** — Argon2id + AES-256-GCM (PBKDF2-600k fallback),
+  persisted in `chrome.storage.local`; wrong password fails closed.
+- **Background service-worker signer** — the sole holder of keys; the popup
+  exchanges messages and never receives key material. Idle auto-lock.
+- **Send** with fee estimate, nonce handling, and a **clear-sign review** screen;
+  transaction built and signed locally, then submitted. Receive, history,
+  multi-account (HD + import), network switch, lock/unlock.
+- Multi-node RPC client with failover; MV3 manifest with strict CSP.
+
+Tests cover the crypto conformance vectors, derivation freeze, keystore
+round-trip/fail-closed, session derivation, and that a signed transfer satisfies
+the node's acceptance rules (`npm test`, 11 tests). `npm run typecheck` is clean.
+
+**Next:** Ledger (WebHID), dApp-connect provider, cross-chain transfers — see the
+plan roadmap.
 
 ## Build & load
 
