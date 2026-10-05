@@ -1,72 +1,185 @@
-// End to end against a LOCAL node the tester runs (never a live chain):
+// End to end against LOCAL lattice-node processes this test starts and stops
+// (never a live chain). Build adalinxx/lattice-node main, then:
 //
-//   lattice-node --data-directory <tmp> --no-default-peers --rpc-port 18080 \
-//     --public-read-port 18081 --public-submit
-//   LATTICE_E2E_RPC=http://127.0.0.1:18080 LATTICE_E2E_PUBLIC=http://127.0.0.1:18081 \
-//     node --test test/e2e-local.test.ts
+//   LATTICE_NODE_BIN=<lattice-node>/.build/debug node --test test/e2e-local.test.ts
 //
-// Skipped unless LATTICE_E2E_RPC is set. The harness mines (as the node's
-// operator would) only to fund the wallet; everything else goes through the
-// wallet's own client, builder and signer.
+// Skipped unless LATTICE_NODE_BIN is set. Each node runs isolated
+// (--no-default-peers, no --peer) on throwaway storage. The harness mines (as
+// the node's operator would) only to fund the wallet; everything else goes
+// through the wallet's own signer (session.signTransfer) and node plane
+// (wallet/node.ts, i.e. the SDK's NodeClient and HTTPTransactionSubmitter).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
-import { buildTransferBody, bodyPreimage, submitRequestJSON } from "../src/lib/tx/build.ts";
-import { signPreimage } from "../src/lib/crypto/ed25519.ts";
-import { NodeClient, NodeError, sentStatus } from "../src/lib/rpc/client.ts";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { SubmissionError } from "@adalinxx/lattice-relay";
+import { importPrivateKey, type Account } from "../src/lib/crypto/accounts.ts";
+import { signTransfer } from "../src/lib/wallet/session.ts";
+import { reader, submitter, sentStatus, statusText, feeWarning, describe } from "../src/lib/wallet/node.ts";
 
-const rpc = process.env.LATTICE_E2E_RPC;
-const publicURL = process.env.LATTICE_E2E_PUBLIC;
+const bin = process.env.LATTICE_NODE_BIN;
+const run = promisify(execFile);
 const chainPath = ["Nexus"];
 
-async function mine(address: string) {
-  const template = await (await fetch(rpc + "/mining/templates", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ recipients: [{ chainPath, address }] }),
-  })).json();
-  assert.equal(template.searchTarget, "0x" + "f".repeat(64), "a fresh local chain at the maximum target");
-  const work = await (await fetch(rpc + "/mining/work", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workID: template.workID, nonce: 0 }),
-  })).json();
-  assert.equal(work.accepted, true, JSON.stringify(work));
+async function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => resolve(typeof address === "object" && address ? address.port : 0));
+    });
+  });
 }
 
-function signed(from: ReturnType<typeof importPrivateKey>, to: string, amount: bigint, fee: bigint, nonce: bigint) {
-  const body = buildTransferBody({ from: from.address, to, amount, fee, nonce, chainPath });
-  const { preimage } = bodyPreimage(body);
-  return submitRequestJSON({ [from.publicKey]: signPreimage(preimage, from.privateKey) }, body);
+async function until<T>(probe: () => Promise<T | undefined>, what: string): Promise<T> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    try {
+      const value = await probe();
+      if (value !== undefined) return value;
+    } catch {
+      // not yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`timed out waiting for ${what}`);
 }
 
-test("wallet against a local node: read, sign, submit (loopback and public), named refusals, confirm", { skip: !rpc }, async () => {
-  const alice = importPrivateKey("a1".repeat(32));
-  const bob = importPrivateKey("b0".repeat(32));
-  await mine(alice.address);
-  const local = new NodeClient(rpc!, chainPath);
-  const funded = await local.account(alice.address);
-  assert.ok(funded.balance > 0n, "mined to the wallet");
-  const nonce = funded.nonce;
-  assert.equal((await local.info()).acceptsSubmit, true, "the operator API accepts its own submits");
+interface LocalNode { operator: string; publicListener?: string; stop(): Promise<void>; log(): string }
 
-  // Public submit, when the operator turned it on; else the loopback route.
-  const submitter = publicURL ? new NodeClient(publicURL, chainPath) : local;
-  if (publicURL) assert.equal((await submitter.info()).acceptsSubmit, true);
-  const answer = await submitter.submit(signed(alice, bob.address, 1000n, 2n, nonce));
-  assert.match(answer.transactionCID, /^bafy/);
+async function startNode(options: { publicSubmit: boolean; minRelayFee?: bigint }): Promise<LocalNode> {
+  const directory = mkdtempSync(join(tmpdir(), "nexus-wallet-e2e-"));
+  const [rpc, read, overlay] = [await freePort(), await freePort(), await freePort()];
+  const operator = `http://127.0.0.1:${rpc}`;
+  const publicListener = options.publicSubmit ? `http://127.0.0.1:${read}` : undefined;
+  const logPath = join(directory, "node.log");
+  const node: ChildProcess = spawn(join(bin!, "lattice-node"), [
+    ...["--data-directory", join(directory, "data")],
+    ...["--identity-key", join(directory, "identity.key")],
+    "--no-default-peers",
+    ...["--listen-port", String(overlay)],
+    ...["--rpc-port", String(rpc)],
+    ...(options.publicSubmit
+      ? ["--public-read-port", String(read), "--public-submit", "--public-read-rate", "0", "--public-read-expensive-rate", "0",
+        "--public-read-max-rate", "0", "--public-submit-rate", "0"]
+      : []),
+    ...(options.minRelayFee === undefined ? [] : ["--min-relay-fee", options.minRelayFee.toString()]),
+  ], { stdio: ["ignore", openSync(logPath, "a"), openSync(logPath, "a")] });
+  await until(async () => (await fetch(`${operator}/health`)).ok || undefined, "node health");
+  if (publicListener) await until(async () => (await fetch(`${publicListener}/health`)).ok || undefined, "public listener");
+  return {
+    operator,
+    ...(publicListener ? { publicListener } : {}),
+    log: () => readFileSync(logPath, "utf8"),
+    async stop() {
+      if (node.exitCode === null) {
+        const exited = new Promise((resolve) => node.once("exit", resolve));
+        node.kill("SIGTERM");
+        await exited;
+      }
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
 
-  // Named refusals, in the node's words.
-  await assert.rejects(submitter.submit(signed(alice, bob.address, 999n, 2n, nonce)),
-    (e: unknown) => e instanceof NodeError && e.refusal === "feeTooLow");
-  const elsewhere = buildTransferBody({ from: alice.address, to: bob.address, amount: 1n, fee: 1n, nonce, chainPath: ["Nexus", "NotHosted"] });
-  const elsewhereJSON = submitRequestJSON({ [alice.publicKey]: signPreimage(bodyPreimage(elsewhere).preimage, alice.privateKey) }, elsewhere);
-  await assert.rejects(submitter.submit(elsewhereJSON),
-    (e: unknown) => e instanceof NodeError && e.status === 404 && e.refusal === "unknownChain");
+/** Mine (as the operator) until the tip is `blocks` higher, crediting `to`. */
+async function mine(node: LocalNode, to: Account, blocks: number): Promise<void> {
+  const reads = reader(node.operator, chainPath, fetch);
+  const target = ((await reads.chainInfo()).height ?? 0n) + BigInt(blocks);
+  await until(async () => {
+    await run(join(bin!, "lattice-mining-coordinator"), [
+      "--node", node.operator, "--workers", "2", "--recipient", `Nexus=${to.address}`, "--once", "--no-stale-probe",
+    ]);
+    return ((await reads.chainInfo()).height ?? 0n) >= target || undefined;
+  }, `height ${target}`);
+}
 
-  // Pending, then included by the next block (its nonce is spent).
-  assert.equal(await sentStatus(local, answer.transactionCID), "pending");
-  await mine(alice.address);
-  assert.equal(await sentStatus(local, answer.transactionCID), "nonce spent");
-  assert.equal((await local.account(bob.address)).balance, 1000n);
-  assert.equal((await local.account(alice.address)).nonce, nonce + 1n);
+async function refusal(submission: Promise<unknown>): Promise<SubmissionError> {
+  return submission.then(() => assert.fail("expected a refusal"), (e: unknown) => {
+    assert.ok(e instanceof SubmissionError, String(e));
+    return e;
+  });
+}
+
+const alice = importPrivateKey("a1".repeat(32));
+const bob = importPrivateKey("b0".repeat(32));
+
+test("own node (loopback, no relay floor): fund by mining, send with a custom fee, see its block", { skip: !bin, timeout: 300_000 }, async () => {
+  const node = await startNode({ publicSubmit: false });
+  try {
+    const reads = reader(node.operator, chainPath, fetch);
+    const info = await reads.chainInfo();
+    assert.equal(info.acceptsSubmit, true, "the operator API accepts its owner's submits");
+    assert.equal(info.minRelayFee ?? 0n, 0n);
+    await mine(node, alice, 2);
+    const funded = await reads.account(alice.address);
+    assert.ok(funded.balance > 0n, "mined to the wallet");
+
+    const fee = 17n; // the user's choice, not an estimate
+    assert.equal(feeWarning(fee, info.minRelayFee), undefined);
+    const { payload } = signTransfer(alice, { to: bob.address, amount: 1_000n, fee, nonce: funded.nonce, chainPath });
+    const sent = await submitter(node.operator, fetch).submit(payload);
+    assert.deepEqual(await sentStatus(reads, sent.transactionCID), { kind: "pending" });
+    const before = (await reads.chainInfo()).height!;
+    await mine(node, alice, 1);
+    const status = await until(async () => {
+      const s = await sentStatus(reads, sent.transactionCID);
+      return s.kind === "included" ? s : undefined;
+    }, "inclusion");
+    assert.ok(status.kind === "included" && status.height > before);
+    const block = await reads.block(status.height);
+    assert.equal(block.hash, status.hash);
+    console.log(`[e2e own node] ${sent.transactionCID}: ${statusText(status)} (${status.hash}), fee ${fee}`);
+    assert.equal((await reads.account(bob.address)).balance, 1_000n);
+  } catch (e) {
+    console.error(node.log().slice(-4000));
+    throw e;
+  } finally {
+    await node.stop();
+  }
+});
+
+test("public submit with --min-relay-fee 1: below-floor fee warned and refused, custom fee included", { skip: !bin, timeout: 300_000 }, async () => {
+  const node = await startNode({ publicSubmit: true, minRelayFee: 1n });
+  try {
+    const operatorReads = reader(node.operator, chainPath, fetch);
+    const reads = reader(node.publicListener!, chainPath, fetch);
+    const info = await reads.chainInfo();
+    assert.equal(info.acceptsSubmit, true, "the operator declared public submit");
+    assert.equal(info.minRelayFee, 1n);
+    await mine(node, alice, 2);
+    const { nonce } = await reads.account(alice.address);
+    const relay = submitter(node.publicListener!, fetch);
+
+    // Fee 0 is the user's to try: the wallet warns, never clamps; the node refuses by name.
+    assert.match(feeWarning(0n, info.minRelayFee)!, /at least 1/);
+    const below = await refusal(relay.submit(signTransfer(alice, { to: bob.address, amount: 10n, fee: 0n, nonce, chainPath }).payload));
+    assert.equal(below.reason, "belowMinRelayFee");
+    console.log(`[e2e public] fee 0 -> ${describe(below)}`);
+
+    const fee = 5n;
+    const sent = await relay.submit(signTransfer(alice, { to: bob.address, amount: 2_000n, fee, nonce, chainPath }).payload);
+    const cheaper = await refusal(relay.submit(signTransfer(alice, { to: bob.address, amount: 1_999n, fee: 2n, nonce, chainPath }).payload));
+    assert.equal(cheaper.reason, "feeTooLow");
+    await mine(node, alice, 1);
+    const status = await until(async () => {
+      const s = await sentStatus(reads, sent.transactionCID);
+      return s.kind === "included" ? s : undefined;
+    }, "inclusion");
+    assert.ok(status.kind === "included");
+    assert.equal((await operatorReads.block(status.height)).hash, status.hash);
+    console.log(`[e2e public] ${sent.transactionCID}: ${statusText(status)} (${status.hash}), fee ${fee}`);
+    assert.equal((await reads.account(bob.address)).balance, 2_000n);
+  } catch (e) {
+    console.error(node.log().slice(-4000));
+    throw e;
+  } finally {
+    await node.stop();
+  }
 });

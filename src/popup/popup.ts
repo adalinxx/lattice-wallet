@@ -4,10 +4,9 @@
 
 import { wallet } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic } from "../lib/crypto/accounts.ts";
-import { NodeClient, NodeError, sentStatus } from "../lib/rpc/client.ts";
-import { discover } from "../lib/rpc/discovery.ts";
+import { reader, submitter, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordSent, type Settings, type ChosenEndpoint } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 
 type El = HTMLElement;
@@ -23,7 +22,8 @@ const h = (tag: string, attrs: Record<string, unknown> = {}, ...kids: (Node | st
   return n;
 };
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
-const fmt = (n: string | number) => Number(n).toLocaleString();
+// Exact: amounts are UInt64, never rounded through a double.
+const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
 const view = () => document.getElementById("view")!;
 const render = (node: El) => view().replaceChildren(node);
 
@@ -32,7 +32,7 @@ let settings: Settings;
 const store = chrome.storage.local;
 const chainPath = () => parseChainPath(settings.chain) ?? [ROOT_CHAIN];
 const endpoint = (): ChosenEndpoint | undefined => settings.endpoints[settings.chain];
-const client = () => new NodeClient(endpoint()!.url, chainPath());
+const client = () => reader(endpoint()!.url, chainPath());
 async function update(change: (s: Settings) => Settings) {
   settings = change(settings);
   await saveSettings(store, settings);
@@ -44,15 +44,6 @@ function syncBadge() {
   b.textContent = settings.chain;
 }
 
-/** A refusal in the node's own words. */
-function describe(e: unknown): string {
-  if (e instanceof NodeError) {
-    if (e.status === 404 && !e.refusal) return "not found (this node does not serve that chain or route)";
-    if (e.status === 429) return "refused: " + (e.refusal ?? "rate limited");
-    return "refused: " + (e.refusal ?? `HTTP ${e.status}`);
-  }
-  return "node unreachable";
-}
 const activeAccount = (): AccountView | undefined => st.accounts.find((a) => a.address === st.active);
 
 async function refresh() {
@@ -169,7 +160,7 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
   err.textContent = "checking…";
   try {
-    const info = await new NodeClient(url, chainPath()).info();
+    const info = await reader(url, chainPath()).chainInfo();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
     await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: declaredSubmit && info.acceptsSubmit === true, source } } }));
     return true;
@@ -217,18 +208,18 @@ function endpointScreen() {
     err.textContent = "discovering…";
     found.replaceChildren();
     try {
-      const list = await discover(n, chainPath(), (input, init) => fetch(input, init));
+      const list = await discover(n, chainPath());
       err.textContent = list.length ? "" : "No endpoint served the block its parent commits.";
       for (const e of list) {
         found.append(h("div", { class: "row" },
           h("span", { class: "v mono" }, short(e.url)),
-          h("span", { class: "tag" }, e.acceptsSubmit ? "submit" : "read-only"),
-          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.acceptsSubmit)) route(); } }, "Use"),
+          h("span", { class: "tag" }, e.declaresSubmit ? "declares submit" : "read-only"),
+          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit)) route(); } }, "Use"),
         ));
       }
-      if (list.length) found.append(h("p", { class: "muted" }, "Operator-declared; each served the block its parent commits. Not independently verified."));
+      if (list.length) found.append(h("p", { class: "muted" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
     } catch (e) {
-      err.textContent = "Discovery failed: " + (e instanceof Error && !(e instanceof NodeError) ? e.message : describe(e));
+      err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
     }
   }
 }
@@ -296,6 +287,7 @@ async function mainScreen() {
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: historyScreen }, "Sent"),
         h("button", { class: "btn", onclick: endpointScreen }, "Node"),
+        h("button", { class: "btn", onclick: feeScreen }, "Fee"),
         h("button", { class: "btn", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock"),
       ),
       toast,
@@ -348,17 +340,26 @@ async function sendFlow() {
   const acct = activeAccount()!;
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
-  // No estimate route: the fee is the user's choice; 1 unit is the smallest positive fee.
-  const fee = h("input", { type: "text", inputmode: "numeric", value: "1" }) as HTMLInputElement;
+  // No estimate service: the fee is the user's, starting at this chain's default.
+  const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
+  const feeNote = h("div", { class: "warn" });
   const err = h("div", { class: "toast" });
   const submitOK = endpoint()!.acceptsSubmit;
+  // The chosen endpoint's relay floor (its policy): read once, warned against, never applied.
+  let minRelayFee: bigint | undefined;
+  const checkFee = () => {
+    const f = parseFee(fee.value);
+    feeNote.textContent = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
+  };
+  fee.addEventListener("input", checkFee);
+  client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; checkFee(); }).catch(() => {});
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Send on " + settings.chain),
       ...(submitOK ? [] : [h("p", { class: "warn" }, "This node does not accept submits. Use your own node, or an endpoint whose operator accepts public submits.")]),
       h("label", { class: "k" }, "To"), to,
       h("label", { class: "k" }, "Amount"), amount,
-      h("label", { class: "k" }, "Fee (paid to the miner)"), fee,
+      h("label", { class: "k" }, "Fee (paid to the miner)"), fee, feeNote,
       err,
       ...(submitOK ? [h("button", { class: "block", onclick: () => prepareReview() }, "Review")] : []),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
@@ -372,21 +373,24 @@ async function sendFlow() {
     if (toAddr === acct.address) { err.textContent = "That is this account."; return; }
     let amt: bigint, f: bigint;
     try { amt = BigInt(amount.value.trim()); if (amt <= 0n) throw 0; } catch { err.textContent = "Enter a whole, positive amount."; return; }
-    try { f = BigInt(fee.value.trim()); if (f < 0n) throw 0; } catch { err.textContent = "Enter a whole fee of 0 or more."; return; }
+    const parsedFee = parseFee(fee.value);
+    if (parsedFee === null) { err.textContent = "Enter a whole fee of 0 or more."; return; }
+    f = parsedFee;
     err.textContent = "reading account…";
     let nonce: bigint, balance: bigint;
     try {
-      const a = await client().account(acct.address);
-      nonce = a.nonce; balance = a.balance;
+      const [a, info] = await Promise.all([client().account(acct.address), client().chainInfo()]);
+      nonce = a.nonce; balance = a.balance; minRelayFee = info.minRelayFee;
     } catch (e) { err.textContent = describe(e); return; }
     if (amt + f > balance) { err.textContent = `Insufficient balance (have ${fmt(balance.toString())}, need ${fmt((amt + f).toString())}).`; return; }
-    reviewScreen(toAddr, amt, f, nonce);
+    reviewScreen(toAddr, amt, f, nonce, minRelayFee);
   }
 }
 
-function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint) {
+function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, minRelayFee: bigint | undefined) {
   const acct = activeAccount()!;
   const toast = h("div", { class: "toast" });
+  const warning = feeWarning(fee, minRelayFee);
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Review"),
@@ -395,12 +399,14 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint) {
         h("div", { class: "row" }, h("span", { class: "k" }, "To"), h("span", { class: "v mono" }, short(to))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, fmt(amount.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Fee"), h("span", { class: "v" }, fmt(fee.toString()))),
+        ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
         h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, fmt((amount + fee).toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, settings.chain)),
         h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),
       ),
       h("div", { class: "addr mono" }, "To (full): " + to),
+      ...(warning ? [h("p", { class: "warn" }, warning)] : []),
       toast,
       h("button", { class: "block", onclick: confirm }, "Sign & send"),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
@@ -413,9 +419,12 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint) {
     if (!signed.ok) { toast.textContent = signed.error; return; }
     toast.textContent = "submitting…";
     try {
-      const answer = await client().submit(signed.signedSubmit.requestJSON);
+      const answer = await submitter(endpoint()!.url).submit(signed.signedSubmit.payload);
       const chain = settings.chain;
-      await update((s) => recordSent(s, chain, { cid: answer.transactionCID, to, amount: amount.toString(), at: Date.now() }));
+      await update((s) => recordSent(s, chain, {
+        cid: answer.transactionCID, to, amount: amount.toString(), at: Date.now(),
+        from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
+      }));
       sentScreen(answer.transactionCID);
     } catch (e) { toast.textContent = describe(e); }
   }
@@ -426,8 +435,8 @@ function sentScreen(txCID: string) {
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
-      h("p", { class: "muted" }, "Admitted to the node's pool. It is final once mined."),
-      h("label", { class: "k" }, "Transaction"), h("div", { class: "addr mono" }, txCID),
+      h("p", { class: "muted" }, "Admitted to the node's pool (pending). See Sent for its block once mined."),
+      h("label", { class: "k" }, "Transaction (as the node reports it)"), h("div", { class: "addr mono" }, txCID),
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: async () => { await navigator.clipboard.writeText(txCID); toast.textContent = "copied"; setTimeout(() => (toast.textContent = ""), 1500); } }, "Copy"),
         h("button", { class: "btn", onclick: mainScreen }, "Done"),
@@ -454,16 +463,45 @@ async function historyScreen() {
   for (const t of sent) {
     const s = h("span", { class: "k" }, "…");
     list.append(h("div", { class: "row" }, h("span", { class: "v mono" }, short(t.cid)), h("span", { class: "v" }, fmt(t.amount)), s));
-    status(t.cid).then((text) => (s.textContent = text));
+    const recorded = t.from && t.nonce ? { from: t.from, nonce: BigInt(t.nonce) } : undefined;
+    status(t.cid, recorded).then((text) => (s.textContent = text));
   }
 
-  async function status(cid: string): Promise<string> {
+  async function status(cid: string, recorded?: { from: string; nonce: bigint }): Promise<string> {
     try {
-      return await sentStatus(client(), cid);
+      return statusText(await sentStatus(client(), cid, recorded));
     } catch (e) {
       return describe(e);
     }
   }
+}
+
+// ---------------- fee default ----------------
+
+/** The fee a new send on this chain starts with. Every send can still change it. */
+function feeScreen() {
+  const input = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
+  const note = h("div", { class: "warn" });
+  const err = h("div", { class: "toast" });
+  let minRelayFee: bigint | undefined;
+  const check = () => { const f = parseFee(input.value); note.textContent = f === null ? "" : feeWarning(f, minRelayFee) ?? ""; };
+  input.addEventListener("input", check);
+  client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; check(); }).catch(() => {});
+  render(
+    h("div", { class: "stack" },
+      h("h1", {}, "Default fee on " + settings.chain),
+      h("p", { class: "muted" }, "Paid to the miner as the debit over the credit. There is no estimate: you choose it, and you can change it on each send."),
+      input, note, err,
+      h("button", { class: "block", onclick: async () => {
+        const f = parseFee(input.value);
+        if (f === null) { err.textContent = "Enter a whole fee of 0 or more."; return; }
+        const chain = settings.chain;
+        await update((s) => ({ ...s, fees: { ...s.fees, [chain]: f.toString() } }));
+        mainScreen();
+      } }, "Save"),
+      h("button", { class: "btn block", onclick: mainScreen }, "Back"),
+    ),
+  );
 }
 
 // ---------------- chain switch + boot ----------------

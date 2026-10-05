@@ -1,4 +1,5 @@
-// Conformance gate: reproduce Lattice's published conformance vectors
+// Conformance gate, now exercising the SDK the wallet signs with
+// (@adalinxx/lattice-core): reproduce Lattice's published conformance vectors
 // (Lattice/Vectors, copied from the pinned Lattice 44.0.0 that lattice-node
 // builds against) bit for bit: addresses, TransactionBody DAG-CBOR bytes and
 // CIDs, the lattice-tx-v1 signing envelope, and RFC 8032 signatures. Negative
@@ -10,14 +11,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { bytesToHex, hexToBytes, utf8 } from "../src/lib/crypto/bytes.ts";
-import { publicKeyFromPrivate, signPreimage, verifyPreimage, SIGNATURE_DOMAIN } from "../src/lib/crypto/ed25519.ts";
-import { encodeMultikeyEd25519, decodeMultikeyEd25519 } from "../src/lib/crypto/multikey.ts";
-import { addressFromMultikey } from "../src/lib/crypto/address.ts";
-import { encode } from "../src/lib/crypto/dagcbor.ts";
-import { cidV1DagCbor } from "../src/lib/crypto/cid.ts";
-import { buildTransferBody, bodyPreimage } from "../src/lib/tx/build.ts";
-import { buildPreimage } from "../src/lib/tx/preimage.ts";
+import {
+  bytesToHex, hexToBytes, utf8, publicKeyFromPrivate, signPreimage, verifyPreimage, SIGNATURE_DOMAIN,
+  encodeEd25519Multikey as encodeMultikeyEd25519, decodeEd25519Multikey as decodeMultikeyEd25519,
+  addressFromMultikey, encodeDagCbor, cidV1DagCbor, buildTransfer, encodeTransactionBody,
+  transactionSigningPreimage as buildPreimage, type DagCborValue,
+} from "@adalinxx/lattice-core";
+
+const encode = (value: unknown) => encodeDagCbor(value as DagCborValue);
 
 const load = (name: string) =>
   JSON.parse(readFileSync(fileURLToPath(new URL(`./vectors/${name}`, import.meta.url)), "utf8"));
@@ -48,22 +49,22 @@ for (const v of addresses.vectors) {
 
 for (const v of encoding.vectors.filter((v: { type: string }) => v.type === "TransactionBody")) {
   test(`encoding: ${v.name}`, () => {
-    const bytes = encode(asCbor(v.value) as never);
+    const bytes = encode(asCbor(v.value));
     assert.equal(bytesToHex(bytes), v.dagCborHex, "DAG-CBOR bytes");
     assert.equal(cidV1DagCbor(bytes), v.cid, "CID");
   });
 }
 
-test("encoding: the wallet's own transfer builder reproduces transaction-body/account-action", () => {
+test("encoding: the transfer builder the wallet signs with reproduces transaction-body/account-action", () => {
   const v = encoding.vectors.find((v: { name: string }) => v.name === "transaction-body/account-action");
   const [debit, credit] = v.value.accountActions;
-  const body = buildTransferBody({
+  const body = buildTransfer({
     from: debit.owner, to: credit.owner, amount: BigInt(credit.delta), fee: BigInt(-debit.delta - credit.delta),
     nonce: BigInt(v.value.nonce), chainPath: v.value.chainPath,
   });
-  const { bodyCID, bytes } = bodyPreimage(body);
+  const { cid, bytes } = encodeTransactionBody(body);
   assert.equal(bytesToHex(bytes), v.dagCborHex);
-  assert.equal(bodyCID, v.cid);
+  assert.equal(cid, v.cid);
 });
 
 const bodiesByCID = new Map<string, { nonce: number; chainPath: string[] }>(

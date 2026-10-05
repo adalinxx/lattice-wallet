@@ -1,6 +1,6 @@
 // Non-secret settings, kept beside (never inside) the encrypted vault: the
-// selected chain, the user's chain list, the endpoint chosen per chain, and
-// the transactions this wallet sent. No defaults point at any node.
+// selected chain, the user's chain list, the endpoint chosen per chain, the
+// default fee per chain, and the transactions this wallet sent. No defaults point at any node.
 
 import { ROOT_CHAIN } from "../config.ts";
 
@@ -17,6 +17,10 @@ export interface SentTransaction {
   to: string;
   amount: string;
   at: number;
+  /** Absent on records from older versions. */
+  from?: string;
+  fee?: string;
+  nonce?: string;
 }
 
 export interface Settings {
@@ -24,9 +28,24 @@ export interface Settings {
   chains: string[];
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
+  /** The fee a new send starts with, per chain (decimal string); editable on every send. */
+  fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], endpoints: {}, sent: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], endpoints: {}, sent: {}, fees: {} };
+
+/** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
+export const FALLBACK_FEE = "1";
+
+export function defaultFee(settings: Settings, chain: string): string {
+  return settings.fees[chain] ?? FALLBACK_FEE;
+}
+
+/** A fee as the user typed it: a whole number of units, 0 or more. */
+export function parseFee(text: string): bigint | null {
+  const t = text.trim();
+  return /^(0|[1-9][0-9]{0,18})$/.test(t) ? BigInt(t) : null;
+}
 
 export interface KeyValueStore {
   get(key: string): Promise<Record<string, unknown>>;

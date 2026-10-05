@@ -1,6 +1,8 @@
 // Shared types for the popup <-> background-signer protocol. Note: AccountView
 // and every message intentionally carry NO private key material.
 
+import type { TransactionPayload } from "@adalinxx/lattice-core";
+
 /** Persisted, encrypted-at-rest wallet contents (the vault plaintext). */
 export interface WalletData {
   mnemonic: string | null; // null = import-only wallet
@@ -24,9 +26,9 @@ export interface WalletState {
   active: string | null;
 }
 
-/** A signed transfer, ready for POST /transactions. */
+/** A signed transfer: the SDK's POST /transactions payload (plain JSON, exact decimal strings). */
 export interface SignedSubmit {
-  requestJSON: string;
+  payload: TransactionPayload;
   bodyCID: string;
 }
 
