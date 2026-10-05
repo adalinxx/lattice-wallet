@@ -10,8 +10,9 @@ import {
   type Fetch,
   type ResolvedEndpoint,
 } from "@adalinxx/lattice-client";
-import { HTTPTransactionSubmitter, SubmissionError, type SubmissionRefusal } from "@adalinxx/lattice-relay";
+import { HTTPTransactionSubmitter, SubmissionError, type SubmissionRefusal, type TransactionSubmitter } from "@adalinxx/lattice-relay";
 import { ROOT_CHAIN } from "../config.ts";
+import type { SignedSubmit } from "./types.ts";
 
 // A browser's fetch must be called unbound from any other object (the SDK
 // stores it as a field): always hand the SDK this wrapper.
@@ -45,8 +46,30 @@ const REFUSALS: Record<SubmissionRefusal, string> = {
   requestTooLarge: "the request is too large for this node",
 };
 
+/** A node answered a submission with a CID other than the one the wallet computed. */
+export class CIDMismatchError extends Error {
+  readonly expected: string;
+  readonly reported: string;
+  constructor(expected: string, reported: string) {
+    super(`the node reported transaction ${reported}, not ${expected}`);
+    this.expected = expected;
+    this.reported = reported;
+  }
+}
+
+/**
+ * Submit a signed transfer and hold the node to the CID computed locally: the
+ * returned CID is the wallet's own, never taken on the node's word.
+ */
+export async function submitChecked(relay: TransactionSubmitter, signed: SignedSubmit): Promise<string> {
+  const { transactionCID } = await relay.submit(signed.payload);
+  if (transactionCID !== signed.transactionCID) throw new CIDMismatchError(signed.transactionCID, transactionCID);
+  return signed.transactionCID;
+}
+
 /** A refusal or failure, in words, keeping the node's own name for it. */
 export function describe(e: unknown): string {
+  if (e instanceof CIDMismatchError) return "unexpected answer from node: " + e.message;
   if (e instanceof SubmissionError) {
     if (e.reason) return `refused (${e.reason}): ${REFUSALS[e.reason]}`;
     if (e.status === 404 && !e.refusal) return "refused: this endpoint does not accept transactions";

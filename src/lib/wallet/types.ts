@@ -30,6 +30,8 @@ export interface WalletState {
 export interface SignedSubmit {
   payload: TransactionPayload;
   bodyCID: string;
+  /** Computed locally; a node must report this same CID on submission. */
+  transactionCID: string;
 }
 
 export interface TransferSummary {
