@@ -4,12 +4,11 @@
 // the session.
 
 import { encryptVault, decryptVault, type Vault } from "../lib/crypto/keystore.ts";
-import { buildTransferBody, bodyPreimage } from "../lib/tx/build.ts";
+import { buildTransferBody, bodyPreimage, submitRequestJSON } from "../lib/tx/build.ts";
 import { signPreimage } from "../lib/crypto/ed25519.ts";
-import { bytesToHex } from "../lib/crypto/bytes.ts";
 import { deriveAccounts, toView, nextHdLabel, type LiveAccount } from "../lib/wallet/session.ts";
 import { deriveAccount, importPrivateKey } from "../lib/crypto/accounts.ts";
-import { DEFAULT_NETWORK, type NetworkId } from "../lib/config.ts";
+import { parseChainPath } from "../lib/config.ts";
 import type { Request, Response, WalletData, WalletState } from "../lib/wallet/types.ts";
 
 const AUTO_LOCK_MINUTES = 10;
@@ -26,9 +25,6 @@ let session: Session | null = null;
 // ---- persistence ----
 async function loadVault(): Promise<Vault | null> {
   return ((await store.get("vault")).vault as Vault | undefined) ?? null;
-}
-async function loadNetwork(): Promise<NetworkId> {
-  return ((await store.get("network")).network as NetworkId | undefined) ?? DEFAULT_NETWORK;
 }
 async function persistData() {
   if (!session) return;
@@ -48,7 +44,6 @@ async function stateView(): Promise<WalletState> {
   return {
     initialized,
     locked: session == null,
-    network: await loadNetwork(),
     accounts: session ? session.accounts.map(toView) : [],
     active: session?.data.active ?? null,
   };
@@ -80,7 +75,6 @@ async function handle(msg: Request): Promise<Response> {
       } else {
         return { ok: false, error: "Provide a recovery phrase or a private key" };
       }
-      if (msg.network) await store.set({ network: msg.network });
       session = { password: msg.password, data, accounts: deriveAccounts(data) };
       await persistData();
       touchAutoLock();
@@ -142,23 +136,26 @@ async function handle(msg: Request): Promise<Response> {
       return { ok: true, state: await stateView() } as Response;
     }
 
-    case "setNetwork":
-      await store.set({ network: msg.network });
-      return { ok: true, state: await stateView() } as Response;
-
     case "signTransfer": {
       if (!session) return { ok: false, error: "Locked" };
       const acct = findAccount(msg.from);
       if (!acct) return { ok: false, error: "Unknown sender" };
-      const amount = BigInt(msg.amount);
-      const fee = BigInt(msg.fee);
-      const nonce = BigInt(msg.nonce);
-      const body = buildTransferBody({ from: acct.address, to: msg.to, amount, fee, nonce, chainPath: msg.chainPath });
-      const { bodyCID, bytes, preimage } = bodyPreimage(body);
+      const chainPath = parseChainPath(msg.chainPath.join("/"));
+      if (!chainPath) return { ok: false, error: "Invalid chain path" };
+      let body;
+      try {
+        body = buildTransferBody({
+          from: acct.address, to: msg.to, amount: BigInt(msg.amount), fee: BigInt(msg.fee),
+          nonce: BigInt(msg.nonce), chainPath,
+        });
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      const { bodyCID, preimage } = bodyPreimage(body);
       const sig = signPreimage(preimage, acct.privateKey);
       return {
         ok: true,
-        signedSubmit: { signatures: { [acct.publicKey]: sig }, bodyCID, bodyData: bytesToHex(bytes), chainPath: msg.chainPath },
+        signedSubmit: { requestJSON: submitRequestJSON({ [acct.publicKey]: sig }, body), bodyCID },
         summary: { from: acct.address, to: msg.to, amount: msg.amount, fee: msg.fee, nonce: msg.nonce },
       } as Response;
     }

@@ -1,9 +1,34 @@
 # Nexus Wallet
 
 A **non-custodial** wallet for **Nexus** — the root chain of the
-[Lattice](https://github.com/adalinxx) network — built as a **Manifest V3 browser
-extension**. Keys are generated and used **entirely on your device**; the
-extension talks directly to a Lattice node's RPC and signs locally.
+[Lattice](https://github.com/adalinxx) network — and its child chains, built as
+a **Manifest V3 browser extension**. Keys are generated and used **entirely on
+your device**; the extension talks directly to a node **you choose** and signs
+locally.
+
+## Nodes: you choose, there is no default
+
+The wallet ships with **no node URL**. On first use it asks for one per chain:
+
+- **your own node** — its loopback API (`http://127.0.0.1:<rpc-port>`)
+  accepts your submits; or
+- an endpoint **discovered** through a Nexus node you choose: the wallet asks
+  `GET /api/chain/endpoints?chainPath=P/D` one level at a time (Nexus → A →
+  B …), and accepts a declared URL only if it serves the block its parent
+  commits. Discovered endpoints are operator-declared and **not independently
+  verified**. Whether one accepts transactions is its operator's choice
+  (`--public-submit`); the wallet confirms it from that endpoint's own
+  `GET /api/chain/info` (`acceptsSubmit`).
+
+The choice is saved per chain. Chains are selected by path (`Nexus`,
+`Nexus/testnet`, …) from the header.
+
+Reads: `GET /api/state/account/:addr` (balance, nonce) and
+`GET /api/transaction/:cid`, each with `?chainPath=`. Submit:
+`POST /transactions`; a refusal is shown in the node's own words
+(`feeTooLow`, `full`, `unknownChain`, …). The fee is yours to set (default 1
+unit; it is the debit-over-credit excess, there is no fee field and no
+estimate route).
 
 > one proof. every chain.
 
@@ -18,10 +43,13 @@ until a signed update**, and isolates the signer from any web page.
 
 The wallet **builds and serializes the transaction body itself**, computes the
 `bodyCID` locally (a faithful port of the node's deterministic DAG-CBOR encoding),
-derives the signing preimage, and signs — it never trusts the node for *what it
-signs*. The entire crypto path is validated **bit-for-bit** against the node's
-published signing vectors (`test/conformance.ts`): multikey public key, address
-CID, `bodyCID`, preimage, and signature.
+derives the `lattice-tx-v1` signing envelope (the only signing form since
+Lattice 44), and signs — it never trusts the node for *what it signs*. The
+crypto path is validated **bit-for-bit** against Lattice's published
+conformance vectors (`test/vectors/`, from the Lattice release lattice-node
+pins; `test/conformance.ts`): Multikey, address, TransactionBody DAG-CBOR bytes
+and CIDs, the envelope, and RFC 8032 signatures, with the negative cases
+rejected.
 
 ## Design
 
@@ -48,17 +76,23 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
   persisted in `chrome.storage.local`; wrong password fails closed.
 - **Background service-worker signer** — the sole holder of keys; the popup
   exchanges messages and never receives key material. Idle auto-lock.
-- **Send** with fee estimate, nonce handling, and a **clear-sign review** screen;
-  transaction built and signed locally, then submitted. Receive, history,
-  multi-account (HD + import), network switch, lock/unlock.
-- Multi-node RPC client with failover; MV3 manifest with strict CSP.
+- **Send** with a user-set fee, nonce from the node, and a **clear-sign review**
+  screen; built and signed locally, then submitted to the chosen node.
+  Receive, sent-transaction status, transaction lookup, multi-account
+  (HD + import), chain selector, lock/unlock.
 
-Tests cover the crypto conformance vectors, derivation freeze, keystore
-round-trip/fail-closed, session derivation, and that a signed transfer satisfies
-the node's acceptance rules (`npm test`, 11 tests). `npm run typecheck` is clean.
+Sent-transaction status: the node keeps no transaction-to-block index, so a
+sent transaction reads `pending` while in the pool and `nonce spent` once the
+account's nonce passes it.
 
-**Next:** Ledger (WebHID), dApp-connect provider, cross-chain transfers — see the
-plan roadmap.
+Tests: conformance vectors, derivation freeze, keystore round-trip/fail-closed,
+session derivation, transfer acceptance rules and exact-integer submit JSON,
+node URL rules, client refusals, recursive discovery (`npm test`).
+`test/e2e-local.test.ts` runs the wallet against a local node (skipped unless
+`LATTICE_E2E_RPC` is set; see the file). `npm run typecheck` is clean.
+
+**Next:** cross-chain swaps (deposit/receipt/withdrawal), Ledger (WebHID),
+dApp-connect provider.
 
 ## Build & load
 
@@ -73,8 +107,10 @@ mode → **Load unpacked** → select `dist/`.
 
 ## Security posture
 
-- Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, `connect-src` limited to the
-  node hosts, no inline, no eval, no remote code.
+- Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
+  remote code. `connect-src` is `https:` plus loopback `http:` (your own
+  node); the wallet holds no host permission until you choose a node, and then
+  asks for that host only (discovery asks once for `https://*/*`).
 - Vendored + lockfile-pinned deps; `npm ci --ignore-scripts`.
 - Signer isolated in the background worker; popup never receives raw keys (target
   architecture).
