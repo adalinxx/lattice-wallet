@@ -1,6 +1,6 @@
 // UI-side signer client. Thin typed wrapper over a message channel to the
 // signer; the UI never imports key material — it only exchanges these
-// messages. The extension's channel is runtime messaging to its worker.
+// messages (the extension's channel is runtime messaging to its worker).
 
 import type { Request, Response, WalletState, SignedSubmit, TransferSummary } from "./types.ts";
 
@@ -25,6 +25,3 @@ export function walletClient(send: Send) {
 }
 
 export type WalletClient = ReturnType<typeof walletClient>;
-
-/** The extension's signer: its background worker. */
-export const wallet: WalletClient = walletClient((msg) => chrome.runtime.sendMessage(msg));

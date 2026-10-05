@@ -3,10 +3,10 @@
 // is granted per origin.
 
 import { startWallet } from "./app.ts";
-import { wallet } from "../lib/wallet/client.ts";
+import { walletClient } from "../lib/wallet/client.ts";
 
 startWallet({
-  wallet,
+  wallet: walletClient((msg) => chrome.runtime.sendMessage(msg)),
   store: chrome.storage.local,
   requestOrigins: (origins) => chrome.permissions.request({ origins }),
 });
