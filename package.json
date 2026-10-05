@@ -19,9 +19,11 @@
     "@adalinxx/lattice-core": "file:vendor/lattice-sdk/packages/core",
     "@adalinxx/lattice-relay": "file:vendor/lattice-sdk/packages/relay",
     "@adalinxx/lattice-volumes": "file:vendor/lattice-sdk/packages/volumes",
+    "@noble/curves": "2.2.0",
     "@noble/hashes": "^2.2.0",
     "@scure/bip39": "^2.2.0",
-    "hash-wasm": "^4.12.0"
+    "hash-wasm": "^4.12.0",
+    "qr": "0.7.2"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.43",

@@ -12,6 +12,7 @@ import { reader, submitter, submitChecked, CIDMismatchError, discover, describe,
 import { ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
+import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 
 export interface Platform {
   /** The signer: the extension's background worker, or the desktop app's in-page signer. */
@@ -45,6 +46,16 @@ export interface Platform {
    * keeping a list of its own.
    */
   chains?: { list(): Promise<string[]>; add(chain: string): Promise<void> };
+  /** This page may open the camera (an extension popup cannot hold the permission). */
+  camera?: boolean;
+  /** Reopen a backup flow in a full page (the extension: a tab, for camera, files and print). */
+  openFullPage?(view: "backup" | "restore"): void;
+  /** Start in this flow (the full page the popup opened). */
+  initialView?: "backup" | "restore";
+  /** Save a text file (default: a browser download); resolves to where it went. */
+  saveFile?(name: string, text: string): Promise<string | void>;
+  /** Print the page (default: window.print). */
+  print?(): void;
 }
 
 type El = HTMLElement;
@@ -103,7 +114,29 @@ export async function refresh() {
   route();
 }
 
+function backupHost(): BackupHost {
+  return {
+    wallet, camera: platform.camera === true, openFullPage: platform.openFullPage,
+    saveFile: platform.saveFile, print: platform.print,
+    state: () => st,
+    back: route,
+    done: (state) => { st = state; route(); },
+  };
+}
+
+/** Backup flows open in a full page where the host has one (the popup cannot hold the camera). */
+function openBackup(view: "backup" | "restore") {
+  if (platform.openFullPage && !platform.camera) return platform.openFullPage(view);
+  return view === "backup" ? backupMenu(backupHost()) : restoreMenu(backupHost());
+}
+
+let initialView: Platform["initialView"];
 function route() {
+  const start = initialView;
+  initialView = undefined;
+  if (start === "restore" && !st.initialized) return restoreMenu(backupHost());
+  if (start === "backup" && st.initialized && !st.locked) return backupMenu(backupHost());
+  if (start === "backup" && st.locked) initialView = start; // after unlock
   if (!st.initialized) return welcome();
   if (st.locked) return unlockScreen();
   if (!endpoint()) return endpointScreen();
@@ -118,6 +151,7 @@ function welcome() {
       h("div", { class: "hero" }, h("span", { class: "wordmark" }, "NEXUS"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
       h("button", { class: "block", onclick: createFlow }, "Create wallet"),
       h("button", { class: "btn block", onclick: importFlow }, "Import"),
+      h("button", { class: "btn block", onclick: () => openBackup("restore") }, "Restore from backup, SeedQR or another device"),
     ),
   );
 }
@@ -379,6 +413,7 @@ async function mainScreen() {
         h("button", { class: "btn", onclick: historyScreen }, "Sent"),
         ...(platform.ownNode ? [] : [h("button", { class: "btn", onclick: endpointScreen }, "Node")]),
         h("button", { class: "btn", onclick: feeScreen }, "Fee"),
+        h("button", { class: "btn", onclick: () => openBackup("backup") }, "Backup"),
         h("button", { class: "btn", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock"),
       ),
       ...actionButtons(),
@@ -640,6 +675,7 @@ export function startWallet(host: Platform) {
   platform = host;
   wallet = host.wallet;
   store = host.store;
+  initialView = host.initialView;
   document.getElementById("net-badge")!.addEventListener("click", () => {
     if (st.initialized && !st.locked) chainScreen();
   });

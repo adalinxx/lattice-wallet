@@ -53,3 +53,29 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .toast { font-size: var(--fs-12); min-height: 1.2em; }
 .err { border: var(--rule); padding: var(--s-2) var(--s-3); font-size: var(--fs-12); }
 .tag { font-size: var(--fs-12); border: var(--rule); padding: 0 var(--s-2); text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Backup & transfer. QR codes are always black on white (scanners need the
+   contrast, whatever the theme). */
+body.page { width: auto; }
+body.page main { max-width: 560px; margin: 0 auto; }
+.qr svg, .qr-print svg { display: block; width: 100%; height: auto; background: #fff; color: #000; image-rendering: pixelated; }
+.qr { max-width: 320px; margin-left: auto; margin-right: auto; }
+.qr-frame { width: 100%; }
+.scan-video { width: 100%; border: var(--rule); }
+.check { display: flex; align-items: center; gap: var(--s-2); text-transform: none; letter-spacing: 0; }
+.check input { width: auto; }
+.sas { font-size: var(--fs-28); text-align: center; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; border: var(--rule); padding: var(--s-3); }
+.secret-overlay {
+  position: fixed; inset: 0; z-index: 10; overflow: auto;
+  background: var(--paper); padding: var(--s-4) var(--s-3);
+  display: flex; flex-direction: column; gap: var(--s-3);
+}
+.secret-overlay .qr { max-width: min(90vw, 70vh); width: 100%; }
+#print-area { display: none; }
+@media print {
+  body.printing > *:not(#print-area) { display: none !important; }
+  body.printing #print-area { display: block; }
+  .print-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .qr-print { break-inside: avoid; }
+  .print-page > .qr-print { max-width: 60%; }
+}

@@ -23,6 +23,21 @@ export function walletClient(send: Send) {
     setNodeCookie: (url: string, cookie: string | null) => call({ type: "setNodeCookie", url, cookie }),
     /** The Authorization header for a paired node; absent when unpaired. */
     nodeAuthorization: (url: string) => call<{ authorization?: string }>({ type: "nodeAuthorization", url }),
+    /** The vault re-encrypted with the (re-entered) password: CBOR hex for `ur:lattice-vault`. */
+    exportBackup: (password: string, includeNodeCookies = false) =>
+      call<{ backup: string }>({ type: "exportBackup", password, includeNodeCookies }),
+    /** The recovery phrase as a SeedQR, rendered to SVG inside the signer (no phrase crosses). */
+    exportSeedQR: (password: string, format: "standard" | "compact") =>
+      call<{ svg: string }>({ type: "exportSeedQR", password, format }),
+    /** Restore (no wallet yet), or merge into / replace the open wallet. */
+    importBackup: (backup: string, password: string, mode: "merge" | "replace") =>
+      call<WithState>({ type: "importBackup", backup, password, mode }),
+    /** Receiver: a one-time pairing offer (CBOR hex for `ur:lattice-pair`). */
+    transferOffer: () => call<{ offer: string; expires: number }>({ type: "transferOffer" }),
+    /** Sender: the backup sealed to a scanned offer (CBOR hex for `ur:lattice-transfer`) and the code to compare. */
+    transferSend: (offer: string, password: string) => call<{ envelope: string; sas: string }>({ type: "transferSend", offer, password }),
+    /** Receiver: open a scanned transfer (single use); yields the encrypted backup and the code to compare. */
+    transferOpen: (envelope: string) => call<{ backup: string; sas: string }>({ type: "transferOpen", envelope }),
     signTransfer: (args: { from: string; to: string; amount: string; fee: string; nonce: string; chainPath: string[] }) =>
       call<{ signedSubmit: SignedSubmit; summary: TransferSummary }>({ type: "signTransfer", ...args }),
   };
