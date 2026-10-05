@@ -10,9 +10,11 @@ import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
+import { decodeOrderRequest, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
+import { scanner } from "./scanner.ts";
 
 export interface Platform {
   /** The signer: the extension's background worker, or the desktop app's in-page signer. */
@@ -407,6 +409,7 @@ async function mainScreen() {
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
+        h("button", { class: "btn", onclick: orderFlow }, "Order"),
         h("button", { class: "btn", onclick: () => loadBalance() }, "Refresh"),
       ),
       h("div", { class: "row-actions" },
@@ -429,6 +432,137 @@ async function mainScreen() {
     } catch (e) { balanceV.textContent = describe(e); }
   }
   loadBalance();
+}
+
+// ---------------- cross-chain order handoff ----------------
+
+function orderFlow() {
+  const scan = scanner({
+    camera: platform.camera === true,
+    pasteHint: "paste the lattice://order request",
+    onText(text) {
+      try {
+        const order = decodeOrderRequest(text);
+        if (order.side === "buy_child") {
+          scan.status.textContent = "Buy requests need verified active-deposit discovery, which this node does not provide yet.";
+          return false;
+        }
+        if (order.childChain.join("/") !== settings.chain) {
+          scan.status.textContent = `Select ${order.childChain.join("/")} in the wallet before opening this request.`;
+          return false;
+        }
+        reviewSellOrder(order);
+        return true;
+      } catch (e) { scan.status.textContent = (e as Error).message; return false; }
+    },
+  });
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Open order"),
+    h("p", { class: "muted" }, "Scan the QR, load its image, or paste its text. The wallet validates the request and shows the transaction before signing."),
+    scan.node,
+    h("button", { class: "btn block", onclick: () => { scan.stop(); mainScreen(); } }, "Cancel"),
+  ));
+}
+
+function randomNonce(): bigint {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+async function reviewSellOrder(order: SellOrder) {
+  const acct = activeAccount()!;
+  const deposited = BigInt(order.amountDeposited);
+  const demanded = BigInt(order.amountDemanded);
+  const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
+  const toast = h("div", { class: "toast" }, "reading account…");
+  render(h("div", { class: "stack" }, h("h1", {}, "Review sell order"), toast,
+    h("button", { class: "btn block", onclick: orderFlow }, "Cancel"),
+  ));
+  let minRelayFee: bigint | undefined;
+  try {
+    const info = await client().chainInfo();
+    minRelayFee = info.minRelayFee;
+  } catch (e) { toast.textContent = describe(e); return; }
+  const depositNonce = randomNonce();
+  const feeNote = h("div", { class: "warn" });
+  const checkFee = () => {
+    const fee = parseFee(feeInput.value);
+    feeNote.textContent = fee === null ? "Enter a whole fee of 0 or more." : feeWarning(fee, minRelayFee) ?? "";
+  };
+  feeInput.addEventListener("input", checkFee);
+  checkFee();
+  const lockButton = h("button", { class: "block" }, "Lock funds & create order") as HTMLButtonElement;
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Review sell order"),
+    h("p", { class: "warn" }, "This locks child-chain funds. There is currently no timeout or cancel transaction."),
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "You lock"), h("span", { class: "v" }, fmt(deposited))),
+      h("div", { class: "row" }, h("span", { class: "k" }, "You ask"), h("span", { class: "v" }, `${fmt(demanded)} on ${order.parentChain.join("/")}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, order.childChain.join("/"))),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
+    ),
+    h("label", { class: "k" }, "Fee (paid to the miner)"), feeInput, feeNote, toast,
+    lockButton,
+    h("button", { class: "btn block", onclick: orderFlow }, "Cancel"),
+  ));
+  lockButton.addEventListener("click", async () => {
+    // Leave enough time for account lookup, signing, submission and relay.
+    if (Date.parse(order.expiresAt) <= Date.now() + 60_000) {
+      toast.textContent = "This order is expired or has less than one minute left. Create a fresh request.";
+      return;
+    }
+    const fee = parseFee(feeInput.value);
+    if (fee === null) { toast.textContent = "Enter a whole fee of 0 or more."; return; }
+    lockButton.disabled = true;
+    feeInput.disabled = true;
+    let nonce: bigint, balance: bigint;
+    try {
+      const account = await client().account(acct.address);
+      nonce = account.nonce; balance = account.balance;
+    } catch (e) {
+      toast.textContent = describe(e); lockButton.disabled = false; feeInput.disabled = false; return;
+    }
+    if (deposited + fee > balance) {
+      toast.textContent = `Insufficient balance (have ${fmt(balance)}, need ${fmt(deposited + fee)}).`;
+      lockButton.disabled = false; feeInput.disabled = false; return;
+    }
+    toast.textContent = "signing…";
+    const signed = await wallet.signDeposit({
+      from: acct.address, amountDeposited: order.amountDeposited, amountDemanded: order.amountDemanded,
+      depositNonce: depositNonce.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: [...order.childChain],
+    });
+    if (!signed.ok) { toast.textContent = signed.error; lockButton.disabled = false; feeInput.disabled = false; return; }
+    const cid = signed.signedSubmit.transactionCID;
+    const chain = settings.chain;
+    try {
+      // Persist the exact signed attempt before touching the network. A timeout
+      // can mean the node accepted it even though no response arrived.
+      await update((s) => recordSent(recordOpenDeposit(s, {
+        transactionCID: cid, demander: acct.address,
+        depositNonce: depositNonce.toString(), amountDeposited: order.amountDeposited,
+        amountDemanded: order.amountDemanded, fee: fee.toString(), transactionNonce: nonce.toString(),
+        childChain: [...order.childChain], parentChain: [...order.parentChain],
+        createdAt: Date.now(), expiresAt: order.expiresAt,
+      }), chain, {
+        cid, to: `sell for ${order.parentChain.join("/")}`,
+        amount: order.amountDeposited, at: Date.now(), from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
+      }));
+    } catch {
+      toast.textContent = "Could not save the deposit record; nothing was submitted.";
+      lockButton.disabled = false; feeInput.disabled = false; return;
+    }
+    toast.textContent = "submitting…";
+    try {
+      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
+      sentScreen(cid);
+    } catch {
+      // Never return to a control that re-signs with a newly read account
+      // nonce. Track this exact CID; resubmission must reuse its signed bytes.
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce });
+    }
+  });
 }
 
 function receiveScreen() {
@@ -595,13 +729,16 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
   }
 }
 
-function sentScreen(txCID: string) {
+function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint }) {
   const toast = h("div", { class: "toast" });
+  const status = h("p", { class: outcome ? "warn" : "muted" }, outcome
+    ? "Submission outcome unknown. Do not create this deposit again; checking this exact transaction…"
+    : "Admitted to the node's pool (pending). See Sent for its block once mined.");
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
-      h("p", { class: "muted" }, "Admitted to the node's pool (pending). See Sent for its block once mined."),
-      h("label", { class: "k" }, "Transaction (computed by this wallet; the node reported the same CID)"), h("div", { class: "addr mono" }, txCID),
+      status,
+      h("label", { class: "k" }, outcome ? "Transaction computed and saved by this wallet" : "Transaction (computed by this wallet; the node reported the same CID)"), h("div", { class: "addr mono" }, txCID),
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: async () => { await navigator.clipboard.writeText(txCID); toast.textContent = "copied"; setTimeout(() => (toast.textContent = ""), 1500); } }, "Copy"),
         h("button", { class: "btn", onclick: mainScreen }, "Done"),
@@ -609,6 +746,11 @@ function sentScreen(txCID: string) {
       toast,
     ),
   );
+  if (outcome) {
+    sentStatus(client(), txCID, { from: outcome.from, nonce: outcome.nonce })
+      .then((result) => { status.textContent = `Submission outcome: ${statusText(result)}. Do not create this deposit again.`; })
+      .catch((e) => { status.textContent = `${describe(e)} The signed deposit remains saved; do not create it again.`; });
+  }
 }
 
 /** What this wallet sent on this chain, with each transaction's status from the node. */

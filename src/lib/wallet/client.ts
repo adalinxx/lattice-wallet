@@ -43,6 +43,8 @@ export function walletClient(send: Send) {
     transferOpen: (envelope: string) => call<{ backup: string; sas: string }>({ type: "transferOpen", envelope }),
     signTransfer: (args: { from: string; to: string; amount: string; fee: string; nonce: string; chainPath: string[] }) =>
       call<{ signedSubmit: SignedSubmit; summary: TransferSummary }>({ type: "signTransfer", ...args }),
+    signDeposit: (args: { from: string; amountDeposited: string; amountDemanded: string; depositNonce: string; fee: string; nonce: string; chainPath: string[] }) =>
+      call<{ signedSubmit: SignedSubmit }>({ type: "signDeposit", ...args }),
   };
 }
 
