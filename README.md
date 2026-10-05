@@ -115,7 +115,12 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
 - **Send** with a per-send fee (per-chain default), nonce from the node, and a
   **clear-sign review** screen; built and signed locally, then submitted to
   the chosen node. Receive, sent-transaction status (block height), lookup,
-  multi-account (HD + import), chain selector, lock/unlock.
+  multi-account (HD + import, incl. `lattice key generate` key files), chain
+  selector, lock/unlock.
+- **Shared with the desktop app** — the UI (`src/popup/app.ts`, started with a
+  `Platform`) and the signer (`src/lib/wallet/signer.ts`, over a
+  `VaultStorage`) are host-agnostic; `popup.ts` and `service-worker.ts` bind
+  them to the extension. The desktop app binds them to its own node and files.
 
 Tests (`npm test`): conformance vectors through the SDK, frozen derivation
 path and SDK address cross-check, keystore round-trip/fail-closed, session

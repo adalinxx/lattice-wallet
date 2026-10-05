@@ -50,3 +50,26 @@ export function importPrivateKey(hex: string): Account {
   if (priv.length !== 32) throw new Error("private key must be 32 bytes");
   return accountFromPrivate(priv, -1);
 }
+
+/**
+ * The private key of a `lattice key generate` key file
+ * (`{ address, privateKey, publicKey }`), refused unless the key derives the
+ * file's own address and public key.
+ */
+export function keyFilePrivateKey(text: string): string {
+  let file: unknown;
+  try {
+    file = JSON.parse(text);
+  } catch {
+    throw new Error("not a key file (invalid JSON)");
+  }
+  const { address, privateKey, publicKey } = (file ?? {}) as Record<string, unknown>;
+  if (typeof address !== "string" || typeof privateKey !== "string" || typeof publicKey !== "string") {
+    throw new Error("not a key file (needs address, privateKey, publicKey)");
+  }
+  const account = importPrivateKey(privateKey);
+  if (account.address !== address || account.publicKey !== publicKey.toLowerCase()) {
+    throw new Error("key file does not match its own address");
+  }
+  return privateKey.trim().toLowerCase();
+}
