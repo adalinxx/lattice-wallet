@@ -12,8 +12,8 @@ export interface ChainInfo {
 }
 export interface AccountState {
   owner: string;
-  balance: number;
-  nonce: number;
+  balance: bigint;
+  nonce: bigint;
 }
 export interface ExplorerTransaction {
   txCID: string;
@@ -30,7 +30,7 @@ export interface ExplorerTransaction {
  * nonce: once the account nonce passes the transaction's, that nonce is spent
  * (by this transaction, or by a replacement at the same nonce).
  */
-export async function sentStatus(client: NodeClient, cid: string): Promise<"pending" | "nonce spent" | "not in pool" | "unknown to node"> {
+export async function sentStatus(client: NodeClient, cid: string): Promise<"pending" | "nonce spent" | "pending or dropped" | "unknown to node"> {
   let tx: ExplorerTransaction;
   try {
     tx = await client.transaction(cid);
@@ -40,8 +40,9 @@ export async function sentStatus(client: NodeClient, cid: string): Promise<"pend
   }
   if ((await client.mempool()).transactions.includes(cid)) return "pending";
   const signer = tx.signers[0];
-  if (signer && (await client.account(signer)).nonce > tx.nonce) return "nonce spent";
-  return "not in pool";
+  if (signer && (await client.account(signer)).nonce > BigInt(tx.nonce)) return "nonce spent";
+  // The mempool listing is bounded: absence from it is not proof of absence.
+  return "pending or dropped";
 }
 
 export interface ChainEndpoints {
@@ -66,6 +67,9 @@ export class NodeError extends Error {
     this.refusal = refusal;
   }
 }
+
+const REQUEST_TIMEOUT_MS = 8000;
+const MAX_RESPONSE_CHARS = 4 * 1024 * 1024;
 
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -97,18 +101,31 @@ export class NodeClient {
     return url.toString();
   }
 
-  private async request<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await this.fetchImpl(url, { ...init, headers: { Accept: "application/json", ...(init?.headers ?? {}) } });
+  private async text(url: string, init?: RequestInit): Promise<string> {
+    // Bounded: a node that stalls or streams forever cannot hang the wallet.
+    const res = await this.fetchImpl(url, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: { Accept: "application/json", ...(init?.headers ?? {}) },
+    });
     const text = await res.text();
+    if (text.length > MAX_RESPONSE_CHARS) throw new NodeError(res.status, "response too large");
     if (!res.ok) throw new NodeError(res.status, refusalOf(text));
-    return JSON.parse(text) as T;
+    return text;
+  }
+
+  private async request<T>(url: string, init?: RequestInit): Promise<T> {
+    return JSON.parse(await this.text(url, init)) as T;
   }
 
   info() {
     return this.request<ChainInfo>(this.url("/api/chain/info"));
   }
-  account(address: string) {
-    return this.request<AccountState>(this.url(`/api/state/account/${encodeURIComponent(address)}`));
+  /** Balance and nonce are UInt64: read as exact integers, never through a double. */
+  async account(address: string): Promise<AccountState> {
+    const text = await this.text(this.url(`/api/state/account/${encodeURIComponent(address)}`));
+    const exact = JSON.parse(text.replace(/"(balance|nonce)"\s*:\s*(\d+)/g, '"$1":"$2"'));
+    return { owner: exact.owner, balance: BigInt(exact.balance), nonce: BigInt(exact.nonce) };
   }
   transaction(cid: string) {
     return this.request<ExplorerTransaction>(this.url(`/api/transaction/${encodeURIComponent(cid)}`));

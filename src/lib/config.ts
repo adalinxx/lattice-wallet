@@ -32,6 +32,27 @@ export function normalizeNodeURL(text: string): string | null {
   return (url.origin + url.pathname).replace(/\/+$/, "");
 }
 
+/**
+ * A host a stranger may name without making the wallet dial the user's own
+ * network: no loopback, private, link-local, CGNAT or ULA literal, no
+ * localhost / .local / .internal name. Applies to DISCOVERED URLs only; a URL
+ * the user typed may be anything normalizeNodeURL accepts.
+ */
+export function isPublicHost(nodeURL: string): boolean {
+  const host = new URL(nodeURL).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return false;
+  const v4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return !(a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224);
+  }
+  if (host.includes(":")) {
+    return !(host === "::" || host === "::1" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith("::ffff:"));
+  }
+  return true;
+}
+
 /** The host-permission match pattern for a node URL (match patterns carry no port). */
 export function originPattern(nodeURL: string): string {
   const url = new URL(nodeURL);

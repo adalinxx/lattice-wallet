@@ -45,8 +45,8 @@ test("wallet against a local node: read, sign, submit (loopback and public), nam
   await mine(alice.address);
   const local = new NodeClient(rpc!, chainPath);
   const funded = await local.account(alice.address);
-  assert.ok(funded.balance > 0, "mined to the wallet");
-  const nonce = BigInt(funded.nonce);
+  assert.ok(funded.balance > 0n, "mined to the wallet");
+  const nonce = funded.nonce;
   assert.equal((await local.info()).acceptsSubmit, true, "the operator API accepts its own submits");
 
   // Public submit, when the operator turned it on; else the loopback route.
@@ -67,6 +67,6 @@ test("wallet against a local node: read, sign, submit (loopback and public), nam
   assert.equal(await sentStatus(local, answer.transactionCID), "pending");
   await mine(alice.address);
   assert.equal(await sentStatus(local, answer.transactionCID), "nonce spent");
-  assert.equal((await local.account(bob.address)).balance, 1000);
-  assert.equal((await local.account(alice.address)).nonce, Number(nonce) + 1);
+  assert.equal((await local.account(bob.address)).balance, 1000n);
+  assert.equal((await local.account(alice.address)).nonce, nonce + 1n);
 });

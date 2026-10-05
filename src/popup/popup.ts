@@ -164,14 +164,14 @@ function unlockScreen() {
 // ---------------- node endpoint (no default) ----------------
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
-async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El): Promise<boolean> {
+async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true): Promise<boolean> {
   const granted = await chrome.permissions.request({ origins: [originPattern(url)] }).catch(() => false);
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
   err.textContent = "checking…";
   try {
     const info = await new NodeClient(url, chainPath()).info();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
-    await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: info.acceptsSubmit === true, source } } }));
+    await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: declaredSubmit && info.acceptsSubmit === true, source } } }));
     return true;
   } catch (e) {
     err.textContent = "That node does not serve " + settings.chain + ": " + describe(e);
@@ -223,7 +223,7 @@ function endpointScreen() {
         found.append(h("div", { class: "row" },
           h("span", { class: "v mono" }, short(e.url)),
           h("span", { class: "tag" }, e.acceptsSubmit ? "submit" : "read-only"),
-          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err)) route(); } }, "Use"),
+          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.acceptsSubmit)) route(); } }, "Use"),
         ));
       }
       if (list.length) found.append(h("p", { class: "muted" }, "Operator-declared; each served the block its parent commits. Not independently verified."));
@@ -264,7 +264,7 @@ function chainScreen() {
 
 async function mainScreen() {
   const acct = activeAccount();
-  if (!acct) return; // shouldn't happen
+  if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
   const nodeV = endpoint()!;
   const toast = h("div", { class: "toast" });
@@ -306,7 +306,7 @@ async function mainScreen() {
     balanceV.textContent = "…";
     try {
       const { balance } = await client().account(acct!.address);
-      balanceV.textContent = fmt(balance);
+      balanceV.textContent = balance.toLocaleString();
     } catch (e) { balanceV.textContent = describe(e); }
   }
   loadBalance();
@@ -360,7 +360,7 @@ async function sendFlow() {
       h("label", { class: "k" }, "Amount"), amount,
       h("label", { class: "k" }, "Fee (paid to the miner)"), fee,
       err,
-      h("button", { class: "block", onclick: () => prepareReview() }, "Review"),
+      ...(submitOK ? [h("button", { class: "block", onclick: () => prepareReview() }, "Review")] : []),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
     ),
   );
@@ -377,7 +377,7 @@ async function sendFlow() {
     let nonce: bigint, balance: bigint;
     try {
       const a = await client().account(acct.address);
-      nonce = BigInt(a.nonce); balance = BigInt(a.balance);
+      nonce = a.nonce; balance = a.balance;
     } catch (e) { err.textContent = describe(e); return; }
     if (amt + f > balance) { err.textContent = `Insufficient balance (have ${fmt(balance.toString())}, need ${fmt((amt + f).toString())}).`; return; }
     reviewScreen(toAddr, amt, f, nonce);

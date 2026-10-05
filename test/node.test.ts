@@ -36,8 +36,12 @@ function scripted(routes: Route): { fetch: Fetch; calls: string[] } {
   return {
     calls,
     fetch: async (input, init) => {
+      const url = String(input);
       calls.push(`${init?.method ?? "GET"} ${input}`);
       const answer = routes(new URL(input), init) ?? { status: 404, body: { error: { message: "Not Found" } } };
+      if (url.endsWith("/api/state/account/bafybig?chainPath=Nexus")) {
+        return new Response('{"owner":"bafybig","balance":18446744073709551615,"nonce":9007199254740993}', { status: 200 });
+      }
       return new Response(JSON.stringify(answer.body), { status: answer.status });
     },
   };
@@ -49,19 +53,27 @@ test("reads name their chain and refusals keep the node's name", async () => {
     if (url.pathname === "/transactions" && init?.method === "POST") return { status: 400, body: { error: { message: "feeTooLow" } } };
   });
   const client = new NodeClient("http://127.0.0.1:8080", ["Nexus", "testnet"], fetch);
-  assert.deepEqual(await client.account("bafyx"), { owner: "bafyx", balance: 7, nonce: 2 });
+  assert.deepEqual(await client.account("bafyx"), { owner: "bafyx", balance: 7n, nonce: 2n });
   assert.equal(calls[0], "GET http://127.0.0.1:8080/api/state/account/bafyx?chainPath=Nexus%2Ftestnet");
   await assert.rejects(client.submit("{}"), (e: unknown) => e instanceof NodeError && e.status === 400 && e.refusal === "feeTooLow");
   assert.equal(calls[1], "POST http://127.0.0.1:8080/transactions");
 });
 
+test("UInt64 balance and nonce are read exactly", async () => {
+  const { fetch } = scripted(() => undefined);
+  const account = await new NodeClient("http://127.0.0.1:8080", ["Nexus"], fetch).account("bafybig");
+  assert.equal(account.balance, 18446744073709551615n);
+  assert.equal(account.nonce, 9007199254740993n);
+});
+
 test("discovery walks Nexus -> A -> B, accepting only endpoints that serve the committed block", async () => {
   const committedA = "bafyA", committedB = "bafyB";
-  const { fetch } = scripted((url) => {
+  const { fetch, calls } = scripted((url) => {
     const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
     if (host === "start.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
       return { status: 200, body: { chainPath: ["Nexus", "A"], committedBlock: committedA,
-        endpoints: ["https://liar.example", "https://a.example"], submitEndpoints: ["https://a.example"] } };
+        endpoints: ["https://liar.example", "https://a.example", "http://127.0.0.1:8080", "https://10.0.0.5", "https://169.254.169.254"],
+        submitEndpoints: ["https://a.example/"] } };
     }
     if (host === "a.example" && path === "/api/block/bafyA" && chain === "Nexus/A") return { status: 200, body: { hash: committedA, height: 3 } };
     if (host === "liar.example" && path === "/api/block/bafyA") return { status: 200, body: { hash: "bafyOther", height: 3 } };
@@ -73,7 +85,8 @@ test("discovery walks Nexus -> A -> B, accepting only endpoints that serve the c
     if (host === "b.example" && path === "/api/chain/info") return { status: 200, body: { chain: ["Nexus", "A", "B"], acceptsSubmit: true } };
   });
   const a = await discover("https://start.example", ["Nexus", "A"], fetch);
-  assert.deepEqual(a.map((e) => e.url), ["https://a.example"], "the liar does not serve the committed block");
+  assert.deepEqual(a.map((e) => e.url), ["https://a.example"], "the liar does not serve the committed block; private hosts are never dialed");
+  assert.ok(!calls.some((c) => /127\.0\.0\.1|10\.0\.0\.5|169\.254/.test(c)), calls.join("\n"));
   assert.equal(a[0].acceptsSubmit, false, "declared but its own /api/chain/info does not confirm");
   const b = await discover("https://start.example", ["Nexus", "A", "B"], fetch);
   assert.deepEqual(b.map((e) => [e.url, e.acceptsSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
