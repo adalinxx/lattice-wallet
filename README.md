@@ -120,7 +120,8 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
 - **Shared with the desktop app** — the UI (`src/popup/app.ts`, started with a
   `Platform`) and the signer (`src/lib/wallet/signer.ts`, over a
   `VaultStorage`) are host-agnostic; `popup.ts` and `service-worker.ts` bind
-  them to the extension. The desktop app binds them to its own node and files.
+  them to the extension. The desktop app binds them to its own node, a
+  loopback-only fetch, and its own files.
 
 Tests (`npm test`): conformance vectors through the SDK, frozen derivation
 path and SDK address cross-check, keystore round-trip/fail-closed, session

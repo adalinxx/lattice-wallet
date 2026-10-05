@@ -4,6 +4,7 @@
 // Lattice design system. The host supplies a Platform: signer, settings
 // store, network permission, and optionally its own node.
 
+import type { Fetch } from "@adalinxx/lattice-client";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
@@ -19,11 +20,13 @@ export interface Platform {
   /** Ask for network reach to these origin patterns (inside the user's click). */
   requestOrigins(origins: string[]): Promise<boolean>;
   /**
-   * The host's own node (loopback operator URL), when it runs one: every
-   * chain then reads and submits through it, and no endpoint is chosen.
-   * Undefined until the node's address is known.
+   * The host's own node (its loopback operator URL), when it runs one: every
+   * chain then reads and submits through it, and no endpoint is chosen. A
+   * stopped node reads as unreachable, like any other.
    */
-  ownNode?: () => string | undefined;
+  ownNode?: string;
+  /** The fetch every node call uses (default: the browser's). */
+  fetch?: Fetch;
   /** Extra main-screen actions (the desktop's node panel); `back` re-renders the wallet. */
   actions?: { label: string; run(back: () => void): void }[];
   /** Offer a file picker for CLI key files (an extension popup closes on one). */
@@ -54,13 +57,10 @@ let platform: Platform;
 let wallet: WalletClient;
 let store: KeyValueStore;
 const chainPath = () => parseChainPath(settings.chain) ?? [ROOT_CHAIN];
-const endpoint = (): ChosenEndpoint | undefined => {
-  if (!platform.ownNode) return settings.endpoints[settings.chain];
-  const url = platform.ownNode();
-  // The operator route of the host's own node accepts its owner's submits.
-  return url === undefined ? undefined : { url, acceptsSubmit: true, source: "user" };
-};
-const client = () => reader(endpoint()!.url, chainPath());
+// The operator route of the host's own node accepts its owner's submits.
+const endpoint = (): ChosenEndpoint | undefined =>
+  platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[settings.chain];
+const client = () => reader(endpoint()!.url, chainPath(), platform.fetch);
 async function update(change: (s: Settings) => Settings) {
   settings = change(settings);
   await saveSettings(store, settings);
@@ -85,10 +85,7 @@ export async function refresh() {
 function route() {
   if (!st.initialized) return welcome();
   if (st.locked) return unlockScreen();
-  if (!endpoint()) {
-    if (platform.ownNode) return ownNodeMissing();
-    return endpointScreen();
-  }
+  if (!endpoint()) return endpointScreen();
   return mainScreen();
 }
 
@@ -187,17 +184,6 @@ function unlockScreen() {
 
 // ---------------- node endpoint (no default) ----------------
 
-function ownNodeMissing() {
-  render(
-    h("div", { class: "stack" },
-      h("h1", {}, "No node"),
-      h("p", { class: "muted" }, "Start your node to read balances and send."),
-      ...actionButtons(),
-      h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock"),
-    ),
-  );
-}
-
 function actionButtons(): El[] {
   return (platform.actions ?? []).map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
 }
@@ -208,7 +194,7 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
   err.textContent = "checking…";
   try {
-    const info = await reader(url, chainPath()).chainInfo();
+    const info = await reader(url, chainPath(), platform.fetch).chainInfo();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
     await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: declaredSubmit && info.acceptsSubmit === true, source } } }));
     return true;
@@ -256,7 +242,7 @@ function endpointScreen() {
     err.textContent = "discovering…";
     found.replaceChildren();
     try {
-      const list = await discover(n, chainPath());
+      const list = await discover(n, chainPath(), platform.fetch);
       err.textContent = list.length ? "" : "No endpoint served the block its parent commits.";
       for (const e of list) {
         found.append(h("div", { class: "row" },
@@ -399,7 +385,14 @@ function keyFilePicker(target: HTMLTextAreaElement): El[] {
   const picker = h("input", { type: "file", accept: ".json,application/json" }) as HTMLInputElement;
   picker.addEventListener("change", async () => {
     const file = picker.files?.[0];
-    if (file && file.size <= 4096) target.value = await file.text();
+    if (!file) return;
+    try {
+      if (file.size > 4096) throw new Error("too large");
+      target.value = await file.text();
+    } catch {
+      target.value = "";
+      target.placeholder = "That file is not a key file (unreadable or over 4 KB).";
+    }
   });
   return [h("label", { class: "k" }, "or load a key file"), picker];
 }
@@ -496,7 +489,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
       }));
       try {
-        await submitChecked(submitter(endpoint()!.url), signed.signedSubmit);
+        await submitChecked(submitter(endpoint()!.url, platform.fetch), signed.signedSubmit);
       } catch (e) {
         // The node may hold it under the CID it reported: keep ours on record.
         if (e instanceof CIDMismatchError) await record();
