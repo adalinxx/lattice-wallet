@@ -9,6 +9,12 @@ export interface WalletData {
   hd: { index: number; label: string }[]; // accounts derived from the mnemonic
   imported: { priv: string; label: string }[]; // raw-key accounts (hex)
   active: string | null; // active account address
+  /**
+   * Paired nodes: node base URL -> the cookie its operator (loopback) port
+   * requires (the content of the node's `.cookie` file). Encrypted with the
+   * keys; absent in vaults from older versions.
+   */
+  nodeCookies?: Record<string, string>;
 }
 
 export interface AccountView {
@@ -52,6 +58,8 @@ export type Request =
   | { type: "importKey"; privHex: string; label?: string }
   | { type: "setActive"; address: string }
   | { type: "reset" }
+  | { type: "setNodeCookie"; url: string; cookie: string | null }
+  | { type: "nodeAuthorization"; url: string }
   | {
       type: "signTransfer";
       from: string;

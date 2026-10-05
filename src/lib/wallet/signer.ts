@@ -8,6 +8,7 @@ import { encryptVault, decryptVault, type Vault } from "../crypto/keystore.ts";
 import { deriveAccounts, toView, nextHdLabel, signTransfer, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
+import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { Request, Response, WalletData, WalletState } from "./types.ts";
 
 /** Where the one encrypted vault is kept (the format is the same on every host). */
@@ -133,6 +134,30 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         session.data.active = msg.address;
         await persistData();
         return { ok: true, state: await stateView() } as Response;
+      }
+
+      case "setNodeCookie": {
+        if (!session) return { ok: false, error: "Locked" };
+        const cookies = { ...(session.data.nodeCookies ?? {}) };
+        if (msg.cookie === null) delete cookies[msg.url];
+        else {
+          const cookie = msg.cookie.trim();
+          try {
+            nodeCookieAuthorization(cookie);
+          } catch (e) {
+            return { ok: false, error: (e as Error).message };
+          }
+          cookies[msg.url] = cookie;
+        }
+        session.data.nodeCookies = cookies;
+        await persistData();
+        return { ok: true } as Response;
+      }
+
+      case "nodeAuthorization": {
+        if (!session) return { ok: false, error: "Locked" };
+        const cookie = session.data.nodeCookies?.[msg.url];
+        return { ok: true, ...(cookie === undefined ? {} : { authorization: nodeCookieAuthorization(cookie) }) } as Response;
       }
 
       case "signTransfer": {
