@@ -18,12 +18,13 @@ import type { SignedSubmit } from "./types.ts";
 // stores it as a field): always hand the SDK this wrapper.
 export const browserFetch: Fetch = (input, init) => fetch(input, init);
 
-export function reader(url: string, chainPath: string[], fetchImpl: Fetch = browserFetch): NodeClient {
-  return new NodeClient(url, chainPath, { fetch: fetchImpl });
+/** `authorization`: a paired node's cookie header (its operator port requires it). */
+export function reader(url: string, chainPath: string[], fetchImpl: Fetch = browserFetch, authorization?: string): NodeClient {
+  return new NodeClient(url, chainPath, { fetch: fetchImpl, ...(authorization === undefined ? {} : { authorization }) });
 }
 
-export function submitter(url: string, fetchImpl: Fetch = browserFetch): HTTPTransactionSubmitter {
-  return new HTTPTransactionSubmitter(`${url}/transactions`, { fetch: fetchImpl });
+export function submitter(url: string, fetchImpl: Fetch = browserFetch, authorization?: string): HTTPTransactionSubmitter {
+  return new HTTPTransactionSubmitter(`${url}/transactions`, { fetch: fetchImpl, ...(authorization === undefined ? {} : { authorization }) });
 }
 
 /** Verified-declared endpoints of `chainPath`, walked down from a Nexus node the user chose. */
@@ -70,6 +71,7 @@ export async function submitChecked(relay: TransactionSubmitter, signed: SignedS
 /** A refusal or failure, in words, keeping the node's own name for it. */
 export function describe(e: unknown): string {
   if (e instanceof CIDMismatchError) return "unexpected answer from node: " + e.message;
+  if ((e instanceof SubmissionError || e instanceof NodeError) && (e.status === 401 || e.status === 403)) return authRefusal(e.status);
   if (e instanceof SubmissionError) {
     if (e.reason) return `refused (${e.reason}): ${REFUSALS[e.reason]}`;
     if (e.status === 404 && !e.refusal) return "refused: this endpoint does not accept transactions";
@@ -83,6 +85,13 @@ export function describe(e: unknown): string {
   }
   if (isWireMismatch(e)) return "unexpected answer from node: " + e.message;
   return "node unreachable";
+}
+
+/** A local node's operator port refused: unpaired, a stale cookie, or this origin not allowed. */
+function authRefusal(status: number): string {
+  return status === 401
+    ? "refused: this node needs its cookie (pair it on the Node screen; the cookie changes when the node restarts)"
+    : "refused: this node does not allow this wallet's origin (add it to the node's rpcAllowedOrigins)";
 }
 
 /** The SDK's wire parsers throw TypeError("<field> must be …"); fetch's network failures are TypeErrors too. */

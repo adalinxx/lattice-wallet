@@ -21,10 +21,18 @@ import { SubmissionError } from "@adalinxx/lattice-relay";
 import { importPrivateKey, type Account } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
 import { reader, submitter, submitChecked, sentStatus, statusText, feeWarning, describe } from "../src/lib/wallet/node.ts";
+import { createSigner } from "../src/lib/wallet/signer.ts";
+import { walletClient } from "../src/lib/wallet/client.ts";
+import type { Vault } from "../src/lib/crypto/keystore.ts";
+import type { Fetch } from "@adalinxx/lattice-client";
 
 const bin = process.env.LATTICE_NODE_BIN;
 const run = promisify(execFile);
 const chainPath = ["Nexus"];
+// What the extension's requests carry: its origin, which the node must list.
+const EXTENSION_ORIGIN = "chrome-extension://nexuswalletetoetestorigin";
+const asExtension: Fetch = (input, init) =>
+  fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), Origin: EXTENSION_ORIGIN } });
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -51,7 +59,17 @@ async function until<T>(probe: () => Promise<T | undefined>, what: string): Prom
   throw new Error(`timed out waiting for ${what}`);
 }
 
-interface LocalNode { operator: string; publicListener?: string; stop(): Promise<void>; log(): string }
+interface LocalNode {
+  operator: string;
+  publicListener?: string;
+  /** The operator port's cookie file and its content, as the node wrote it at start. */
+  cookiePath: string;
+  cookie(): string;
+  /** The harness's (the operator's) own header for the operator port. */
+  authorization(): string;
+  stop(): Promise<void>;
+  log(): string;
+}
 
 async function startNode(options: { publicSubmit: boolean; minRelayFee?: bigint }): Promise<LocalNode> {
   const directory = mkdtempSync(join(tmpdir(), "nexus-wallet-e2e-"));
@@ -65,6 +83,7 @@ async function startNode(options: { publicSubmit: boolean; minRelayFee?: bigint 
     "--no-default-peers",
     ...["--listen-port", String(overlay)],
     ...["--rpc-port", String(rpc)],
+    ...["--rpc-allowed-origin", EXTENSION_ORIGIN],
     ...(options.publicSubmit
       ? ["--public-read-port", String(read), "--public-submit", "--public-read-rate", "0", "--public-read-expensive-rate", "0",
         "--public-read-max-rate", "0", "--public-submit-rate", "0"]
@@ -73,9 +92,14 @@ async function startNode(options: { publicSubmit: boolean; minRelayFee?: bigint 
   ], { stdio: ["ignore", openSync(logPath, "a"), openSync(logPath, "a")] });
   await until(async () => (await fetch(`${operator}/health`)).ok || undefined, "node health");
   if (publicListener) await until(async () => (await fetch(`${publicListener}/health`)).ok || undefined, "public listener");
+  const cookiePath = join(directory, "data", ".cookie");
+  const cookie = () => readFileSync(cookiePath, "utf8");
   return {
+    cookiePath,
     operator,
     ...(publicListener ? { publicListener } : {}),
+    cookie,
+    authorization: () => "Basic " + btoa(cookie().trim()),
     log: () => readFileSync(logPath, "utf8"),
     async stop() {
       if (node.exitCode === null) {
@@ -90,11 +114,11 @@ async function startNode(options: { publicSubmit: boolean; minRelayFee?: bigint 
 
 /** Mine (as the operator) until the tip is `blocks` higher, crediting `to`. */
 async function mine(node: LocalNode, to: Account, blocks: number): Promise<void> {
-  const reads = reader(node.operator, chainPath, fetch);
+  const reads = reader(node.operator, chainPath, fetch, node.authorization());
   const target = ((await reads.chainInfo()).height ?? 0n) + BigInt(blocks);
   await until(async () => {
     await run(join(bin!, "lattice-mining-coordinator"), [
-      "--node", node.operator, "--workers", "2", "--recipient", `Nexus=${to.address}`, "--once", "--no-stale-probe",
+      "--node", node.operator, "--rpc-cookie-file", node.cookiePath, "--workers", "2", "--recipient", `Nexus=${to.address}`, "--once", "--no-stale-probe",
     ]);
     return ((await reads.chainInfo()).height ?? 0n) >= target || undefined;
   }, `height ${target}`);
@@ -113,7 +137,23 @@ const bob = importPrivateKey("b0".repeat(32));
 test("own node (loopback, no relay floor): fund by mining, send with a custom fee, see its block", { skip: !bin, timeout: 300_000 }, async () => {
   const node = await startNode({ publicSubmit: false });
   try {
-    const reads = reader(node.operator, chainPath, fetch);
+    // The extension's origin is listed, yet unpaired it is refused; a foreign
+    // origin is refused even with the cookie.
+    await assert.rejects(reader(node.operator, chainPath, asExtension).chainInfo(), (e: unknown) => /needs its cookie/.test(describe(e)));
+    const foreign: Fetch = (input, init) =>
+      fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), Origin: "https://evil.example" } });
+    await assert.rejects(reader(node.operator, chainPath, foreign, node.authorization()).chainInfo(), (e: unknown) => /rpcAllowedOrigins/.test(describe(e)));
+
+    // Pair: the user pastes the node's cookie; the signer keeps it in the vault.
+    let vault: Vault | null = null;
+    const wallet = walletClient(createSigner({ load: async () => vault, save: async (v) => { vault = v; }, remove: async () => { vault = null; } }).handle);
+    await wallet.create("pw", { privHex: "c5".repeat(32) });
+    assert.ok((await wallet.setNodeCookie(node.operator, node.cookie())).ok);
+    const paired = await wallet.nodeAuthorization(node.operator);
+    assert.ok(paired.ok && paired.authorization);
+    const authorization = paired.authorization;
+
+    const reads = reader(node.operator, chainPath, asExtension, authorization);
     const info = await reads.chainInfo();
     assert.equal(info.acceptsSubmit, true, "the operator API accepts its owner's submits");
     assert.equal(info.minRelayFee ?? 0n, 0n);
@@ -125,7 +165,7 @@ test("own node (loopback, no relay floor): fund by mining, send with a custom fe
     assert.equal(feeWarning(fee, info.minRelayFee), undefined);
     const signed = signTransfer(alice, { to: bob.address, amount: 1_000n, fee, nonce: funded.nonce, chainPath });
     // The node must report exactly the CID the wallet computed.
-    const sent = { transactionCID: await submitChecked(submitter(node.operator, fetch), signed) };
+    const sent = { transactionCID: await submitChecked(submitter(node.operator, asExtension, authorization), signed) };
     assert.deepEqual(await sentStatus(reads, sent.transactionCID), { kind: "pending" });
     const before = (await reads.chainInfo()).height!;
     await mine(node, alice, 1);
@@ -149,7 +189,7 @@ test("own node (loopback, no relay floor): fund by mining, send with a custom fe
 test("public submit with --min-relay-fee 1: below-floor fee warned and refused, custom fee included", { skip: !bin, timeout: 300_000 }, async () => {
   const node = await startNode({ publicSubmit: true, minRelayFee: 1n });
   try {
-    const operatorReads = reader(node.operator, chainPath, fetch);
+    const operatorReads = reader(node.operator, chainPath, fetch, node.authorization());
     const reads = reader(node.publicListener!, chainPath, fetch);
     const info = await reads.chainInfo();
     assert.equal(info.acceptsSubmit, true, "the operator declared public submit");

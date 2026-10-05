@@ -11,7 +11,7 @@ locally.
 The wallet ships with **no node URL**. On first use it asks for one per chain:
 
 - **your own node** — its loopback API (`http://127.0.0.1:<rpc-port>`)
-  accepts your submits; or
+  accepts your submits once the wallet is **paired** with it (below); or
 - an endpoint **discovered** through a Nexus node you choose, by the SDK's
   `EndpointResolver`: it asks `GET /api/chain/endpoints?chainPath=P/D` one
   level at a time (Nexus → A → B …), never dials a private host, and accepts a
@@ -20,6 +20,22 @@ The wallet ships with **no node URL**. On first use it asks for one per chain:
   Whether one accepts transactions is its operator's choice
   (`--public-submit`): the wallet submits there only if the host is declared
   for submit **and** its own `GET /api/chain/info` says `acceptsSubmit`.
+
+### Pairing with your own node
+
+A node's loopback operator port refuses browser origins it does not list and
+every request without its cookie (bitcoind-style). On the Node screen the
+wallet shows the exact line to add to `lattice.json` in the node's root, with
+this extension's id:
+
+```json
+"rpcAllowedOrigins": ["chrome-extension://<extension id>"]
+```
+
+Restart the node (`lattice down`, `lattice up`), then paste the content of
+`<root>/chains/Nexus/.cookie`. The cookie is kept inside the encrypted vault,
+beside the keys, and sent only to that node URL. The node writes a new cookie
+at every start: paste it again after a restart (a refused read says so).
 
 The choice is saved per chain. Chains are selected by path (`Nexus`,
 `Nexus/testnet`, …) from the header.

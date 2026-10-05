@@ -82,3 +82,26 @@ test("signing goes through the signer and returns the locally computed CID", asy
     from: created.state.active!, to: "x", amount: "1", fee: "1", nonce: "0", chainPath: ["Nexus"],
   }), { ok: false, error: "Locked" });
 });
+
+test("pairing keeps a node's cookie encrypted in the vault and yields its Authorization", async () => {
+  const vaults = memory();
+  const signer = createSigner(vaults);
+  const wallet = walletClient(signer.handle);
+  await wallet.create("pw", { mnemonic: MNEMONIC });
+  const url = "http://127.0.0.1:8080";
+  assert.deepEqual(await wallet.nodeAuthorization(url), { ok: true }, "unpaired: no header");
+  assert.equal((await wallet.setNodeCookie(url, "has space")).ok, false);
+  assert.ok((await wallet.setNodeCookie(url, "__cookie__:abc123\n")).ok);
+  const expected = "Basic " + btoa("__cookie__:abc123");
+  assert.deepEqual(await wallet.nodeAuthorization(url), { ok: true, authorization: expected });
+  assert.deepEqual(await wallet.nodeAuthorization("http://127.0.0.1:9090"), { ok: true }, "per node");
+  assert.equal(JSON.stringify(vaults.vault).includes("abc123"), false, "never stored in the clear");
+  assert.deepEqual((await decryptVault<WalletData>("pw", vaults.vault!)).nodeCookies, { [url]: "__cookie__:abc123" });
+
+  signer.lock();
+  assert.equal((await wallet.nodeAuthorization(url)).ok, false, "locked: no cookie");
+  await wallet.unlock("pw");
+  assert.deepEqual(await wallet.nodeAuthorization(url), { ok: true, authorization: expected }, "survives a lock");
+  assert.ok((await wallet.setNodeCookie(url, null)).ok);
+  assert.deepEqual(await wallet.nodeAuthorization(url), { ok: true }, "unpaired");
+});

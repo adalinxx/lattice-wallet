@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SubmissionError } from "@adalinxx/lattice-relay";
+import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
@@ -91,6 +92,10 @@ test("submission posts the signer's payload to /transactions; refusals are typed
   assert.match(describe(new SubmissionError(400, "feeTooLow")), /higher fee/);
   assert.match(describe(new SubmissionError(404)), /does not accept transactions/);
   assert.equal(describe(new SubmissionError(500, "something new")), "refused: something new");
+  // A local node's operator port: unpaired or stale cookie, or this origin not listed.
+  assert.match(describe(new SubmissionError(401)), /needs its cookie/);
+  assert.match(describe(new NodeError(401)), /needs its cookie/);
+  assert.match(describe(new NodeError(403)), /rpcAllowedOrigins/);
 });
 
 const projection = (extra: Record<string, unknown> = {}) => ({

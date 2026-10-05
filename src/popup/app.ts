@@ -31,6 +31,19 @@ export interface Platform {
   actions?: { label: string; run(back: () => void): void }[];
   /** Offer a file picker for CLI key files (an extension popup closes on one). */
   keyFilePicker?: boolean;
+  /**
+   * This UI's browser origin (the extension's `chrome-extension://<id>`), when
+   * it can pair with a local node: the node must list it in rpcAllowedOrigins
+   * and the user pastes the node's cookie.
+   */
+  pairOrigin?: string;
+  /**
+   * The host's chain list, when it has one of its own (the desktop: the
+   * chains its node hosts). The wallet then lists exactly these, and adding
+   * a chain adds it there (the host may restart its node), instead of
+   * keeping a list of its own.
+   */
+  chains?: { list(): Promise<string[]>; add(chain: string): Promise<void> };
 }
 
 type El = HTMLElement;
@@ -60,7 +73,14 @@ const chainPath = () => parseChainPath(settings.chain) ?? [ROOT_CHAIN];
 // The operator route of the host's own node accepts its owner's submits.
 const endpoint = (): ChosenEndpoint | undefined =>
   platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[settings.chain];
-const client = () => reader(endpoint()!.url, chainPath(), platform.fetch);
+// The chosen node's cookie header when the user paired it (its operator port requires one).
+let nodeAuth: string | undefined;
+const client = () => reader(endpoint()!.url, chainPath(), platform.fetch, nodeAuth);
+async function authorizationFor(url: string): Promise<string | undefined> {
+  if (platform.ownNode) return undefined; // the host attaches its own node's cookie
+  const r = await wallet.nodeAuthorization(url);
+  return r.ok ? r.authorization : undefined;
+}
 async function update(change: (s: Settings) => Settings) {
   settings = change(settings);
   await saveSettings(store, settings);
@@ -189,12 +209,16 @@ function actionButtons(): El[] {
 }
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
-async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true): Promise<boolean> {
+async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string): Promise<boolean> {
   const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
+  if (cookie) {
+    const paired = await wallet.setNodeCookie(url, cookie);
+    if (!paired.ok) { err.textContent = "Cookie: " + paired.error; return false; }
+  }
   err.textContent = "checking…";
   try {
-    const info = await reader(url, chainPath(), platform.fetch).chainInfo();
+    const info = await reader(url, chainPath(), platform.fetch, await authorizationFor(url)).chainInfo();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
     await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: declaredSubmit && info.acceptsSubmit === true, source } } }));
     return true;
@@ -204,9 +228,25 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
   }
 }
 
+/**
+ * Pairing with the user's own node: its loopback operator port refuses browser
+ * origins it does not list and every request without its cookie
+ * (bitcoind-style, rewritten at every node start).
+ */
+function pairingSteps(origin: string, cookie: HTMLTextAreaElement): El[] {
+  const line = `"rpcAllowedOrigins": [${JSON.stringify(origin)}]`;
+  return [
+    h("p", { class: "muted" }, "Your own node on this computer: add this line to lattice.json in the node's root, then restart it (lattice down, lattice up):"),
+    h("div", { class: "addr mono" }, line),
+    h("p", { class: "muted" }, "Then paste its cookie, the content of <root>/chains/Nexus/.cookie. The node writes a new cookie each time it starts; paste it again after a restart. It is kept encrypted with your keys."),
+    cookie,
+  ];
+}
+
 function endpointScreen() {
   const current = endpoint();
   const url = h("input", { type: "text", placeholder: "your node, e.g. http://127.0.0.1:8080", spellcheck: "false", value: current?.url ?? "" }) as HTMLInputElement;
+  const cookie = h("textarea", { rows: "2", placeholder: "your node's cookie (__cookie__:…), for a node on this computer", spellcheck: "false", autocomplete: "off" }) as HTMLTextAreaElement;
   const start = h("input", { type: "text", placeholder: "a Nexus node you trust to start from", spellcheck: "false" }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
   const found = h("div", { class: "kv" });
@@ -216,10 +256,11 @@ function endpointScreen() {
       h("h1", {}, "Node for " + settings.chain),
       h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
       url,
+      ...(platform.pairOrigin ? pairingSteps(platform.pairOrigin, cookie) : []),
       h("button", { class: "block", onclick: async () => {
         const n = normalizeNodeURL(url.value);
         if (!n) { err.textContent = "Enter an https:// URL (http:// only for 127.0.0.1/localhost)."; return; }
-        if (await chooseEndpoint(n, "user", err)) route();
+        if (await chooseEndpoint(n, "user", err, true, cookie.value.trim() || undefined)) route();
       } }, "Use this node"),
       ...(isChild ? [
         h("p", { class: "muted" }, "Or discover endpoints for " + settings.chain + " through a Nexus node you choose:"),
@@ -258,14 +299,18 @@ function endpointScreen() {
   }
 }
 
-function chainScreen() {
+async function chainScreen() {
   const add = h("input", { type: "text", placeholder: "chain path, e.g. Nexus/testnet", spellcheck: "false" }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
   const pick = async (chain: string) => { await update((s) => ({ ...s, chain })); route(); };
+  let chains = settings.chains;
+  if (platform.chains) {
+    try { chains = await platform.chains.list(); } catch (e) { err.textContent = (e as Error).message; }
+  }
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Chain"),
-      h("div", { class: "kv" }, ...settings.chains.map((c) => h("div", { class: "row" },
+      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "row" },
         h("span", { class: "v mono" }, c),
         h("span", { class: "k" }, platform.ownNode ? "own node" : settings.endpoints[c] ? short(settings.endpoints[c].url) : "no node"),
         h("button", { class: "btn", onclick: () => pick(c) }, c === settings.chain ? "Selected" : "Select"),
@@ -275,7 +320,12 @@ function chainScreen() {
         const path = parseChainPath(add.value);
         if (!path) { err.textContent = "A chain path starts with Nexus, e.g. Nexus/testnet."; return; }
         const key = path.join("/");
-        await update((s) => ({ ...s, chains: s.chains.includes(key) ? s.chains : [...s.chains, key] }));
+        if (platform.chains) {
+          err.textContent = "adding " + key + " to your node…";
+          try { await platform.chains.add(key); } catch (e) { err.textContent = (e as Error).message; return; }
+        } else {
+          await update((s) => ({ ...s, chains: s.chains.includes(key) ? s.chains : [...s.chains, key] }));
+        }
         await pick(key);
       } }, "Add chain"),
       err,
@@ -292,6 +342,7 @@ async function mainScreen() {
   if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
   const nodeV = endpoint()!;
+  nodeAuth = await authorizationFor(nodeV.url);
   const toast = h("div", { class: "toast" });
 
   const accountPicker = h("select", { class: "picker", onchange: async (e: Event) => {
@@ -489,7 +540,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
       }));
       try {
-        await submitChecked(submitter(endpoint()!.url, platform.fetch), signed.signedSubmit);
+        await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
       } catch (e) {
         // The node may hold it under the CID it reported: keep ours on record.
         if (e instanceof CIDMismatchError) await record();

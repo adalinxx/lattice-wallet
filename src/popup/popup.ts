@@ -9,4 +9,6 @@ startWallet({
   wallet: walletClient((msg) => chrome.runtime.sendMessage(msg)),
   store: chrome.storage.local,
   requestOrigins: (origins) => chrome.permissions.request({ origins }),
+  // The node sees this extension's requests from this origin.
+  pairOrigin: location.origin,
 });

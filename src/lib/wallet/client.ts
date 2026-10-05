@@ -19,6 +19,10 @@ export function walletClient(send: Send) {
     addAccount: (label?: string) => call<WithState>({ type: "addAccount", label }),
     importKey: (privHex: string, label?: string) => call<WithState>({ type: "importKey", privHex, label }),
     setActive: (address: string) => call<WithState>({ type: "setActive", address }),
+    /** Pair (or, with null, unpair) a node: keep its operator cookie in the vault. */
+    setNodeCookie: (url: string, cookie: string | null) => call({ type: "setNodeCookie", url, cookie }),
+    /** The Authorization header for a paired node; absent when unpaired. */
+    nodeAuthorization: (url: string) => call<{ authorization?: string }>({ type: "nodeAuthorization", url }),
     signTransfer: (args: { from: string; to: string; amount: string; fee: string; nonce: string; chainPath: string[] }) =>
       call<{ signedSubmit: SignedSubmit; summary: TransferSummary }>({ type: "signTransfer", ...args }),
   };
