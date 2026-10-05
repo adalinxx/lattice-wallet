@@ -15,10 +15,14 @@ const KDF_ARGON2ID = 1;
 const KDF_PBKDF2 = 2;
 // A backup names its own KDF cost; refuse costs no wallet of ours writes, so a
 // hostile backup cannot pin the signer (Argon2id memory is in KiB).
-const MAX_ARGON = { m: 262_144, t: 10, p: 4 };
-const MAX_PBKDF2 = 10_000_000;
+const MAX_ARGON = { m: 65_536, t: 4, p: 1 };
+const MAX_PBKDF2 = 2_000_000;
 
-const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
+const b64 = (bytes: Uint8Array): string => {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+};
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 /** The wallet contents a backup carries: node cookies only when the user opts in. */
@@ -123,16 +127,17 @@ export function validWalletData(raw: unknown): WalletData {
  * one recovery phrase, so two different phrases cannot merge (replace instead).
  */
 export function mergeWalletData(current: WalletData, incoming: WalletData): WalletData {
-  if (current.mnemonic && incoming.mnemonic && current.mnemonic.trim() !== incoming.mnemonic.trim()) {
+  const norm = (m: string) => m.trim().split(/\s+/).join(" ");
+  if (current.mnemonic && incoming.mnemonic && norm(current.mnemonic) !== norm(incoming.mnemonic)) {
     throw new Error("The backup has a different recovery phrase; a wallet holds one. Replace instead, or import its keys separately.");
   }
   const mnemonic = current.mnemonic ?? incoming.mnemonic;
   const hd = [...current.hd];
   for (const e of incoming.hd) if (!hd.some((x) => x.index === e.index)) hd.push(e);
   hd.sort((a, b) => a.index - b.index);
-  const have = new Set(deriveAccounts({ ...current, mnemonic, hd }).map((a) => a.address));
-  const imported = [...current.imported];
-  for (const e of incoming.imported) {
+  const have = new Set(deriveAccounts({ ...current, mnemonic, hd, imported: [] }).map((a) => a.address));
+  const imported: WalletData["imported"] = [];
+  for (const e of [...current.imported, ...incoming.imported]) {
     const address = importPrivateKey(e.priv).address;
     if (!have.has(address)) { imported.push(e); have.add(address); }
   }

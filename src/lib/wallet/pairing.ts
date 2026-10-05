@@ -10,9 +10,10 @@
 // Every value is bound into the transcript (version, session id, both public
 // keys) which salts the HKDF and is the AEAD's associated data: a changed byte
 // fails decryption. The code is a 20-bit short authentication string over the
-// same transcript. The inner layer is the ordinary password-encrypted backup,
-// so a sender tricked into encrypting to someone else's key still only hands
-// over what an encrypted backup QR would. Format in docs/qr-formats.md.
+// same transcript: it catches a wrong or stale code, but an attacker able to
+// swap both QR codes can search for a matching one (nothing commits the sender
+// first). That is why the inner layer is the ordinary password-encrypted
+// backup: such an attacker still only gets what an encrypted backup QR gives. Format in docs/qr-formats.md.
 
 import { x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";

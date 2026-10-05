@@ -1,7 +1,8 @@
-// Backup, SeedQR and device-to-device transfer screens. The page only ever
-// holds ciphertext (the encrypted backup, the sealed transfer), public pairing
-// data and a rendered SeedQR image: every secret is produced and consumed in
-// the signer, and each export asks for the password again.
+// Backup, SeedQR and device-to-device transfer screens. The page holds
+// ciphertext (the encrypted backup, the sealed transfer) and public pairing
+// data; secrets are produced and consumed in the signer, and each export asks
+// for the password again. The one exception is the SeedQR picture, which is
+// the phrase by design: it lives in the DOM only while shown or printing.
 
 import { h, render } from "./app.ts";
 import { scanner } from "./scanner.ts";
@@ -98,7 +99,8 @@ function printOnly(content: El) {
   const cleanup = () => { area.remove(); document.body.classList.remove("printing"); };
   window.addEventListener("afterprint", cleanup, { once: true });
   (host.print ?? (() => window.print()))();
-  setTimeout(cleanup, 60_000); // hosts that never fire afterprint
+  // window.print blocks until the dialog closes; hosts that do not still fire afterprint or this.
+  setTimeout(cleanup, 5_000);
 }
 
 const today = () => new Date().toISOString().slice(0, 10);

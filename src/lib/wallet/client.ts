@@ -26,7 +26,10 @@ export function walletClient(send: Send) {
     /** The vault re-encrypted with the (re-entered) password: CBOR hex for `ur:lattice-vault`. */
     exportBackup: (password: string, includeNodeCookies = false) =>
       call<{ backup: string }>({ type: "exportBackup", password, includeNodeCookies }),
-    /** The recovery phrase as a SeedQR, rendered to SVG inside the signer (no phrase crosses). */
+    /**
+     * The recovery phrase as a SeedQR, rendered to SVG inside the signer. The
+     * picture is the phrase: the one secret the page receives, only to display it.
+     */
     exportSeedQR: (password: string, format: "standard" | "compact") =>
       call<{ svg: string }>({ type: "exportSeedQR", password, format }),
     /** Restore (no wallet yet), or merge into / replace the open wallet. */

@@ -8,7 +8,7 @@ import { QRCanvas, rearCamera, frameLoop, type QRCamera } from "qr/dom.js";
 import { decodeQR } from "qr/decode.js";
 import { h } from "./app.ts";
 
-const latin1 = (bytes: Uint8Array) => String.fromCharCode(...bytes);
+import { latin1 } from "../lib/qr/seedqr.ts";
 const MAX_FILE = 2_000_000;
 
 export interface ScannerOpts {

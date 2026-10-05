@@ -56,6 +56,10 @@ export function seedQRToMnemonic(scanned: string): string | null {
 }
 
 /** Bytes as a Latin-1 string (one char per byte): the byte-mode text for the QR encoder. */
-export const latin1 = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+export const latin1 = (bytes: Uint8Array): string => {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return s;
+};
 /** The QR encoder's byte-mode encoder for Latin-1 text (the inverse of `latin1`). */
 export const latin1Bytes = (text: string): Uint8Array => Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff);

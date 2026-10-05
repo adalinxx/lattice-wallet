@@ -32,8 +32,8 @@ The 32-byte AES key is the KDF output over the password and salt. The
 plaintext is UTF-8 JSON: `{ mnemonic: string | null, hd: [{ index, label }],
 imported: [{ priv: hex, label }], active, nodeCookies? }`. `nodeCookies` (the
 operator-port cookies of paired nodes) is present only when the user opts in.
-A decoder refuses KDF costs above Argon2id m = 256 MiB, t = 10, p = 4 or
-PBKDF2 10M iterations, and validates every decrypted field.
+A decoder refuses KDF costs above Argon2id m = 64 MiB, t = 4, p = 1 or
+PBKDF2 2M iterations, and validates every decrypted field.
 
 Saved as a file it is a text file whose non-comment line is the single-part
 UR. Printed, it is the plain fragments (1…len) as a grid; scanning all of

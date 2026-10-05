@@ -258,7 +258,7 @@ export function urEncoder(type: string, cbor: Uint8Array, maxFragmentLen = 200, 
   };
 }
 
-interface Part { indexes: number[]; data: Uint8Array }
+interface Part { indexes: Set<number>; data: Uint8Array }
 
 /**
  * Collects scanned parts (any order, duplicates and other noise ignored) until
@@ -275,11 +275,15 @@ export function urDecoder(expectedTypes?: string[]) {
   const queue: Part[] = [];
 
   const reduce = (a: Part, b: Part): Part => {
-    if (!b.indexes.every((i) => a.indexes.includes(i))) return a;
+    if (b.indexes.size > a.indexes.size) return a;
+    for (const i of b.indexes) if (!a.indexes.has(i)) return a;
     const data = a.data.slice();
     xorInto(data, b.data);
-    return { indexes: a.indexes.filter((i) => !b.indexes.includes(i)), data };
+    const indexes = new Set(a.indexes);
+    for (const i of b.indexes) indexes.delete(i);
+    return { indexes, data };
   };
+  const only = (p: Part) => p.indexes.values().next().value as number;
 
   const finish = () => {
     const m = meta!;
@@ -291,27 +295,29 @@ export function urDecoder(expectedTypes?: string[]) {
   };
 
   const process = (p: Part) => {
-    if (p.indexes.length === 1) {
-      const i = p.indexes[0]!;
+    if (p.indexes.size === 1) {
+      const i = only(p);
       if (simple.has(i)) return;
       simple.set(i, p.data);
       if (simple.size === meta!.seqLen) return finish();
       const next: Part[] = [];
       for (const m of mixed) {
         const r = reduce(m, p);
-        if (r.indexes.length === 1) queue.push(r); else next.push(r);
+        if (r.indexes.size === 1) queue.push(r); else next.push(r);
       }
       mixed = next;
     } else {
       let r = p;
-      for (const [i, data] of simple) r = reduce(r, { indexes: [i], data });
+      for (const [i, data] of simple) if (r.indexes.has(i)) r = reduce(r, { indexes: new Set([i]), data });
       for (const m of mixed) r = reduce(r, m);
-      if (r.indexes.length === 0) return;
-      if (r.indexes.length === 1) { queue.push(r); return; }
+      if (r.indexes.size === 0) return;
+      if (r.indexes.size === 1) { queue.push(r); return; }
+      // Bounded: a flood of mixed parts cannot grow the work without limit.
+      if (mixed.length >= 4 * meta!.seqLen) return;
       const next: Part[] = [];
       for (const m of mixed) {
         const x = reduce(m, r);
-        if (x.indexes.length === 1) queue.push(x); else next.push(x);
+        if (x.indexes.size === 1) queue.push(x); else next.push(x);
       }
       mixed = [...next, r];
     }
@@ -355,7 +361,7 @@ export function urDecoder(expectedTypes?: string[]) {
         const indexes = chooseFragments(seq, seqLen, checksum);
         const key = indexes.slice().sort((a, b) => a - b).join(",");
         if (indexes.length > 1) { if (seenMixed.has(key)) return true; seenMixed.add(key); }
-        queue.push({ indexes, data });
+        queue.push({ indexes: new Set(indexes), data });
         while (!result && !error && queue.length) process(queue.shift()!);
         return true;
       } catch {

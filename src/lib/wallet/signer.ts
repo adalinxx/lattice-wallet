@@ -209,6 +209,8 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         } catch (e) {
           return { ok: false, error: (e as Error).message };
         }
+        // The KDF took a while: refuse if the wallet locked or appeared meanwhile.
+        if ((await loadVault()) ? !session || !vault : vault) return { ok: false, error: "The wallet changed; try again" };
         if (!vault) {
           // A restore: the backup's password becomes this wallet's.
           openSession(String(msg.password), incoming);
