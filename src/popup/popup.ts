@@ -22,7 +22,8 @@ const h = (tag: string, attrs: Record<string, unknown> = {}, ...kids: (Node | st
   return n;
 };
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
-const fmt = (n: string | number) => Number(n).toLocaleString();
+// Exact: amounts are UInt64, never rounded through a double.
+const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
 const view = () => document.getElementById("view")!;
 const render = (node: El) => view().replaceChildren(node);
 
@@ -435,7 +436,7 @@ function sentScreen(txCID: string) {
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
       h("p", { class: "muted" }, "Admitted to the node's pool (pending). See Sent for its block once mined."),
-      h("label", { class: "k" }, "Transaction"), h("div", { class: "addr mono" }, txCID),
+      h("label", { class: "k" }, "Transaction (as the node reports it)"), h("div", { class: "addr mono" }, txCID),
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: async () => { await navigator.clipboard.writeText(txCID); toast.textContent = "copied"; setTimeout(() => (toast.textContent = ""), 1500); } }, "Copy"),
         h("button", { class: "btn", onclick: mainScreen }, "Done"),
