@@ -10,6 +10,8 @@ locally.
 
 The wallet ships with **no node URL**. On first use it asks for one per chain:
 
+- **Lattice.build** — an explicit public root-chain relay choice, probed before
+  it is saved and refused unless it declares public transaction submission;
 - **your own node** — its loopback API (`http://127.0.0.1:<rpc-port>`)
   accepts your submits once the wallet is **paired** with it (below); or
 - an endpoint **discovered** through a Nexus node you choose, by the SDK's
@@ -66,6 +68,17 @@ its canonical chain (`blockHeight`/`blockHash`), **pending** while it is in the
 node's pool, and *replaced* if its nonce was spent by another transaction.
 Only a node too old to report inclusion falls back to the account-nonce
 reading (*nonce spent*).
+
+### Cross-chain deposits
+
+The wallet saves every signed, unwithdrawn deposit in a separate unbounded
+`openDeposits` list before attempting submission. It retains the transaction
+CID, seller, deposit nonce, both amounts and both chain paths until a future
+withdrawal flow confirms settlement. This local metadata is not reconstructed
+by restoring a recovery phrase. Recovery from chain state requires the active
+deposit listing/proof API that is also required for safe buy-order discovery.
+Until deposit status/withdrawal is implemented, a definitively rejected
+deposit attempt also remains in this list and must be cleared by that flow.
 
 > one proof. every chain.
 

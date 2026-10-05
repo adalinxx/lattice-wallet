@@ -75,6 +75,16 @@ export type Request =
       fee: string;
       nonce: string;
       chainPath: string[];
+    }
+  | {
+      type: "signDeposit";
+      from: string;
+      amountDeposited: string;
+      amountDemanded: string;
+      depositNonce: string;
+      fee: string;
+      nonce: string;
+      chainPath: string[];
     };
 
 export type Ok<T = object> = { ok: true } & T;

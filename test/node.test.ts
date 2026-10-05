@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
-import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import { LATTICE_BUILD_RPC, normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
+import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -15,6 +15,7 @@ import { signTransfer } from "../src/lib/wallet/session.ts";
 test("no default node, and only https or the CSP's loopback http", async () => {
   assert.deepEqual((await loadSettings({ get: async () => ({}), set: async () => {} })).endpoints, {});
   assert.deepEqual(DEFAULT_SETTINGS.endpoints, {});
+  assert.equal(LATTICE_BUILD_RPC, "https://rpc.lattice.build");
   assert.equal(normalizeNodeURL("http://127.0.0.1:8080/"), "http://127.0.0.1:8080");
   assert.equal(normalizeNodeURL(" https://reads.example.org/base/ "), "https://reads.example.org/base");
   for (const bad of ["http://reads.example.org", "http://127.0.0.2:8080", "ftp://x", "https://u:p@x.org", "https://x.org/?q=1", "x.org"]) {
@@ -31,6 +32,20 @@ test("recordSent keeps newest first, deduplicated", () => {
   s = recordSent(s, "Nexus", { cid: "b", to: "t", amount: "1", at: 2 });
   s = recordSent(s, "Nexus", { cid: "a", to: "t", amount: "1", at: 3 });
   assert.deepEqual(s.sent.Nexus.map((t) => t.cid), ["a", "b"]);
+});
+
+test("open deposits are self-contained, deduplicated and never trimmed with sent history", () => {
+  const deposit = {
+    transactionCID: "deposit-cid", demander: "seller", depositNonce: "42",
+    amountDeposited: "200", amountDemanded: "300", fee: "1", transactionNonce: "7",
+    childChain: ["Nexus", "testnet"], parentChain: ["Nexus"], createdAt: 1,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  };
+  let s = recordOpenDeposit(DEFAULT_SETTINGS, deposit);
+  for (let i = 0; i < 75; i++) s = recordSent(s, "Nexus/testnet", { cid: `send-${i}`, to: "t", amount: "1", at: i });
+  s = recordOpenDeposit(s, { ...deposit, createdAt: 2 });
+  assert.equal(s.sent["Nexus/testnet"].length, 50);
+  assert.deepEqual(s.openDeposits, [{ ...deposit, createdAt: 2 }]);
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {

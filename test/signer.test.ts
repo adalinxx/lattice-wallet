@@ -83,6 +83,26 @@ test("signing goes through the signer and returns the locally computed CID", asy
   }), { ok: false, error: "Locked" });
 });
 
+test("a deposit is built and signed inside the signer", async () => {
+  const wallet = walletClient(createSigner(memory()).handle);
+  const created = await wallet.create("pw-pw-pw-pw", { privHex: "a1".repeat(32) });
+  assert.ok(created.ok);
+  const signed = await wallet.signDeposit({
+    from: created.state.active!, amountDeposited: "200", amountDemanded: "300",
+    depositNonce: "42", fee: "1", nonce: "0", chainPath: ["Nexus", "testnet"],
+  });
+  assert.ok(signed.ok);
+  const body = signed.signedSubmit.payload.transaction.body;
+  assert.deepEqual(body.accountActions, [{ owner: created.state.active!, delta: "-201" }]);
+  assert.deepEqual(body.depositActions, [{ nonce: "42", demander: created.state.active!, amountDemanded: "300", amountDeposited: "200" }]);
+  assert.deepEqual(body.chainPath, ["Nexus", "testnet"]);
+  const invalid = await wallet.signDeposit({
+    from: created.state.active!, amountDeposited: "200", amountDemanded: "18446744073709551616",
+    depositNonce: "42", fee: "1", nonce: "0", chainPath: ["Nexus", "testnet"],
+  });
+  assert.deepEqual(invalid, { ok: false, error: "demanded amount is out of range" });
+});
+
 test("pairing keeps a node's cookie encrypted in the vault and yields its Authorization", async () => {
   const vaults = memory();
   const signer = createSigner(vaults);
