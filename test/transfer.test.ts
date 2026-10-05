@@ -55,3 +55,12 @@ test("the builder refuses what the node would", () => {
   assert.throws(() => signTransfer(sender, { ...base, to: sender.address }));
   assert.throws(() => signTransfer(sender, { ...base, amount: 1n << 63n }));
 });
+
+test("the signed transaction's CID is the one a lattice-node reported for it", () => {
+  // Recorded from lattice-node 18291885 (test/e2e-local.test.ts, own node):
+  // alice -> bob, 1000 units, fee 17, nonce 0, on Nexus.
+  const alice = importPrivateKey("a1".repeat(32));
+  const bob = importPrivateKey("b0".repeat(32));
+  const { transactionCID } = signTransfer(alice, { to: bob.address, amount: 1_000n, fee: 17n, nonce: 0n, chainPath: ["Nexus"] });
+  assert.equal(transactionCID, "bafyreifnzr5tuuz2s6stx4zipfozsxejtms42rmvhwkleyd7y2s7e2fru4");
+});
