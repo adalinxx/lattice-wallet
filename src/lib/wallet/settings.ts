@@ -23,16 +23,34 @@ export interface SentTransaction {
   nonce?: string;
 }
 
+/** Claim-critical metadata for a deposit that has not yet been withdrawn.
+ * This is deliberately separate from trimmed display history. */
+export interface OpenDeposit {
+  transactionCID: string;
+  demander: string;
+  depositNonce: string;
+  amountDeposited: string;
+  amountDemanded: string;
+  fee: string;
+  transactionNonce: string;
+  childChain: string[];
+  parentChain: string[];
+  createdAt: number;
+  expiresAt: string;
+}
+
 export interface Settings {
   chain: string;
   chains: string[];
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
+  /** Never trim these. Remove one only after its withdrawal is confirmed. */
+  openDeposits: OpenDeposit[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], endpoints: {}, sent: {}, fees: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], endpoints: {}, sent: {}, openDeposits: [], fees: {} };
 
 /** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
 export const FALLBACK_FEE = "1";
@@ -65,4 +83,13 @@ export async function saveSettings(store: KeyValueStore, settings: Settings): Pr
 export function recordSent(settings: Settings, chain: string, tx: SentTransaction): Settings {
   const list = [tx, ...(settings.sent[chain] ?? []).filter((t) => t.cid !== tx.cid)].slice(0, 50);
   return { ...settings, sent: { ...settings.sent, [chain]: list } };
+}
+
+/** Save before submission: an ambiguous network failure may still mean the
+ * node accepted the deposit. Deduplicate retries by the wallet-computed CID. */
+export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Settings {
+  return {
+    ...settings,
+    openDeposits: [deposit, ...settings.openDeposits.filter((item) => item.transactionCID !== deposit.transactionCID)],
+  };
 }

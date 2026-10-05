@@ -67,6 +67,17 @@ node's pool, and *replaced* if its nonce was spent by another transaction.
 Only a node too old to report inclusion falls back to the account-nonce
 reading (*nonce spent*).
 
+### Cross-chain deposits
+
+The wallet saves every signed, unwithdrawn deposit in a separate unbounded
+`openDeposits` list before attempting submission. It retains the transaction
+CID, seller, deposit nonce, both amounts and both chain paths until a future
+withdrawal flow confirms settlement. This local metadata is not reconstructed
+by restoring a recovery phrase. Recovery from chain state requires the active
+deposit listing/proof API that is also required for safe buy-order discovery.
+Until deposit status/withdrawal is implemented, a definitively rejected
+deposit attempt also remains in this list and must be cleared by that flow.
+
 > one proof. every chain.
 
 ## Why an extension (not a web page)

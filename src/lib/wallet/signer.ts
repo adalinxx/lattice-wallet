@@ -5,7 +5,7 @@
 // on every key-touching event; the host calls `lock()` when it fires.
 
 import { encryptVault, decryptVault, type Vault } from "../crypto/keystore.ts";
-import { deriveAccounts, toView, nextHdLabel, signTransfer, type LiveAccount } from "./session.ts";
+import { deriveAccounts, toView, nextHdLabel, signDeposit, signTransfer, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
@@ -279,6 +279,22 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
           signedSubmit,
           summary: { from: acct.address, to: msg.to, amount: msg.amount, fee: msg.fee, nonce: msg.nonce },
         } as Response;
+      }
+
+      case "signDeposit": {
+        if (!session) return { ok: false, error: "Locked" };
+        const acct = findAccount(msg.from);
+        if (!acct) return { ok: false, error: "Unknown sender" };
+        const chainPath = parseChainPath(msg.chainPath.join("/"));
+        if (!chainPath) return { ok: false, error: "Invalid chain path" };
+        try {
+          return { ok: true, signedSubmit: signDeposit(acct, {
+            amountDeposited: BigInt(msg.amountDeposited), amountDemanded: BigInt(msg.amountDemanded),
+            depositNonce: BigInt(msg.depositNonce), fee: BigInt(msg.fee), nonce: BigInt(msg.nonce), chainPath,
+          }) } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
       }
 
       default:
