@@ -5,6 +5,7 @@
 // store, network permission, and optionally its own node.
 
 import type { Fetch } from "@adalinxx/lattice-client";
+import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
@@ -212,14 +213,19 @@ function actionButtons(): El[] {
 async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string): Promise<boolean> {
   const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
-  if (cookie) {
-    const paired = await wallet.setNodeCookie(url, cookie);
-    if (!paired.ok) { err.textContent = "Cookie: " + paired.error; return false; }
-  }
+  let authorization: string | undefined;
+  try {
+    authorization = cookie ? nodeCookieAuthorization(cookie) : await authorizationFor(url);
+  } catch (e) { err.textContent = "Cookie: " + (e as Error).message; return false; }
   err.textContent = "checking…";
   try {
-    const info = await reader(url, chainPath(), platform.fetch, await authorizationFor(url)).chainInfo();
+    const info = await reader(url, chainPath(), platform.fetch, authorization).chainInfo();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
+    // Kept only once it opened this node.
+    if (cookie) {
+      const paired = await wallet.setNodeCookie(url, cookie);
+      if (!paired.ok) { err.textContent = "Cookie: " + paired.error; return false; }
+    }
     await update((s) => ({ ...s, endpoints: { ...s.endpoints, [s.chain]: { url, acceptsSubmit: declaredSubmit && info.acceptsSubmit === true, source } } }));
     return true;
   } catch (e) {
