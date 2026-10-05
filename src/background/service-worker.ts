@@ -4,9 +4,7 @@
 // the session.
 
 import { encryptVault, decryptVault, type Vault } from "../lib/crypto/keystore.ts";
-import { buildTransferBody, bodyPreimage, submitRequestJSON } from "../lib/tx/build.ts";
-import { signPreimage } from "../lib/crypto/ed25519.ts";
-import { deriveAccounts, toView, nextHdLabel, type LiveAccount } from "../lib/wallet/session.ts";
+import { deriveAccounts, toView, nextHdLabel, signTransfer, type LiveAccount } from "../lib/wallet/session.ts";
 import { deriveAccount, importPrivateKey } from "../lib/crypto/accounts.ts";
 import { parseChainPath } from "../lib/config.ts";
 import type { Request, Response, WalletData, WalletState } from "../lib/wallet/types.ts";
@@ -142,20 +140,17 @@ async function handle(msg: Request): Promise<Response> {
       if (!acct) return { ok: false, error: "Unknown sender" };
       const chainPath = parseChainPath(msg.chainPath.join("/"));
       if (!chainPath) return { ok: false, error: "Invalid chain path" };
-      let body;
+      let signedSubmit;
       try {
-        body = buildTransferBody({
-          from: acct.address, to: msg.to, amount: BigInt(msg.amount), fee: BigInt(msg.fee),
-          nonce: BigInt(msg.nonce), chainPath,
+        signedSubmit = signTransfer(acct, {
+          to: msg.to, amount: BigInt(msg.amount), fee: BigInt(msg.fee), nonce: BigInt(msg.nonce), chainPath,
         });
       } catch (e) {
         return { ok: false, error: (e as Error).message };
       }
-      const { bodyCID, preimage } = bodyPreimage(body);
-      const sig = signPreimage(preimage, acct.privateKey);
       return {
         ok: true,
-        signedSubmit: { requestJSON: submitRequestJSON({ [acct.publicKey]: sig }, body), bodyCID },
+        signedSubmit,
         summary: { from: acct.address, to: msg.to, amount: msg.amount, fee: msg.fee, nonce: msg.nonce },
       } as Response;
     }

@@ -3,18 +3,15 @@
 //
 // Frozen path: m/44'/COIN_TYPE'/account'  (3-level, all hardened). Deliberately
 // flattened (not a 5-level path) to avoid the documented Solana-style path
-// ambiguity. COIN_TYPE is provisional pending a SLIP-44 registration; it is a
-// frozen constant + regression-tested so it can never silently drift.
+// ambiguity. COIN_TYPE 7878 is FROZEN (it is not SLIP-44 registered); it is
+// regression-tested so it can never silently drift.
 
 import { mnemonicToSeedSync, generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { accountFromPrivateKey, hexToBytes } from "@adalinxx/lattice-core";
 import { derivePrivateKey } from "./slip10.ts";
-import { publicKeyFromPrivate } from "./ed25519.ts";
-import { encodeMultikeyEd25519 } from "./multikey.ts";
-import { addressFromMultikey } from "./address.ts";
-import { hexToBytes, bytesToHex } from "./bytes.ts";
 
-export const COIN_TYPE = 7878; // provisional; freeze before mainnet scale
+export const COIN_TYPE = 7878; // FROZEN: changing it moves every HD account (test/accounts.test.ts)
 const PURPOSE = 44;
 
 export interface Account {
@@ -28,9 +25,9 @@ export function path(account: number): number[] {
   return [PURPOSE, COIN_TYPE, account];
 }
 
+/** Keys, Multikey and address come from the SDK; only the HD path is the wallet's. */
 function accountFromPrivate(privateKey: Uint8Array, index: number): Account {
-  const publicKey = encodeMultikeyEd25519(publicKeyFromPrivate(privateKey));
-  return { index, privateKey, publicKey, address: addressFromMultikey(publicKey) };
+  return { index, ...accountFromPrivateKey(privateKey) };
 }
 
 export function newMnemonic(strength: 128 | 256 = 128): string {
@@ -49,9 +46,7 @@ export function deriveAccount(mnemonic: string, account: number, passphrase = ""
 
 /** Import a raw 32-byte ed25519 private key (hex). Lives outside the HD tree. */
 export function importPrivateKey(hex: string): Account {
-  const priv = hexToBytes(hex);
+  const priv = hexToBytes(hex.trim().toLowerCase());
   if (priv.length !== 32) throw new Error("private key must be 32 bytes");
   return accountFromPrivate(priv, -1);
 }
-
-export { bytesToHex };

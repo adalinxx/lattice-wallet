@@ -1,0 +1,3 @@
+[submodule "vendor/lattice-sdk"]
+	path = vendor/lattice-sdk
+	url = https://github.com/adalinxx/lattice-sdk.git

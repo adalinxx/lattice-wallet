@@ -1,20 +1,22 @@
-// Node URLs, the node client, and recursive endpoint discovery, over a
-// scripted fetch: no default node, named refusals, and an endpoint accepted
-// only when it serves the block its parent commits.
+// The wallet's node plane over a scripted fetch: no default node, configurable
+// fees warned (never clamped) against the endpoint's relay floor, named
+// refusals in words, inclusion status, and discovery through the SDK resolver.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { SubmissionError } from "@adalinxx/lattice-relay";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { NodeClient, NodeError, type Fetch } from "../src/lib/rpc/client.ts";
-import { discover } from "../src/lib/rpc/discovery.ts";
-import { loadSettings, recordSent, DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import { reader, submitter, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
+import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
+import { signTransfer } from "../src/lib/wallet/session.ts";
 
-test("no default node, and only https or loopback http", async () => {
+test("no default node, and only https or the CSP's loopback http", async () => {
   assert.deepEqual((await loadSettings({ get: async () => ({}), set: async () => {} })).endpoints, {});
   assert.deepEqual(DEFAULT_SETTINGS.endpoints, {});
   assert.equal(normalizeNodeURL("http://127.0.0.1:8080/"), "http://127.0.0.1:8080");
-  assert.equal(normalizeNodeURL("https://reads.example.org/base/"), "https://reads.example.org/base");
-  for (const bad of ["http://reads.example.org", "ftp://x", "https://u:p@x.org", "https://x.org/?q=1", "x.org"]) {
+  assert.equal(normalizeNodeURL(" https://reads.example.org/base/ "), "https://reads.example.org/base");
+  for (const bad of ["http://reads.example.org", "http://127.0.0.2:8080", "ftp://x", "https://u:p@x.org", "https://x.org/?q=1", "x.org"]) {
     assert.equal(normalizeNodeURL(bad), null, bad);
   }
   assert.equal(originPattern("http://127.0.0.1:8080"), "http://127.0.0.1/*");
@@ -30,64 +32,132 @@ test("recordSent keeps newest first, deduplicated", () => {
   assert.deepEqual(s.sent.Nexus.map((t) => t.cid), ["a", "b"]);
 });
 
+test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {
+  const stored = await loadSettings({ get: async () => ({ settings: { chain: "Nexus", chains: ["Nexus"], endpoints: {}, sent: {} } }), set: async () => {} });
+  assert.deepEqual(stored.fees, {}, "settings saved before fees existed still load");
+  assert.equal(defaultFee(stored, "Nexus"), FALLBACK_FEE);
+  assert.equal(defaultFee({ ...stored, fees: { "Nexus/testnet": "25" } }, "Nexus/testnet"), "25");
+  assert.equal(parseFee("0"), 0n);
+  assert.equal(parseFee(" 42 "), 42n);
+  for (const bad of ["", "-1", "1.5", "01", "1e3", "abc"]) assert.equal(parseFee(bad), null, bad);
+  assert.equal(feeWarning(5n, undefined), undefined, "no floor reported");
+  assert.equal(feeWarning(5n, 5n), undefined);
+  assert.match(feeWarning(4n, 5n)!, /at least 5/);
+});
+
 type Route = (url: URL, init?: RequestInit) => { status: number; body: unknown } | undefined;
-function scripted(routes: Route): { fetch: Fetch; calls: string[] } {
+function scripted(routes: Route) {
   const calls: string[] = [];
-  return {
-    calls,
-    fetch: async (input, init) => {
-      const url = String(input);
-      calls.push(`${init?.method ?? "GET"} ${input}`);
-      const answer = routes(new URL(input), init) ?? { status: 404, body: { error: { message: "Not Found" } } };
-      if (url.endsWith("/api/state/account/bafybig?chainPath=Nexus")) {
-        return new Response('{"owner":"bafybig","balance":18446744073709551615,"nonce":9007199254740993}', { status: 200 });
-      }
-      return new Response(JSON.stringify(answer.body), { status: answer.status });
-    },
+  const fetch = async (input: string | URL, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${input}`);
+    const answer = routes(new URL(input), init) ?? { status: 404, body: { error: { message: "Not Found" } } };
+    return new Response(JSON.stringify(answer.body), { status: answer.status });
   };
+  return { fetch, calls };
 }
 
-test("reads name their chain and refusals keep the node's name", async () => {
-  const { fetch, calls } = scripted((url, init) => {
-    if (url.pathname === "/api/state/account/bafyx") return { status: 200, body: { owner: "bafyx", balance: 7, nonce: 2 } };
-    if (url.pathname === "/transactions" && init?.method === "POST") return { status: 400, body: { error: { message: "feeTooLow" } } };
+test("reads name their chain and read exact UInt64 decimal strings", async () => {
+  const { fetch, calls } = scripted((url) => {
+    if (url.pathname === "/api/state/account/bafybig") {
+      return { status: 200, body: { owner: "bafybig", balance: "18446744073709551615", nonce: "9007199254740993" } };
+    }
+    if (url.pathname === "/api/chain/info") return { status: 200, body: { chain: ["Nexus", "testnet"], minRelayFee: "3", acceptsSubmit: true } };
   });
-  const client = new NodeClient("http://127.0.0.1:8080", ["Nexus", "testnet"], fetch);
-  assert.deepEqual(await client.account("bafyx"), { owner: "bafyx", balance: 7n, nonce: 2n });
-  assert.equal(calls[0], "GET http://127.0.0.1:8080/api/state/account/bafyx?chainPath=Nexus%2Ftestnet");
-  await assert.rejects(client.submit("{}"), (e: unknown) => e instanceof NodeError && e.status === 400 && e.refusal === "feeTooLow");
-  assert.equal(calls[1], "POST http://127.0.0.1:8080/transactions");
-});
-
-test("UInt64 balance and nonce are read exactly", async () => {
-  const { fetch } = scripted(() => undefined);
-  const account = await new NodeClient("http://127.0.0.1:8080", ["Nexus"], fetch).account("bafybig");
+  const client = reader("http://127.0.0.1:8080", ["Nexus", "testnet"], fetch);
+  const account = await client.account("bafybig");
   assert.equal(account.balance, 18446744073709551615n);
   assert.equal(account.nonce, 9007199254740993n);
+  assert.equal(calls[0], "GET http://127.0.0.1:8080/api/state/account/bafybig?chainPath=Nexus%2Ftestnet");
+  const info = await client.chainInfo();
+  assert.equal(info.minRelayFee, 3n);
+  assert.equal(info.acceptsSubmit, true);
 });
 
-test("discovery walks Nexus -> A -> B, accepting only endpoints that serve the committed block", async () => {
-  const committedA = "bafyA", committedB = "bafyB";
+test("submission posts the signer's payload to /transactions; refusals are typed and worded", async () => {
+  const sender = importPrivateKey("a1".repeat(32));
+  const { payload } = signTransfer(sender, { to: importPrivateKey("b0".repeat(32)).address, amount: 5n, fee: 0n, nonce: 0n, chainPath: ["Nexus"] });
+  let posted: unknown;
+  const { fetch, calls } = scripted((url, init) => {
+    if (url.pathname === "/transactions" && init?.method === "POST") {
+      posted = JSON.parse(String(init.body));
+      return { status: 400, body: { error: { message: "belowMinRelayFee" } } };
+    }
+  });
+  const error = await submitter("http://127.0.0.1:8080", fetch).submit(payload).then(() => assert.fail("refused"), (e: unknown) => e);
+  assert.equal(calls[0], "POST http://127.0.0.1:8080/transactions");
+  assert.deepEqual(posted, payload);
+  assert.ok(error instanceof SubmissionError && error.reason === "belowMinRelayFee");
+  assert.match(describe(error), /^refused \(belowMinRelayFee\): the fee is below this node's minimum relay fee/);
+  assert.match(describe(new SubmissionError(400, "feeTooLow")), /higher fee/);
+  assert.match(describe(new SubmissionError(404)), /does not accept transactions/);
+  assert.equal(describe(new SubmissionError(500, "something new")), "refused: something new");
+});
+
+const projection = (extra: Record<string, unknown> = {}) => ({
+  txCID: "bafytx", nonce: "4", signers: ["bafyalice"], chainPath: ["Nexus"],
+  accountActions: [], depositActions: [], receiptActions: [], withdrawalActions: [], ...extra,
+});
+
+test("status: included in block N, pending, replaced, unknown", async () => {
+  let tx: object = projection();
+  let mempool: string[] = ["bafytx"];
+  let accountNonce = "4";
+  const { fetch } = scripted((url) => {
+    if (url.pathname === "/api/transaction/bafytx") return { status: 200, body: tx };
+    if (url.pathname === "/api/mempool") return { status: 200, body: { count: mempool.length, transactions: mempool } };
+    if (url.pathname === "/api/state/account/bafyalice") return { status: 200, body: { owner: "bafyalice", balance: "0", nonce: accountNonce } };
+  });
+  const client = reader("http://127.0.0.1:8080", ["Nexus"], fetch);
+  assert.deepEqual(await sentStatus(client, "bafytx"), { kind: "pending" });
+  mempool = [];
+  assert.deepEqual(await sentStatus(client, "bafytx"), { kind: "pending or dropped" });
+  accountNonce = "5";
+  assert.deepEqual(await sentStatus(client, "bafytx"), { kind: "replaced" }, "nonce spent but not on the canonical chain");
+  tx = projection({ blockHeight: "12", blockHash: "bafyblock", timestamp: "1" });
+  const included = await sentStatus(client, "bafytx");
+  assert.deepEqual(included, { kind: "included", height: 12n, hash: "bafyblock" });
+  assert.equal(statusText(included), "included in block 12");
+  assert.deepEqual(await sentStatus(client, "bafyunknown"), { kind: "unknown to node" });
+});
+
+test("status falls back to the nonce only for a node that does not report inclusion", async () => {
+  // A pre-decimal-string node: numbers where the wire now has strings.
+  const old = { ...projection(), nonce: 4, blockHeight: null };
+  const { fetch } = scripted((url) => {
+    if (url.pathname === "/api/transaction/bafytx") return { status: 200, body: old };
+    if (url.pathname === "/api/mempool") return { status: 200, body: { count: 0, transactions: [] } };
+    if (url.pathname === "/api/state/account/bafyalice") return { status: 200, body: { owner: "bafyalice", balance: "0", nonce: "5" } };
+  });
+  const client = reader("http://127.0.0.1:8080", ["Nexus"], fetch);
+  const fallback = await sentStatus(client, "bafytx", { from: "bafyalice", nonce: 4n });
+  assert.deepEqual(fallback, { kind: "nonce spent" });
+  assert.match(statusText(fallback), /does not report inclusion/);
+  await assert.rejects(sentStatus(client, "bafytx"), TypeError, "without a record there is nothing to fall back on");
+});
+
+const blockView = (hash: string, chain: string[]) => ({
+  height: "3", hash, timestamp: "1", transactionCount: 0, childBlockCount: 0, nonce: "0", version: 1,
+  target: "0x1", nextTarget: "0x1", transactionsCID: "bafyt", postStateCID: "bafys", chain,
+});
+
+test("discovery walks Nexus -> A -> B through the SDK resolver, accepting only hosts serving the committed block", async () => {
   const { fetch, calls } = scripted((url) => {
     const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
     if (host === "start.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
-      return { status: 200, body: { chainPath: ["Nexus", "A"], committedBlock: committedA,
+      return { status: 200, body: { chainPath: ["Nexus", "A"], committedBlock: "bafyA",
         endpoints: ["https://liar.example", "https://a.example", "http://127.0.0.1:8080", "https://10.0.0.5", "https://169.254.169.254"],
         submitEndpoints: ["https://a.example/"] } };
     }
-    if (host === "a.example" && path === "/api/block/bafyA" && chain === "Nexus/A") return { status: 200, body: { hash: committedA, height: 3 } };
-    if (host === "liar.example" && path === "/api/block/bafyA") return { status: 200, body: { hash: "bafyOther", height: 3 } };
+    if (host === "a.example" && path === "/api/block/bafyA" && chain === "Nexus/A") return { status: 200, body: blockView("bafyA", ["Nexus", "A"]) };
+    if (host === "liar.example" && path === "/api/block/bafyA") return { status: 200, body: blockView("bafyOther", ["Nexus", "A"]) };
     if (host === "a.example" && path === "/api/chain/endpoints" && chain === "Nexus/A/B") {
-      // An older node: no submitEndpoints.
-      return { status: 200, body: { chainPath: ["Nexus", "A", "B"], committedBlock: committedB, endpoints: ["https://b.example"] } };
+      return { status: 200, body: { chainPath: ["Nexus", "A", "B"], committedBlock: "bafyB", endpoints: ["https://b.example"] } };
     }
-    if (host === "b.example" && path === "/api/block/bafyB" && chain === "Nexus/A/B") return { status: 200, body: { hash: committedB, height: 1 } };
-    if (host === "b.example" && path === "/api/chain/info") return { status: 200, body: { chain: ["Nexus", "A", "B"], acceptsSubmit: true } };
+    if (host === "b.example" && path === "/api/block/bafyB" && chain === "Nexus/A/B") return { status: 200, body: blockView("bafyB", ["Nexus", "A", "B"]) };
   });
   const a = await discover("https://start.example", ["Nexus", "A"], fetch);
-  assert.deepEqual(a.map((e) => e.url), ["https://a.example"], "the liar does not serve the committed block; private hosts are never dialed");
-  assert.ok(!calls.some((c) => /127\.0\.0\.1|10\.0\.0\.5|169\.254/.test(c)), calls.join("\n"));
-  assert.equal(a[0].acceptsSubmit, false, "declared but its own /api/chain/info does not confirm");
+  assert.deepEqual(a.map((e) => [e.url, e.declaresSubmit, e.trust]), [["https://a.example", true, OPERATOR_DECLARED]]);
+  assert.ok(!calls.some((c) => /127\.0\.0\.1|10\.0\.0\.5|169\.254/.test(c)), "private hosts are never dialed:\n" + calls.join("\n"));
   const b = await discover("https://start.example", ["Nexus", "A", "B"], fetch);
-  assert.deepEqual(b.map((e) => [e.url, e.acceptsSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
+  assert.deepEqual(b.map((e) => [e.url, e.declaresSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
 });
