@@ -60,6 +60,13 @@ export type Request =
   | { type: "reset" }
   | { type: "setNodeCookie"; url: string; cookie: string | null }
   | { type: "nodeAuthorization"; url: string }
+  // ---- backup & transfer (every export re-checks the password) ----
+  | { type: "exportBackup"; password: string; includeNodeCookies?: boolean }
+  | { type: "exportSeedQR"; password: string; format: "standard" | "compact" }
+  | { type: "importBackup"; backup: string; password: string; mode: "merge" | "replace" }
+  | { type: "transferOffer" }
+  | { type: "transferSend"; offer: string; password: string }
+  | { type: "transferOpen"; envelope: string }
   | {
       type: "signTransfer";
       from: string;

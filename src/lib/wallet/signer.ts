@@ -9,6 +9,11 @@ import { deriveAccounts, toView, nextHdLabel, signTransfer, type LiveAccount } f
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
+import { backupContents, encryptBackup, decryptBackup, mergeWalletData } from "./backup.ts";
+import { newOffer, encodeOffer, decodeOffer, decodeEnvelope, encodeEnvelope, seal, open, type Offer } from "./pairing.ts";
+import { standardSeedQR, compactSeedQR, latin1 } from "../qr/seedqr.ts";
+import { seedSvg } from "../qr/render.ts";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import type { Request, Response, WalletData, WalletState } from "./types.ts";
 
 /** Where the one encrypted vault is kept (the format is the same on every host). */
@@ -26,6 +31,8 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
     accounts: LiveAccount[];
   }
   let session: Session | null = null;
+  // The receiver's one-time transfer session (its X25519 secret never leaves here).
+  let pairing: { offer: Offer; secret: Uint8Array } | null = null;
 
   // ---- persistence ----
   const loadVault = () => vaults.load();
@@ -51,6 +58,16 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
   function findAccount(address: string): LiveAccount | undefined {
     return session?.accounts.find((a) => a.address === address);
   }
+  /** Exports re-check the password even while unlocked. */
+  function reauth(password: unknown): Response | null {
+    if (!session) return { ok: false, error: "Locked" };
+    if (typeof password !== "string" || password !== session.password) return { ok: false, error: "Wrong password" };
+    return null;
+  }
+  const hex = (s: unknown): Uint8Array => {
+    if (typeof s !== "string" || !/^([0-9a-f]{2})+$/.test(s) || s.length > 2_000_000) throw new Error("Malformed data");
+    return hexToBytes(s);
+  };
 
   // ---- handlers ----
   async function handle(msg: Request): Promise<Response> {
@@ -95,10 +112,12 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
 
       case "lock":
         session = null;
+        pairing = null;
         return { ok: true, state: await stateView() } as Response;
 
       case "reset":
         session = null;
+        pairing = null;
         await vaults.remove();
         return { ok: true, state: await stateView() } as Response;
 
@@ -158,6 +177,87 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if (!session) return { ok: false, error: "Locked" };
         const cookie = session.data.nodeCookies?.[msg.url];
         return { ok: true, ...(cookie === undefined ? {} : { authorization: nodeCookieAuthorization(cookie) }) } as Response;
+      }
+
+      case "exportBackup": {
+        const denied = reauth(msg.password);
+        if (denied) return denied;
+        const backup = await encryptBackup(session!.password, backupContents(session!.data, msg.includeNodeCookies === true));
+        return { ok: true, backup: bytesToHex(backup) } as Response;
+      }
+
+      case "exportSeedQR": {
+        const denied = reauth(msg.password);
+        if (denied) return denied;
+        if (!session!.data.mnemonic) return { ok: false, error: "This wallet has no recovery phrase" };
+        try {
+          const svg = msg.format === "compact"
+            ? seedSvg(latin1(compactSeedQR(session!.data.mnemonic)), "compact")
+            : seedSvg(standardSeedQR(session!.data.mnemonic), "standard");
+          return { ok: true, svg } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
+
+      case "importBackup": {
+        const vault = await loadVault();
+        if (vault && !session) return { ok: false, error: "Unlock first" };
+        let incoming: WalletData;
+        try {
+          incoming = await decryptBackup(String(msg.password), hex(msg.backup));
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+        // The KDF took a while: refuse if the wallet locked or appeared meanwhile.
+        if ((await loadVault()) ? !session || !vault : vault) return { ok: false, error: "The wallet changed; try again" };
+        if (!vault) {
+          // A restore: the backup's password becomes this wallet's.
+          openSession(String(msg.password), incoming);
+        } else {
+          let data: WalletData;
+          try {
+            data = msg.mode === "replace" ? incoming : mergeWalletData(session!.data, incoming);
+          } catch (e) {
+            return { ok: false, error: (e as Error).message };
+          }
+          openSession(session!.password, data);
+        }
+        await persistData();
+        return { ok: true, state: await stateView() } as Response;
+      }
+
+      case "transferOffer": {
+        pairing = newOffer();
+        return { ok: true, offer: bytesToHex(encodeOffer(pairing.offer)), expires: pairing.offer.expires } as Response;
+      }
+
+      case "transferSend": {
+        const denied = reauth(msg.password);
+        if (denied) return denied;
+        try {
+          const offer = decodeOffer(hex(msg.offer));
+          const backup = await encryptBackup(session!.password, backupContents(session!.data, false));
+          const { envelope, sas } = await seal(offer, backup);
+          return { ok: true, envelope: bytesToHex(encodeEnvelope(envelope)), sas } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
+
+      case "transferOpen": {
+        // Single use: the session's secret is gone after one attempt, good or bad.
+        const current = pairing;
+        pairing = null;
+        if (!current) return { ok: false, error: "No transfer session; start a new one" };
+        try {
+          const { payload, sas } = await open(current.offer, current.secret, decodeEnvelope(hex(msg.envelope)));
+          return { ok: true, backup: bytesToHex(payload), sas } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        } finally {
+          current.secret.fill(0);
+        }
       }
 
       case "signTransfer": {

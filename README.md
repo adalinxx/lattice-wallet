@@ -154,6 +154,28 @@ status, discovery through the SDK resolver. Opt-in:
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and the build.
 
+### Backup & transfer
+
+From **Backup** (unlocked) or **Restore** (first run). In the extension these
+open in a tab of the wallet: a tab can hold the camera, pick files and print,
+a popup cannot. Every export asks for the password again.
+
+- **Encrypted backup** — the recovery phrase, imported keys and labels (node
+  cookies only if you tick it), encrypted with your password, as a QR
+  (animated when large), a text file, or a printed sheet. Restore it on a new
+  device, or merge it into / replace an open wallet.
+- **SeedQR** — the recovery phrase as a Standard or Compact SeedQR, full screen
+  behind strong warnings, cleared on close, printable. Scanning one restores
+  the phrase; you then set a new password.
+- **Send to / receive from another device** — the receiver shows a one-time
+  pairing QR, the sender scans it and shows the encrypted wallet as an
+  (animated) QR; both show a six-digit code to compare. No network.
+
+Formats: [docs/qr-formats.md](docs/qr-formats.md). QR encoding, decoding and
+camera handling are paulmillr's [`qr`](https://github.com/paulmillr/qr) (no
+dependencies); X25519 is `@noble/curves`; HKDF/SHA-256 `@noble/hashes`;
+AES-GCM is WebCrypto. All bundled.
+
 **Next:** cross-chain swaps (deposit/receipt/withdrawal), Ledger (WebHID),
 dApp-connect provider.
 
