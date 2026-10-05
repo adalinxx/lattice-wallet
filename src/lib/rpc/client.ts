@@ -1,90 +1,137 @@
-// RPC client with multi-node failover (same pattern as the explorer). Reads
-// start at the active node and fail over to the next on a dead node or 5xx; a
-// 4xx (e.g. 404) is a valid answer and never triggers failover.
+// One node, one chain level. Every read names its chain with ?chainPath=; the
+// node answers 404 for a level it does not host. A refusal keeps the node's
+// own name for it (e.g. "feeTooLow", "full", "unknownChain").
 
-import { NETWORKS, type NetworkId, type Network } from "../config.ts";
-
-export interface SubmitResult {
-  accepted: boolean;
-  txCID?: string;
-  error?: string | null;
+export interface ChainInfo {
+  chain: string[];
+  genesisHash?: string | null;
+  height?: number | null;
+  tipCID?: string | null;
+  /** Absent from nodes predating public submit: read as false. */
+  acceptsSubmit?: boolean;
+}
+export interface AccountState {
+  owner: string;
+  balance: number;
+  nonce: number;
+}
+export interface ExplorerTransaction {
+  txCID: string;
+  blockHeight?: number | null;
+  blockHash?: string | null;
+  nonce: number;
+  signers: string[];
+  chainPath: string[];
+  accountActions: { owner: string; delta: number }[];
+}
+/**
+ * Where a sent transaction stands. The node keeps no transaction-to-block
+ * index (`blockHeight` is null), so inclusion is read from the signer's
+ * nonce: once the account nonce passes the transaction's, that nonce is spent
+ * (by this transaction, or by a replacement at the same nonce).
+ */
+export async function sentStatus(client: NodeClient, cid: string): Promise<"pending" | "nonce spent" | "not in pool" | "unknown to node"> {
+  let tx: ExplorerTransaction;
+  try {
+    tx = await client.transaction(cid);
+  } catch (e) {
+    if (e instanceof NodeError && e.status === 404) return "unknown to node";
+    throw e;
+  }
+  if ((await client.mempool()).transactions.includes(cid)) return "pending";
+  const signer = tx.signers[0];
+  if (signer && (await client.account(signer)).nonce > tx.nonce) return "nonce spent";
+  return "not in pool";
 }
 
-export class RpcClient {
-  private nodeIdx = 0;
-  constructor(private network: Network) {}
+export interface ChainEndpoints {
+  chainPath: string[];
+  committedBlock: string | null;
+  endpoints: string[];
+  /** Absent from nodes predating public submit: read as []. */
+  submitEndpoints?: string[];
+}
+export interface SubmitAnswer {
+  transactionCID: string;
+  mempoolCount: number;
+  mempoolBytes: number;
+}
 
-  static for(id: NetworkId): RpcClient {
-    return new RpcClient(NETWORKS[id]);
+export class NodeError extends Error {
+  readonly status: number;
+  readonly refusal: string | null;
+  constructor(status: number, refusal: string | null) {
+    super(refusal ?? `HTTP ${status}`);
+    this.status = status;
+    this.refusal = refusal;
+  }
+}
+
+export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** Hummingbird's error envelope is {"error":{"message":"..."}}. */
+export function refusalOf(text: string): string | null {
+  try {
+    const body = JSON.parse(text);
+    const message = body?.error?.message ?? body?.error ?? null;
+    return typeof message === "string" && message ? message : null;
+  } catch {
+    return null;
+  }
+}
+
+export class NodeClient {
+  readonly baseURL: string;
+  readonly chainPath: string[];
+  private readonly fetchImpl: Fetch;
+  constructor(baseURL: string, chainPath: string[], fetchImpl: Fetch = (input, init) => fetch(input, init)) {
+    this.baseURL = baseURL;
+    this.chainPath = chainPath;
+    this.fetchImpl = fetchImpl;
   }
 
-  get activeNode(): string {
-    return this.network.nodes[this.nodeIdx];
+  private url(path: string, params: Record<string, string> = {}): string {
+    const url = new URL(this.baseURL + path);
+    url.searchParams.set("chainPath", this.chainPath.join("/"));
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    return url.toString();
   }
 
-  private rotate() {
-    this.nodeIdx = (this.nodeIdx + 1) % this.network.nodes.length;
+  private async request<T>(url: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchImpl(url, { ...init, headers: { Accept: "application/json", ...(init?.headers ?? {}) } });
+    const text = await res.text();
+    if (!res.ok) throw new NodeError(res.status, refusalOf(text));
+    return JSON.parse(text) as T;
   }
 
-  private async call<T>(path: string, params?: Record<string, string>, init?: RequestInit): Promise<T> {
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < this.network.nodes.length; attempt++) {
-      const url = new URL(this.activeNode + path);
-      url.searchParams.set("chainPath", this.network.chainPath);
-      if (params) for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-      let res: Response;
-      try {
-        res = await fetch(url, { ...init, headers: { Accept: "application/json", ...(init?.headers ?? {}) } });
-      } catch (e) {
-        lastErr = e;
-        this.rotate();
-        continue;
-      }
-      const text = await res.text();
-      const body = text ? JSON.parse(text) : {};
-      if (res.ok) return body as T;
-      if (res.status >= 500 && attempt < this.network.nodes.length - 1) {
-        lastErr = new Error(body?.error ?? `HTTP ${res.status}`);
-        this.rotate();
-        continue;
-      }
-      const err = new Error(body?.error ?? `HTTP ${res.status}`);
-      (err as { status?: number }).status = res.status;
-      throw err;
-    }
-    throw lastErr ?? new Error("all nodes unreachable");
+  info() {
+    return this.request<ChainInfo>(this.url("/api/chain/info"));
   }
-
-  health() {
-    return this.call<{ status: string; chainHeight: number; peerCount: number }>("/health");
+  account(address: string) {
+    return this.request<AccountState>(this.url(`/api/state/account/${encodeURIComponent(address)}`));
   }
-  balance(address: string) {
-    return this.call<{ address: string; balance: number }>(`/api/balance/${encodeURIComponent(address)}`);
+  transaction(cid: string) {
+    return this.request<ExplorerTransaction>(this.url(`/api/transaction/${encodeURIComponent(cid)}`));
   }
-  nonce(address: string) {
-    return this.call<{ address: string; nonce: number }>(`/api/nonce/${encodeURIComponent(address)}`);
+  /** A bounded listing of the pool's transaction CIDs. */
+  mempool() {
+    return this.request<{ count: number; transactions: string[] }>(this.url("/api/mempool"));
   }
-  feeEstimate(target = 5) {
-    return this.call<{ fee: number; target: number }>("/api/fee/estimate", { target: String(target) });
+  block(id: string) {
+    return this.request<{ hash: string; height: number }>(this.url(`/api/block/${encodeURIComponent(id)}`));
   }
-  history(address: string, limit = 25) {
-    return this.call<{ transactions: { txCID: string; blockHash: string; height: number }[]; nextCursor: string | null }>(
-      `/api/transactions/${encodeURIComponent(address)}`,
-      { limit: String(limit) },
-    );
+  /** The declared endpoints of `child`, a child of this client's level. */
+  endpoints(child: string[]) {
+    const url = new URL(this.baseURL + "/api/chain/endpoints");
+    url.searchParams.set("chainPath", child.join("/"));
+    return this.request<ChainEndpoints>(url.toString());
   }
-  prepareBodyCID(payload: unknown) {
-    return this.call<{ bodyCID: string; bodyData: string; signingPreimage: string }>("/api/transaction/prepare", undefined, {
+  /** POST /transactions with a body produced by the signer. */
+  submit(requestJSON: string) {
+    return this.request<SubmitAnswer>(this.baseURL + "/transactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  }
-  submit(payload: { signatures: Record<string, string>; bodyCID: string; bodyData: string; chainPath: string[] }) {
-    return this.call<SubmitResult>("/api/transaction", undefined, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: requestJSON,
     });
   }
 }

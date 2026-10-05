@@ -1,8 +1,6 @@
 // Shared types for the popup <-> background-signer protocol. Note: AccountView
 // and every message intentionally carry NO private key material.
 
-import type { NetworkId } from "../config.ts";
-
 /** Persisted, encrypted-at-rest wallet contents (the vault plaintext). */
 export interface WalletData {
   mnemonic: string | null; // null = import-only wallet
@@ -22,16 +20,14 @@ export interface AccountView {
 export interface WalletState {
   initialized: boolean; // a vault exists on disk
   locked: boolean; // no in-memory session
-  network: NetworkId;
   accounts: AccountView[];
   active: string | null;
 }
 
+/** A signed transfer, ready for POST /transactions. */
 export interface SignedSubmit {
-  signatures: Record<string, string>;
+  requestJSON: string;
   bodyCID: string;
-  bodyData: string; // hex
-  chainPath: string[];
 }
 
 export interface TransferSummary {
@@ -45,13 +41,12 @@ export interface TransferSummary {
 // ---- request/response messages ----
 export type Request =
   | { type: "getState" }
-  | { type: "createWallet"; password: string; mnemonic?: string; privHex?: string; network?: NetworkId }
+  | { type: "createWallet"; password: string; mnemonic?: string; privHex?: string }
   | { type: "unlock"; password: string }
   | { type: "lock" }
   | { type: "addAccount"; label?: string }
   | { type: "importKey"; privHex: string; label?: string }
   | { type: "setActive"; address: string }
-  | { type: "setNetwork"; network: NetworkId }
   | { type: "reset" }
   | {
       type: "signTransfer";
