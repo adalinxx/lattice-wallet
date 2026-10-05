@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
-import { reader, submitter, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
 
@@ -160,4 +160,15 @@ test("discovery walks Nexus -> A -> B through the SDK resolver, accepting only h
   assert.ok(!calls.some((c) => /127\.0\.0\.1|10\.0\.0\.5|169\.254/.test(c)), "private hosts are never dialed:\n" + calls.join("\n"));
   const b = await discover("https://start.example", ["Nexus", "A", "B"], fetch);
   assert.deepEqual(b.map((e) => [e.url, e.declaresSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
+});
+
+test("a submission is held to the CID the wallet computed", async () => {
+  const signer = importPrivateKey("11".repeat(32));
+  const signed = signTransfer(signer, { to: importPrivateKey("22".repeat(32)).address, amount: 5n, fee: 1n, nonce: 0n, chainPath: ["Nexus"] });
+  const answering = (transactionCID: string) => ({ submit: async () => ({ transactionCID }) });
+  assert.equal(await submitChecked(answering(signed.transactionCID), signed), signed.transactionCID);
+  const other = "bafyreidog6lzal3gjfvbvmmdccp3ibyndsy3hcvb22fhvtmxivsrmodiyy";
+  const refused = await submitChecked(answering(other), signed).then(() => undefined, (e: unknown) => e);
+  assert.ok(refused instanceof CIDMismatchError);
+  assert.match(describe(refused), /unexpected answer from node: .*reported transaction bafyreidog/);
 });

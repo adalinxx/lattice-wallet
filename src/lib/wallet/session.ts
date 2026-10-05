@@ -3,7 +3,7 @@
 // dependency-light and pure so it is unit-testable without the extension.
 
 import { deriveAccount, importPrivateKey, type Account } from "../crypto/accounts.ts";
-import { buildTransfer, signTransactionBody, transactionPayload } from "@adalinxx/lattice-core";
+import { buildTransfer, signTransactionBody, signedTransactionCID, transactionPayload } from "@adalinxx/lattice-core";
 import type { WalletData, AccountView, SignedSubmit } from "./types.ts";
 
 export interface LiveAccount extends Account {
@@ -38,7 +38,8 @@ export function nextHdLabel(data: WalletData): { index: number; label: string } 
 /**
  * Build and sign a transfer (runs in the worker, the key's only home). The SDK
  * builds the body (fee = debit over credit), encodes it, derives its CID and
- * the lattice-tx-v1 envelope, and signs; the payload is plain JSON.
+ * the lattice-tx-v1 envelope, and signs; the payload is plain JSON. The
+ * transaction's CID is computed here, so the node's answer can be checked.
  */
 export function signTransfer(
   acct: Account,
@@ -46,5 +47,6 @@ export function signTransfer(
 ): SignedSubmit {
   const body = buildTransfer({ from: acct.address, ...args });
   const { bodyCID, publicKey, signature } = signTransactionBody(body, acct.privateKey);
-  return { payload: transactionPayload({ [publicKey]: signature }, body), bodyCID };
+  const signatures = { [publicKey]: signature };
+  return { payload: transactionPayload(signatures, body), bodyCID, transactionCID: signedTransactionCID(signatures, body) };
 }

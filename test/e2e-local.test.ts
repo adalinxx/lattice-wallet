@@ -20,7 +20,7 @@ import { promisify } from "node:util";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { importPrivateKey, type Account } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
-import { reader, submitter, sentStatus, statusText, feeWarning, describe } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, sentStatus, statusText, feeWarning, describe } from "../src/lib/wallet/node.ts";
 
 const bin = process.env.LATTICE_NODE_BIN;
 const run = promisify(execFile);
@@ -123,8 +123,9 @@ test("own node (loopback, no relay floor): fund by mining, send with a custom fe
 
     const fee = 17n; // the user's choice, not an estimate
     assert.equal(feeWarning(fee, info.minRelayFee), undefined);
-    const { payload } = signTransfer(alice, { to: bob.address, amount: 1_000n, fee, nonce: funded.nonce, chainPath });
-    const sent = await submitter(node.operator, fetch).submit(payload);
+    const signed = signTransfer(alice, { to: bob.address, amount: 1_000n, fee, nonce: funded.nonce, chainPath });
+    // The node must report exactly the CID the wallet computed.
+    const sent = { transactionCID: await submitChecked(submitter(node.operator, fetch), signed) };
     assert.deepEqual(await sentStatus(reads, sent.transactionCID), { kind: "pending" });
     const before = (await reads.chainInfo()).height!;
     await mine(node, alice, 1);

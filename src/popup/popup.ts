@@ -4,7 +4,7 @@
 
 import { wallet } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic } from "../lib/crypto/accounts.ts";
-import { reader, submitter, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
@@ -419,14 +419,24 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
     if (!signed.ok) { toast.textContent = signed.error; return; }
     toast.textContent = "submitting…";
     try {
-      const answer = await submitter(endpoint()!.url).submit(signed.signedSubmit.payload);
+      const cid = signed.signedSubmit.transactionCID;
       const chain = settings.chain;
-      await update((s) => recordSent(s, chain, {
-        cid: answer.transactionCID, to, amount: amount.toString(), at: Date.now(),
+      const record = () => update((s) => recordSent(s, chain, {
+        cid, to, amount: amount.toString(), at: Date.now(),
         from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
       }));
-      sentScreen(answer.transactionCID);
-    } catch (e) { toast.textContent = describe(e); }
+      try {
+        await submitChecked(submitter(endpoint()!.url), signed.signedSubmit);
+      } catch (e) {
+        // The node may hold it under the CID it reported: keep ours on record.
+        if (e instanceof CIDMismatchError) await record();
+        throw e;
+      }
+      await record();
+      sentScreen(cid);
+    } catch (e) {
+      toast.textContent = describe(e) + (e instanceof CIDMismatchError ? " It may have been admitted: check Sent before resending." : "");
+    }
   }
 }
 
@@ -436,7 +446,7 @@ function sentScreen(txCID: string) {
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
       h("p", { class: "muted" }, "Admitted to the node's pool (pending). See Sent for its block once mined."),
-      h("label", { class: "k" }, "Transaction (as the node reports it)"), h("div", { class: "addr mono" }, txCID),
+      h("label", { class: "k" }, "Transaction (computed by this wallet; the node reported the same CID)"), h("div", { class: "addr mono" }, txCID),
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: async () => { await navigator.clipboard.writeText(txCID); toast.textContent = "copied"; setTimeout(() => (toast.textContent = ""), 1500); } }, "Copy"),
         h("button", { class: "btn", onclick: mainScreen }, "Done"),
