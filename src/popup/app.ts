@@ -8,7 +8,7 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, estimateFeeMarket, confirmationEstimate, type ActiveDeposit, type FeeMarketEstimate, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, recordOpenPurchase, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
@@ -1257,11 +1257,12 @@ async function sendFlow() {
   const acct = activeAccount()!;
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
-  // No estimate service: the fee is the user's, starting at this chain's default.
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
+  const feeChoices = h("div", { class: "fee-choices" });
+  const feeEta = h("p", { class: "muted fee-eta" }, "Estimating network fee…");
   const feeAdvanced = h("details", { class: "advanced" },
-    h("summary", {}, "Advanced"),
+    h("summary", {}, "Custom fee"),
     h("div", { class: "advanced-content" },
       h("label", { class: "k" }, "Network fee"), fee, feeNote,
     ),
@@ -1270,11 +1271,34 @@ async function sendFlow() {
   const submitOK = endpoint()!.acceptsSubmit;
   // The chosen endpoint's relay floor (its policy): read once, warned against, never applied.
   let minRelayFee: bigint | undefined;
+  let market: FeeMarketEstimate | undefined;
+  const waitText = (milliseconds: bigint) => {
+    const seconds = Number((milliseconds + 999n) / 1000n);
+    if (seconds < 60) return `~${seconds}s`;
+    const minutes = Math.ceil(seconds / 60);
+    return minutes < 60 ? `~${minutes} min` : `~${Math.ceil(minutes / 60)} hr`;
+  };
+  const updateEta = () => {
+    const value = parseFee(fee.value);
+    const estimate = value === null || market === undefined ? undefined : confirmationEstimate(value, market);
+    if (market === undefined) return;
+    if (estimate === undefined) {
+      feeEta.textContent = `Below this node's minimum fee of ${fmt(market.minimum.toString())}.`;
+      return;
+    }
+    const qualifier = estimate.complete ? "Estimated" : "At least";
+    const blocks = `${estimate.blocks} block${estimate.blocks === 1 ? "" : "s"}`;
+    feeEta.textContent = `${qualifier} ${blocks} · ${waitText(estimate.milliseconds)}${estimate.complete ? "" : " · partial mempool"}`;
+  };
   const checkFee = () => {
     const f = parseFee(fee.value);
     const warning = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
     feeNote.textContent = warning;
     if (warning) feeAdvanced.open = true;
+    for (const button of feeChoices.querySelectorAll<HTMLButtonElement>("button[data-fee]")) {
+      button.setAttribute("aria-pressed", String(f !== null && button.dataset.fee === f.toString()));
+    }
+    updateEta();
   };
   fee.addEventListener("input", checkFee);
   client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; checkFee(); }).catch(() => {});
@@ -1284,12 +1308,34 @@ async function sendFlow() {
       ...(submitOK ? [] : [h("p", { class: "warn" }, "This node does not accept submits. Use your own node, or an endpoint whose operator accepts public submits.")]),
       h("label", { class: "k" }, "To"), to,
       h("label", { class: "k" }, "Amount"), amount,
+      feeChoices,
+      feeEta,
       feeAdvanced,
       err,
       ...(submitOK ? [h("button", { class: "block", onclick: () => prepareReview() }, "Review")] : []),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
     ),
   );
+  estimateFeeMarket(endpoint()!.url, chainPath(), platform.fetch, nodeAuth).then((estimate) => {
+    market = estimate;
+    minRelayFee = estimate.minimum;
+    if (settings.fees[settings.chain] === undefined) fee.value = estimate.recommended.toString();
+    const choices = [
+      { label: "Recommended", value: estimate.recommended },
+      { label: "Priority", value: estimate.priority },
+      { label: "Economy", value: estimate.minimum },
+    ].filter((choice, index, all) => all.findIndex((other) => other.value === choice.value) === index);
+    feeChoices.replaceChildren(...choices.map((choice) => h("button", {
+      class: "fee-choice",
+      type: "button",
+      "data-fee": choice.value.toString(),
+      onclick: () => { fee.value = choice.value.toString(); checkFee(); },
+    }, h("span", { class: "fee-choice-label" }, choice.label), h("span", { class: "fee-choice-value" }, fmt(choice.value.toString())))));
+    checkFee();
+  }).catch(() => {
+    feeEta.textContent = "Fee estimate unavailable. You can set a custom fee.";
+    client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; checkFee(); }).catch(() => {});
+  });
 
   async function prepareReview() {
     err.textContent = "";

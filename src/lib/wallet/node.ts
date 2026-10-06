@@ -311,6 +311,91 @@ export function feeWarning(fee: bigint, minRelayFee: bigint | undefined): string
   return `This node relays only fees of at least ${minRelayFee}; it will likely refuse a fee of ${fee}.`;
 }
 
+export interface FeeMarketEstimate {
+  readonly minimum: bigint;
+  readonly recommended: bigint;
+  readonly priority: bigint;
+  readonly targetBlockTimeMilliseconds: bigint;
+  readonly transactionsPerBlock: number;
+  readonly sampled: number;
+  readonly total: number;
+  readonly complete: boolean;
+  /** Mineable fees, highest first. The wallet uses this for custom-fee ETAs. */
+  readonly fees: readonly bigint[];
+}
+
+function transactionFee(transaction: Awaited<ReturnType<NodeClient["transaction"]>>): bigint | undefined {
+  let destroyed = 0n;
+  let created = 0n;
+  for (const action of transaction.accountActions) {
+    if (action.delta < 0n) destroyed -= action.delta;
+    else created += action.delta;
+  }
+  for (const action of transaction.withdrawalActions) destroyed += action.amountWithdrawn;
+  for (const action of transaction.depositActions) created += action.amountDeposited;
+  return destroyed >= created ? destroyed - created : undefined;
+}
+
+async function mapConcurrent<T, U>(values: readonly T[], limit: number, apply: (value: T) => Promise<U>): Promise<U[]> {
+  const results = new Array<U>(values.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next++;
+      results[index] = await apply(values[index]!);
+    }
+  }));
+  return results;
+}
+
+/**
+ * A live, mempool-based estimate. This is deliberately local and predictive:
+ * miners can see a different pool, block times vary, and a truncated listing
+ * lowers confidence. Fees are compared conservatively (equal bids stay ahead).
+ */
+export async function estimateFeeMarket(
+  url: string, chainPath: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+): Promise<FeeMarketEstimate> {
+  const client = reader(url, [...chainPath], fetchImpl, authorization);
+  const [info, pool, rawSpec] = await Promise.all([
+    client.chainInfo(), client.mempool(), nodeJSON(url, "/api/chain/spec", chainPath, fetchImpl, authorization),
+  ]);
+  const spec = object(rawSpec, "chain spec");
+  const targetBlockTimeMilliseconds = unsigned(spec.targetBlockTime, "chain spec.targetBlockTime");
+  const rawCapacity = unsigned(spec.maxNumberOfTransactionsPerBlock, "chain spec.maxNumberOfTransactionsPerBlock");
+  if (rawCapacity === 0n || rawCapacity > BigInt(Number.MAX_SAFE_INTEGER)) throw new TypeError("chain transaction capacity is invalid");
+  const transactionsPerBlock = Number(rawCapacity);
+  const projections = await mapConcurrent(pool.transactions, 8, (cid) => client.transaction(cid).catch(() => undefined));
+  const fees = projections.flatMap((transaction) => {
+    if (transaction === undefined) return [];
+    const fee = transactionFee(transaction);
+    return fee === undefined ? [] : [fee];
+  }).sort((a, b) => a === b ? 0 : a > b ? -1 : 1);
+  const minimum = info.minRelayFee ?? 0n;
+  const bidFor = (blocks: number) => {
+    const boundary = fees[transactionsPerBlock * blocks - 1];
+    return boundary === undefined ? minimum : boundary >= minimum ? boundary + 1n : minimum;
+  };
+  return {
+    minimum,
+    recommended: bidFor(2),
+    priority: bidFor(1),
+    targetBlockTimeMilliseconds,
+    transactionsPerBlock,
+    sampled: projections.filter((transaction) => transaction !== undefined).length,
+    total: pool.count,
+    complete: pool.count === pool.transactions.length && projections.every((transaction) => transaction !== undefined),
+    fees,
+  };
+}
+
+export function confirmationEstimate(fee: bigint, market: FeeMarketEstimate): { blocks: number; milliseconds: bigint; complete: boolean } | undefined {
+  if (fee < market.minimum) return undefined;
+  const ahead = market.fees.filter((other) => other >= fee).length;
+  const blocks = Math.floor(ahead / market.transactionsPerBlock) + 1;
+  return { blocks, milliseconds: BigInt(blocks) * market.targetBlockTimeMilliseconds, complete: market.complete };
+}
+
 export type SentStatus =
   | { kind: "included"; height: bigint; hash: string }
   | { kind: "pending" }
