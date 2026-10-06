@@ -22,7 +22,7 @@ function button(text: string): HTMLButtonElement {
 }
 
 async function openOrder(uri: string) {
-  button("Order").click();
+  button("Scan cross-chain order").click();
   const paste = document.querySelector("textarea") as HTMLTextAreaElement;
   assert.ok(paste);
   paste.value = uri;
@@ -79,6 +79,11 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   const { startWallet } = await import("../src/popup/app.ts");
   await startWallet({ wallet, store, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true });
+
+  for (const label of ["Send", "Receive", "Scan cross-chain order", "Transactions", "Settings"]) button(label);
+  for (const hidden of ["Refresh", "Node", "Fee", "Backup", "Lock"]) {
+    assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
+  }
 
   const realNow = Date.now;
   const now = realNow();
