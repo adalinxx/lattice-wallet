@@ -85,6 +85,15 @@ export type Request =
       fee: string;
       nonce: string;
       chainPath: string[];
+    }
+  | {
+      type: "signReceipt" | "signWithdrawal";
+      from: string;
+      offers: { demander: string; amountDemanded: string; amountDeposited: string; depositNonce: string }[];
+      fee: string;
+      nonce: string;
+      chainPath: string[];
+      directory?: string;
     };
 
 export type Ok<T = object> = { ok: true } & T;

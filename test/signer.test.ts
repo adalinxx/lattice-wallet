@@ -103,6 +103,29 @@ test("a deposit is built and signed inside the signer", async () => {
   assert.deepEqual(invalid, { ok: false, error: "demanded amount is out of range" });
 });
 
+test("receipt payment and child withdrawal are built and signed inside the signer", async () => {
+  const wallet = walletClient(createSigner(memory()).handle);
+  const created = await wallet.create("pw-pw-pw-pw", { privHex: "a1".repeat(32) });
+  assert.ok(created.ok);
+  const offer = { demander: importPrivateKey("b0".repeat(32)).address, amountDemanded: "300", amountDeposited: "500", depositNonce: "42" };
+  const receipt = await wallet.signReceipt({
+    from: created.state.active!, offers: [offer], directory: "testnet", fee: "7", nonce: "2", chainPath: ["Nexus"],
+  });
+  assert.ok(receipt.ok);
+  assert.deepEqual(receipt.signedSubmit.payload.transaction.body.accountActions, [{ owner: created.state.active!, delta: "-7" }]);
+  assert.deepEqual(receipt.signedSubmit.payload.transaction.body.receiptActions, [{
+    withdrawer: created.state.active!, nonce: "42", demander: offer.demander, amountDemanded: "300", directory: "testnet",
+  }]);
+  const withdrawal = await wallet.signWithdrawal({
+    from: created.state.active!, offers: [offer], fee: "11", nonce: "3", chainPath: ["Nexus", "testnet"],
+  });
+  assert.ok(withdrawal.ok);
+  assert.deepEqual(withdrawal.signedSubmit.payload.transaction.body.accountActions, [{ owner: created.state.active!, delta: "489" }]);
+  assert.deepEqual(withdrawal.signedSubmit.payload.transaction.body.withdrawalActions, [{
+    withdrawer: created.state.active!, nonce: "42", demander: offer.demander, amountDemanded: "300", amountWithdrawn: "500",
+  }]);
+});
+
 test("pairing keeps a node's cookie encrypted in the vault and yields its Authorization", async () => {
   const vaults = memory();
   const signer = createSigner(vaults);

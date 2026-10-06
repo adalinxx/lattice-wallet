@@ -7,15 +7,16 @@ body { width: 360px; min-height: 480px; }
   display: flex; align-items: center; justify-content: space-between;
   padding: var(--s-2) var(--s-3); border-bottom: var(--rule);
 }
-.brand { display: flex; align-items: center; gap: var(--s-2); }
-.brand .wordmark { font-size: var(--fs-16); }
-.brand-sub { font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); margin-left: var(--s-1); }
+.brand { display: flex; align-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
 
 .net {
   font-size: var(--fs-12); padding: 2px var(--s-2);
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .net.testnet { background: var(--ink); color: var(--paper); }
+.chain-controls { display: flex; align-items: center; gap: var(--s-1); }
+.parent-chain { min-width: 30px; padding-left: var(--s-2); padding-right: var(--s-2); white-space: nowrap; }
+#net-badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 main { padding: var(--s-4) var(--s-3); }
 
@@ -54,11 +55,7 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .account-picker { border: 0; padding: 0 0 var(--s-2); }
 .balance-card { border: var(--rule); padding: var(--s-4) var(--s-3); }
 .balance-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
-.balance-tools { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: var(--s-2); }
 .balance-label { display: block; font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
-.chain-quick-picker { width: auto; max-width: 150px; padding: 2px var(--s-1); border: var(--rule); font-size: var(--fs-12); }
-.child-chain-buttons { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
-.child-chain-buttons .btn { flex: 1 1 auto; }
 .text-action { border: 0; padding: 0; font-size: var(--fs-12); text-decoration: underline; text-underline-offset: 2px; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
@@ -66,13 +63,26 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .account-address { word-break: break-all; }
 .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
 .primary-actions button { min-height: 48px; }
-.secondary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
-.secondary-actions button { min-width: 0; padding-left: var(--s-2); padding-right: var(--s-2); }
 .section-label { margin: 0; font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .advanced { border: var(--rule); }
 .advanced summary { cursor: pointer; padding: var(--s-2) var(--s-3); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .advanced-content { margin: 0 var(--s-3) var(--s-3); }
 .advanced-content.kv { margin-top: 0; }
+
+.chain-menu { position: fixed; z-index: 20; top: 45px; right: var(--s-2); width: min(320px, calc(100vw - 16px)); max-height: calc(100vh - 55px); overflow: auto; padding: var(--s-3); border: var(--rule); background: var(--paper); }
+.chain-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-bottom: var(--s-2); }
+.chain-path { margin-top: 2px; color: var(--muted); font-size: var(--fs-12); overflow-wrap: anywhere; }
+.chain-menu-items { border: var(--rule); }
+.chain-menu-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: var(--s-2); border: 0; border-bottom: var(--rule); text-align: left; text-transform: none; }
+.chain-menu-item:last-child { border-bottom: 0; }
+.chain-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.order-drop {
+  position: fixed; inset: var(--s-2); z-index: 50; display: grid; place-items: center;
+  border: 2px dashed currentColor; background: var(--paper); padding: var(--s-4);
+  text-align: center; pointer-events: none;
+}
+.order-drop.error { border-style: solid; }
 
 .toast { font-size: var(--fs-12); min-height: 1.2em; }
 .err { border: var(--rule); padding: var(--s-2) var(--s-3); font-size: var(--fs-12); }
