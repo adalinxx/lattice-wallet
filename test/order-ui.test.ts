@@ -70,6 +70,8 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
     const url = new URL(input);
     if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], minRelayFee: "3", acceptsSubmit: true }));
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "7" }));
+    if (url.pathname === "/api/block/latest") return new Response(JSON.stringify({ height: "8", hash: "bafytip", timestamp: "1", transactionCount: 0 }));
+    if (url.pathname === "/api/block/bafytip/children") return new Response(JSON.stringify({ children: [{ directory: "payments", blockHash: "bafychild" }] }));
     if (url.pathname === "/transactions" && init?.method === "POST") {
       postCalls += 1;
       savedBeforePost = structuredClone(stored.settings);
@@ -91,6 +93,18 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   await settle();
   assert.equal(copied, address, "copies the full address rather than its shortened display");
   assert.match(document.body.textContent ?? "", /Account address copied/);
+
+  const chainPicker = document.querySelector('select[aria-label="Active chain"]') as HTMLSelectElement;
+  assert.deepEqual([...chainPicker.options].map((option) => option.textContent), ["Nexus", "Nexus/testnet", "Nexus/testnet/payments", "Manage chains…"]);
+  chainPicker.value = "Nexus";
+  chainPicker.dispatchEvent(new dom.window.Event("change"));
+  await settle();
+  assert.equal(stored.settings.chain, "Nexus");
+  const switchedPicker = document.querySelector('select[aria-label="Active chain"]') as HTMLSelectElement;
+  switchedPicker.value = "Nexus/testnet";
+  switchedPicker.dispatchEvent(new dom.window.Event("change"));
+  await settle();
+  assert.equal(stored.settings.chain, "Nexus/testnet");
 
   button("Send").click();
   await settle();
@@ -131,6 +145,13 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.match(document.body.textContent ?? "", /Do not create this deposit again/i);
   assert.match(document.body.textContent ?? "", /bafytx/);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Lock funds & create order"), false);
+  button("Done").click();
+  await settle();
+  assert.ok([...document.querySelectorAll('select[aria-label="Active chain"] option')].some((option) => option.textContent === "Nexus/testnet/payments"));
+  button("payments").click();
+  await settle();
+  assert.equal(stored.settings.chain, "Nexus/testnet/payments");
+  assert.equal((document.querySelector('select[aria-label="Active chain"]') as HTMLSelectElement).value, "Nexus/testnet/payments");
 });
 
 test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {
