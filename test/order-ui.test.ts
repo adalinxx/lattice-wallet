@@ -125,3 +125,44 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.match(document.body.textContent ?? "", /bafytx/);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Lock funds & create order"), false);
 });
+
+test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  for (const [name, value] of Object.entries({
+    window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
+    Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
+    HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
+  })) Object.defineProperty(globalThis, name, { configurable: true, value });
+
+  const address = "bafyaccount";
+  const wallet = {
+    getState: async () => ({ ok: true, state: {
+      initialized: true, locked: false,
+      accounts: [{ address, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }],
+      active: address,
+    } }),
+    nodeAuthorization: async () => ({ ok: true }),
+  } as unknown as WalletClient;
+  let stored = { settings: structuredClone(DEFAULT_SETTINGS) };
+  const store = {
+    get: async () => stored,
+    set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
+  };
+  const requested: string[][] = [];
+  const fetch = async (input: string | URL) => {
+    assert.equal(new URL(input).origin, "https://rpc.lattice.build");
+    return new Response(JSON.stringify({ chain: ["Nexus"], minRelayFee: "1", acceptsSubmit: false }));
+  };
+
+  const { startWallet } = await import("../src/popup/app.ts");
+  await startWallet({
+    wallet, store, fetch,
+    requestOrigins: async (origins) => { requested.push(origins); return true; },
+  });
+
+  button("Use Lattice.build").click();
+  await settle();
+  assert.deepEqual(requested, [["https://rpc.lattice.build/*"]]);
+  assert.deepEqual(stored.settings.endpoints, {});
+  assert.match(document.body.textContent ?? "", /not accepting transactions/i);
+});

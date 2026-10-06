@@ -9,7 +9,7 @@ import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
+import { LATTICE_BUILD_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type SellOrder } from "../lib/wallet/order.ts";
@@ -255,7 +255,7 @@ function actionButtons(): El[] {
 }
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
-async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string): Promise<boolean> {
+async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false): Promise<boolean> {
   const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
   if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
   let authorization: string | undefined;
@@ -266,6 +266,7 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
   try {
     const info = await reader(url, chainPath(), platform.fetch, authorization).chainInfo();
     if (info.chain.join("/") !== settings.chain) { err.textContent = `That node answers for ${info.chain.join("/")}, not ${settings.chain}.`; return false; }
+    if (requireSubmit && info.acceptsSubmit !== true) { err.textContent = "Lattice.build is not accepting transactions right now."; return false; }
     // Kept only once it opened this node.
     if (cookie) {
       const paired = await wallet.setNodeCookie(url, cookie);
@@ -306,6 +307,12 @@ function endpointScreen() {
     h("div", { class: "stack" },
       h("h1", {}, "Node for " + settings.chain),
       h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
+      ...(settings.chain === ROOT_CHAIN && !platform.ownNode ? [
+        h("button", { class: "block", onclick: async () => {
+          if (await chooseEndpoint(LATTICE_BUILD_RPC, "user", err, true, undefined, true)) route();
+        } }, "Use Lattice.build"),
+        h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
+      ] : []),
       url,
       ...(platform.pairOrigin ? pairingSteps(platform.pairOrigin, cookie) : []),
       h("button", { class: "block", onclick: async () => {
