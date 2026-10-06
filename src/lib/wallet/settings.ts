@@ -1,6 +1,6 @@
 // Non-secret settings, kept beside (never inside) the encrypted vault: the
 // selected chain, the user's chain list, the endpoint chosen per chain, the
-// default fee per chain, and the transactions this wallet sent. No defaults point at any node.
+// default fee per chain, connection preference, and the transactions this wallet sent.
 
 import { ROOT_CHAIN } from "../config.ts";
 
@@ -42,6 +42,8 @@ export interface OpenDeposit {
 export interface Settings {
   chain: string;
   chains: string[];
+  /** Automatic discovers verified submit nodes; custom requires an explicit endpoint per chain. */
+  nodeMode: "automatic" | "custom";
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
   /** Never trim these. Remove one only after its withdrawal is confirmed. */
@@ -50,7 +52,7 @@ export interface Settings {
   fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], endpoints: {}, sent: {}, openDeposits: [], fees: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, openDeposits: [], fees: {} };
 
 /** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
 export const FALLBACK_FEE = "1";

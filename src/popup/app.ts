@@ -255,9 +255,11 @@ function actionButtons(): El[] {
 }
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
-async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false): Promise<boolean> {
-  const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
-  if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
+async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false, permissionGranted = false): Promise<boolean> {
+  if (!permissionGranted) {
+    const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
+    if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
+  }
   let authorization: string | undefined;
   try {
     authorization = cookie ? nodeCookieAuthorization(cookie) : await authorizationFor(url);
@@ -312,7 +314,10 @@ function endpointScreen() {
       h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
       ...(settings.chain === ROOT_CHAIN && !platform.ownNode ? [
         h("button", { class: "block", onclick: async () => {
-          if (await chooseEndpoint(LATTICE_BUILD_RPC, "user", err, true, undefined, true)) route();
+          if (await chooseEndpoint(LATTICE_BUILD_RPC, "user", err, true, undefined, true)) {
+            await update((s) => ({ ...s, nodeMode: "automatic" }));
+            route();
+          }
         } }, "Use Lattice.build"),
         h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
       ] : []),
@@ -325,7 +330,10 @@ function endpointScreen() {
       h("button", { class: "block", onclick: async () => {
         const n = normalizeNodeURL(url.value);
         if (!n) { err.textContent = "Enter an https:// URL (http:// only for 127.0.0.1/localhost)."; return; }
-        if (await chooseEndpoint(n, "user", err, true, cookie.value.trim() || undefined)) route();
+        if (await chooseEndpoint(n, "user", err, true, cookie.value.trim() || undefined)) {
+          await update((s) => ({ ...s, nodeMode: "custom" }));
+          route();
+        }
       } }, "Use this node"),
       ...(isChild ? [
         h("p", { class: "muted" }, "Or discover endpoints for " + settings.chain + " through a Nexus node you choose:"),
@@ -358,6 +366,7 @@ function endpointScreen() {
         }
         for (const candidate of candidates) {
           if (await chooseEndpoint(candidate.url, "discovered", err, true, undefined, true)) {
+            await update((s) => ({ ...s, nodeMode: "automatic" }));
             route();
             return;
           }
@@ -442,6 +451,29 @@ async function mainScreen() {
   const parentChain = chainPath().slice(0, -1).join("/");
   availableChains = [...new Set([...(parentChain ? [parentChain] : []), settings.chain, ...availableChains])];
   const switchChain = async (chain: string) => {
+    if (settings.nodeMode === "automatic" && !platform.ownNode && !settings.endpoints[chain] && chain !== ROOT_CHAIN) {
+      toast.textContent = `Finding a node for ${chain}…`;
+      const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+      const granted = await platform.requestOrigins([originPattern(bootstrap), "https://*/*"]).catch(() => false);
+      await update((s) => ({
+        ...s, chain,
+        chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
+      }));
+      if (granted) {
+        try {
+          const path = parseChainPath(chain)!;
+          const candidates = (await discover(bootstrap, path, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
+          for (const candidate of candidates) {
+            if (await chooseEndpoint(candidate.url, "discovered", toast, true, undefined, true, true)) {
+              route();
+              return;
+            }
+          }
+        } catch { /* Fall through to the connection screen. */ }
+      }
+      endpointScreen();
+      return;
+    }
     await update((s) => ({
       ...s, chain,
       chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
@@ -544,13 +576,30 @@ function settingsScreen() {
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
       h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(node.url))),
       h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, node.acceptsSubmit ? "read + send" : "read only")),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
     ),
     h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
-    ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: endpointScreen }, "Change node")]),
+    ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
     h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
     h("button", { class: "btn block", onclick: mainScreen }, "Done"),
+  ));
+}
+
+function connectionScreen() {
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Connection"),
+    h("p", { class: "muted" }, "Automatic uses the explorer directory to find a verified node for each chain. Choose custom only when you operate or trust a specific node."),
+    h("button", { class: settings.nodeMode === "automatic" ? "block" : "btn block", onclick: async () => {
+      await update((s) => ({ ...s, nodeMode: "automatic" }));
+      route();
+    } }, "Automatic (recommended)"),
+    h("button", { class: settings.nodeMode === "custom" ? "block" : "btn block", onclick: async () => {
+      await update((s) => ({ ...s, nodeMode: "custom" }));
+      endpointScreen();
+    } }, "Use a custom node"),
+    h("button", { class: "btn block", onclick: settingsScreen }, "Back"),
   ));
 }
 
