@@ -22,7 +22,7 @@ function button(text: string): HTMLButtonElement {
 }
 
 async function openOrder(uri: string) {
-  button("Order").click();
+  button("Scan cross-chain order").click();
   const paste = document.querySelector("textarea") as HTMLTextAreaElement;
   assert.ok(paste);
   paste.value = uri;
@@ -79,6 +79,23 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   const { startWallet } = await import("../src/popup/app.ts");
   await startWallet({ wallet, store, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true });
+
+  for (const label of ["Refresh", "Send", "Receive", "Scan cross-chain order", "Transactions", "Settings"]) button(label);
+  for (const hidden of ["Node", "Fee", "Backup", "Lock"]) {
+    assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
+  }
+
+  button("Send").click();
+  await settle();
+  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a fee warning reveals its control");
+  (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = "bafybuyer";
+  (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
+  button("Review").click();
+  await settle();
+  assert.match(document.body.textContent ?? "", /From · Account 1/);
+  assert.match(document.body.textContent ?? "", new RegExp(address));
+  button("Cancel").click();
+  await settle();
 
   const realNow = Date.now;
   const now = realNow();

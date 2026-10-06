@@ -152,10 +152,19 @@ function welcome() {
     h("div", { class: "stack" },
       h("div", { class: "hero" }, h("span", { class: "wordmark" }, "NEXUS"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
       h("button", { class: "block", onclick: createFlow }, "Create wallet"),
-      h("button", { class: "btn block", onclick: importFlow }, "Import"),
-      h("button", { class: "btn block", onclick: () => openBackup("restore") }, "Restore from backup, SeedQR or another device"),
+      h("button", { class: "btn block", onclick: restoreChoice }, "Restore or import"),
     ),
   );
+}
+
+function restoreChoice() {
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Restore wallet"),
+    h("p", { class: "muted" }, "Choose the recovery method you already have."),
+    h("button", { class: "block", onclick: importFlow }, "Recovery phrase or private key"),
+    h("button", { class: "btn block", onclick: () => openBackup("restore") }, "Backup, SeedQR or another device"),
+    h("button", { class: "btn block", onclick: welcome }, "Back"),
+  ));
 }
 
 function passwordFields(): { node: El; get: () => string | null } {
@@ -387,7 +396,7 @@ async function mainScreen() {
   nodeAuth = await authorizationFor(nodeV.url);
   const toast = h("div", { class: "toast" });
 
-  const accountPicker = h("select", { class: "picker", onchange: async (e: Event) => {
+  const accountPicker = h("select", { class: "picker account-picker", onchange: async (e: Event) => {
     const v = (e.target as HTMLSelectElement).value;
     if (v === "__add") { await wallet.addAccount(); await refresh(); return; }
     if (v === "__import") return importKeyFlow();
@@ -398,26 +407,27 @@ async function mainScreen() {
   accountPicker.append(h("option", { value: "__import" }, "+ Import key"));
 
   render(
-    h("div", { class: "stack" },
+    h("div", { class: "stack wallet-home" },
       accountPicker,
-      h("div", { class: "kv" },
-        h("div", { class: "row" }, h("span", { class: "k" }, "Balance"), balanceV),
-        h("div", { class: "row" }, h("span", { class: "k" }, acct.kind === "imported" ? "Imported" : "Account"), h("span", { class: "v mono" }, short(acct.address))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(nodeV.url)),
-          h("span", { class: "tag" }, nodeV.acceptsSubmit ? "submit" : "read-only")),
+      h("div", { class: "balance-card" },
+        h("div", { class: "balance-heading" },
+          h("span", { class: "balance-label" }, `Balance · ${settings.chain}`),
+          h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
+        ),
+        h("span", { class: "balance-value" }, balanceV),
+        h("div", { class: "account-line" },
+          h("span", {}, acct.label),
+          h("span", { class: "mono" }, short(acct.address)),
+        ),
       ),
-      h("div", { class: "row-actions" },
-        h("button", { class: "btn", onclick: sendFlow }, "Send"),
+      h("div", { class: "primary-actions" },
+        h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
-        h("button", { class: "btn", onclick: orderFlow }, "Order"),
-        h("button", { class: "btn", onclick: () => loadBalance() }, "Refresh"),
       ),
-      h("div", { class: "row-actions" },
-        h("button", { class: "btn", onclick: historyScreen }, "Sent"),
-        ...(platform.ownNode ? [] : [h("button", { class: "btn", onclick: endpointScreen }, "Node")]),
-        h("button", { class: "btn", onclick: feeScreen }, "Fee"),
-        h("button", { class: "btn", onclick: () => openBackup("backup") }, "Backup"),
-        h("button", { class: "btn", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock"),
+      h("button", { class: "btn block", onclick: orderFlow }, "Scan cross-chain order"),
+      h("div", { class: "secondary-actions" },
+        h("button", { class: "btn", onclick: historyScreen }, "Transactions"),
+        h("button", { class: "btn", onclick: settingsScreen }, "Settings"),
       ),
       ...actionButtons(),
       toast,
@@ -432,6 +442,25 @@ async function mainScreen() {
     } catch (e) { balanceV.textContent = describe(e); }
   }
   loadBalance();
+}
+
+function settingsScreen() {
+  const acct = activeAccount()!;
+  const node = endpoint()!;
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Settings"),
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(node.url))),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, node.acceptsSubmit ? "read + send" : "read only")),
+    ),
+    h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
+    ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: endpointScreen }, "Change node")]),
+    h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
+    h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
+    h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
+    h("button", { class: "btn block", onclick: mainScreen }, "Done"),
+  ));
 }
 
 // ---------------- cross-chain order handoff ----------------
@@ -632,13 +661,21 @@ async function sendFlow() {
   // No estimate service: the fee is the user's, starting at this chain's default.
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
+  const feeAdvanced = h("details", { class: "advanced" },
+    h("summary", {}, "Advanced"),
+    h("div", { class: "advanced-content" },
+      h("label", { class: "k" }, "Network fee"), fee, feeNote,
+    ),
+  ) as HTMLDetailsElement;
   const err = h("div", { class: "toast" });
   const submitOK = endpoint()!.acceptsSubmit;
   // The chosen endpoint's relay floor (its policy): read once, warned against, never applied.
   let minRelayFee: bigint | undefined;
   const checkFee = () => {
     const f = parseFee(fee.value);
-    feeNote.textContent = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
+    const warning = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
+    feeNote.textContent = warning;
+    if (warning) feeAdvanced.open = true;
   };
   fee.addEventListener("input", checkFee);
   client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; checkFee(); }).catch(() => {});
@@ -648,7 +685,7 @@ async function sendFlow() {
       ...(submitOK ? [] : [h("p", { class: "warn" }, "This node does not accept submits. Use your own node, or an endpoint whose operator accepts public submits.")]),
       h("label", { class: "k" }, "To"), to,
       h("label", { class: "k" }, "Amount"), amount,
-      h("label", { class: "k" }, "Fee (paid to the miner)"), fee, feeNote,
+      feeAdvanced,
       err,
       ...(submitOK ? [h("button", { class: "block", onclick: () => prepareReview() }, "Review")] : []),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
@@ -683,18 +720,24 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Review"),
+      h("p", { class: "section-label" }, `From · ${acct.label}`),
+      h("div", { class: "addr mono" }, acct.address),
+      h("p", { class: "section-label" }, "Recipient"),
+      h("div", { class: "addr mono" }, to),
       h("div", { class: "kv" },
-        h("div", { class: "row" }, h("span", { class: "k" }, "From"), h("span", { class: "v mono" }, short(acct.address))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "To"), h("span", { class: "v mono" }, short(to))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, fmt(amount.toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Fee"), h("span", { class: "v" }, fmt(fee.toString()))),
-        ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, fmt(fee.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, fmt((amount + fee).toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, settings.chain)),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),
       ),
-      h("div", { class: "addr mono" }, "To (full): " + to),
+      h("details", { class: "advanced" },
+        h("summary", {}, "Transaction details"),
+        h("div", { class: "kv advanced-content" },
+          h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
+          ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
+          h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),
+        ),
+      ),
       ...(warning ? [h("p", { class: "warn" }, warning)] : []),
       toast,
       h("button", { class: "block", onclick: confirm }, "Sign & send"),
