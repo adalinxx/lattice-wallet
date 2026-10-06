@@ -214,35 +214,29 @@ async function toggleChainMenu() {
   const status = h("div", { class: "toast" });
   const items = h("div", { class: "chain-menu-items" });
   const menu = h("div", { class: "chain-menu", role: "navigation", "aria-label": "Child chains" },
-    h("div", { class: "chain-menu-heading" },
-      h("div", {},
-        h("div", { class: "section-label" }, "Child chains"),
-        h("div", { class: "chain-path", title: settings.chain }, settings.chain),
-      ),
-      h("button", { class: "text-action", onclick: closeChainMenu }, "Close"),
-    ),
+    h("div", { class: "chain-path", title: settings.chain }, settings.chain),
     items, status,
   );
   const shown = new Set<string>();
-  const add = (chain: string, label: string, relation: string) => {
+  const add = (chain: string, label: string) => {
     if (!chain || shown.has(chain)) return;
     shown.add(chain);
     items.append(h("button", {
       class: chain === settings.chain ? "chain-menu-item current" : "chain-menu-item",
       ...(chain === settings.chain ? { "aria-current": "page", disabled: "true" } : {}),
       onclick: () => switchToChain(chain, status),
-    }, h("span", { class: "chain-name", title: chain }, label), h("span", { class: "muted" }, relation)));
+    }, h("span", { class: "chain-name", title: chain }, label), h("span", { "aria-hidden": "true" }, "›")));
   };
   const current = settings.chain;
   for (const saved of settings.chains) {
-    if (saved.split("/").slice(0, -1).join("/") === current) add(saved, saved.slice(current.length + 1), "Open");
+    if (saved.split("/").slice(0, -1).join("/") === current) add(saved, saved.slice(current.length + 1));
   }
   document.body.append(menu);
   status.textContent = "Loading…";
   try {
     const latest = await client().latestBlock();
     for (const child of await client().children(latest.hash)) {
-      if (child.directory && !child.directory.includes("/")) add(`${current}/${child.directory}`, child.directory, "Open");
+      if (child.directory && !child.directory.includes("/")) add(`${current}/${child.directory}`, child.directory);
     }
     status.textContent = shown.size ? "" : "No child chains.";
   } catch { status.textContent = shown.size ? "" : "Could not load child chains."; }

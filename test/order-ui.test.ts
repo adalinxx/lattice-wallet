@@ -179,7 +179,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
   const earlyMenu = document.querySelector(".chain-menu") as HTMLElement;
-  assert.match(earlyMenu.textContent ?? "", /payments.*Open/);
+  assert.match(earlyMenu.textContent ?? "", /payments.*›/);
   assert.match(earlyMenu.querySelector(".chain-path")?.textContent ?? "", /^Nexus\/testnet$/);
   assert.doesNotMatch(earlyMenu.textContent ?? "", /Parent|Current/);
   (document.getElementById("net-badge") as HTMLButtonElement).click();
