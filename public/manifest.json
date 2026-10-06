@@ -7,13 +7,13 @@
     "default_title": "Nexus Wallet",
     "default_popup": "popup/index.html",
     "default_icon": {
-      "48": "assets/lattice-mark.svg",
-      "128": "assets/lattice-mark.svg"
+      "48": "assets/lattice-mark-48.png",
+      "128": "assets/lattice-mark-128.png"
     }
   },
   "icons": {
-    "48": "assets/lattice-mark.svg",
-    "128": "assets/lattice-mark.svg"
+    "48": "assets/lattice-mark-48.png",
+    "128": "assets/lattice-mark-128.png"
   },
   "background": {
     "service_worker": "background/service-worker.js",
