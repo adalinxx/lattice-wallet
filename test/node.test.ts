@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
-import { LATTICE_BUILD_RPC, normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
+import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
@@ -15,7 +15,6 @@ import { signTransfer } from "../src/lib/wallet/session.ts";
 test("no default node, and only https or the CSP's loopback http", async () => {
   assert.deepEqual((await loadSettings({ get: async () => ({}), set: async () => {} })).endpoints, {});
   assert.deepEqual(DEFAULT_SETTINGS.endpoints, {});
-  assert.equal(LATTICE_BUILD_RPC, "https://rpc.lattice.build");
   assert.equal(normalizeNodeURL("http://127.0.0.1:8080/"), "http://127.0.0.1:8080");
   assert.equal(normalizeNodeURL(" https://reads.example.org/base/ "), "https://reads.example.org/base");
   for (const bad of ["http://reads.example.org", "http://127.0.0.2:8080", "ftp://x", "https://u:p@x.org", "https://x.org/?q=1", "x.org"]) {

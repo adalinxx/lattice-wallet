@@ -410,7 +410,10 @@ async function mainScreen() {
     h("div", { class: "stack wallet-home" },
       accountPicker,
       h("div", { class: "balance-card" },
-        h("span", { class: "balance-label" }, `Balance · ${settings.chain}`),
+        h("div", { class: "balance-heading" },
+          h("span", { class: "balance-label" }, `Balance · ${settings.chain}`),
+          h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
+        ),
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
           h("span", {}, acct.label),
@@ -658,13 +661,21 @@ async function sendFlow() {
   // No estimate service: the fee is the user's, starting at this chain's default.
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
+  const feeAdvanced = h("details", { class: "advanced" },
+    h("summary", {}, "Advanced"),
+    h("div", { class: "advanced-content" },
+      h("label", { class: "k" }, "Network fee"), fee, feeNote,
+    ),
+  ) as HTMLDetailsElement;
   const err = h("div", { class: "toast" });
   const submitOK = endpoint()!.acceptsSubmit;
   // The chosen endpoint's relay floor (its policy): read once, warned against, never applied.
   let minRelayFee: bigint | undefined;
   const checkFee = () => {
     const f = parseFee(fee.value);
-    feeNote.textContent = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
+    const warning = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
+    feeNote.textContent = warning;
+    if (warning) feeAdvanced.open = true;
   };
   fee.addEventListener("input", checkFee);
   client().chainInfo().then((info) => { minRelayFee = info.minRelayFee; checkFee(); }).catch(() => {});
@@ -674,12 +685,7 @@ async function sendFlow() {
       ...(submitOK ? [] : [h("p", { class: "warn" }, "This node does not accept submits. Use your own node, or an endpoint whose operator accepts public submits.")]),
       h("label", { class: "k" }, "To"), to,
       h("label", { class: "k" }, "Amount"), amount,
-      h("details", { class: "advanced" },
-        h("summary", {}, "Advanced"),
-        h("div", { class: "advanced-content" },
-          h("label", { class: "k" }, "Network fee"), fee, feeNote,
-        ),
-      ),
+      feeAdvanced,
       err,
       ...(submitOK ? [h("button", { class: "block", onclick: () => prepareReview() }, "Review")] : []),
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
@@ -714,6 +720,8 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Review"),
+      h("p", { class: "section-label" }, `From · ${acct.label}`),
+      h("div", { class: "addr mono" }, acct.address),
       h("p", { class: "section-label" }, "Recipient"),
       h("div", { class: "addr mono" }, to),
       h("div", { class: "kv" },
@@ -725,7 +733,6 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
         h("div", { class: "kv advanced-content" },
-          h("div", { class: "row" }, h("span", { class: "k" }, "From"), h("span", { class: "v mono" }, short(acct.address))),
           h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
           ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
           h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),

@@ -53,7 +53,9 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .wallet-home { gap: var(--s-4); }
 .account-picker { border: 0; padding: 0 0 var(--s-2); }
 .balance-card { border: var(--rule); padding: var(--s-4) var(--s-3); }
+.balance-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .balance-label { display: block; font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
+.text-action { border: 0; padding: 0; font-size: var(--fs-12); text-decoration: underline; text-underline-offset: 2px; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
 .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
