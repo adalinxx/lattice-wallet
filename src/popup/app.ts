@@ -435,13 +435,45 @@ async function mainScreen() {
   accountPicker.append(h("option", { value: "__add" }, "+ Add account"));
   accountPicker.append(h("option", { value: "__import" }, "+ Import key"));
 
+  let availableChains = settings.chains;
+  if (platform.chains) {
+    try { availableChains = await platform.chains.list(); } catch { /* keep the saved list */ }
+  }
+  const parentChain = chainPath().slice(0, -1).join("/");
+  availableChains = [...new Set([...(parentChain ? [parentChain] : []), settings.chain, ...availableChains])];
+  const switchChain = async (chain: string) => {
+    await update((s) => ({
+      ...s, chain,
+      chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
+    }));
+    route();
+  };
+  const chainPicker = h("select", { class: "chain-quick-picker", "aria-label": "Active chain", onchange: async (e: Event) => {
+    const chain = (e.target as HTMLSelectElement).value;
+    if (chain === "__manage") { chainScreen(); return; }
+    if (chain === settings.chain) return;
+    await switchChain(chain);
+  } }) as HTMLSelectElement;
+  for (const chain of availableChains) chainPicker.append(h("option", { value: chain, ...(chain === settings.chain ? { selected: "true" } : {}) }, chain));
+  const manageOption = h("option", { value: "__manage" }, "Manage chains…");
+  chainPicker.append(manageOption);
+  const childChainButtons = h("div", { class: "child-chain-buttons" });
+  const childChainsSection = h("div", { class: "child-chains" },
+    h("p", { class: "section-label" }, "Direct child chains"),
+    childChainButtons,
+  );
+  childChainsSection.hidden = true;
+
   render(
     h("div", { class: "stack wallet-home" },
       accountPicker,
       h("div", { class: "balance-card" },
         h("div", { class: "balance-heading" },
-          h("span", { class: "balance-label" }, `Balance · ${settings.chain}`),
-          h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
+          h("span", { class: "balance-label" }, "Balance"),
+          h("div", { class: "balance-tools" },
+            chainPicker,
+            h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
+          ),
         ),
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
@@ -459,6 +491,7 @@ async function mainScreen() {
           } }, "Copy address"),
         ),
       ),
+      childChainsSection,
       h("div", { class: "primary-actions" },
         h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
@@ -480,7 +513,26 @@ async function mainScreen() {
       balanceV.textContent = balance.toLocaleString();
     } catch (e) { balanceV.textContent = describe(e); }
   }
+  async function loadChildChains() {
+    try {
+      const latest = await client().latestBlock();
+      const children = await client().children(latest.hash);
+      const paths = [...new Set(children
+        .filter((child) => child.directory.length > 0 && !child.directory.includes("/"))
+        .map((child) => `${settings.chain}/${child.directory}`))];
+      if (!paths.length) return;
+      for (const path of paths) {
+        if (![...chainPicker.options].some((option) => option.value === path)) {
+          chainPicker.insertBefore(h("option", { value: path }, path), manageOption);
+        }
+        const label = path.slice(path.lastIndexOf("/") + 1);
+        childChainButtons.append(h("button", { class: "btn", onclick: () => switchChain(path) }, label));
+      }
+      childChainsSection.hidden = false;
+    } catch { /* The wallet still works when this endpoint cannot list children. */ }
+  }
   loadBalance();
+  loadChildChains();
 }
 
 function settingsScreen() {
