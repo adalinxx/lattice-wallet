@@ -3,6 +3,7 @@
 // default fee per chain, connection preference, and the transactions this wallet sent.
 
 import { ROOT_CHAIN } from "../config.ts";
+import type { SignedSubmit } from "./types.ts";
 
 export interface ChosenEndpoint {
   url: string;
@@ -39,20 +40,57 @@ export interface OpenDeposit {
   expiresAt: string;
 }
 
+export interface PurchaseOffer {
+  demander: string;
+  depositNonce: string;
+  amountDeposited: string;
+  amountDemanded: string;
+}
+
+/** A paid receipt whose child-chain withdrawal still needs confirmation. */
+export interface OpenPurchase {
+  receiptCID: string;
+  receiptSubmit: SignedSubmit;
+  withdrawalCID?: string;
+  withdrawalSubmit?: SignedSubmit;
+  withdrawer: string;
+  offers: PurchaseOffer[];
+  parentChain: string[];
+  childChain: string[];
+  createdAt: number;
+}
+
 export interface Settings {
   chain: string;
   chains: string[];
   /** Automatic discovers verified submit nodes; custom requires an explicit endpoint per chain. */
   nodeMode: "automatic" | "custom";
+  /** Survives Chrome closing the popup while it displays a host-permission prompt. */
+  pendingAutomaticChain?: string;
+  /** Resumes selecting any node after Chrome's host-permission prompt closes the popup. */
+  pendingEndpoint?: {
+    chain: string;
+    url: string;
+    source: ChosenEndpoint["source"];
+    declaredSubmit: boolean;
+    requireSubmit: boolean;
+    nodeMode?: "automatic" | "custom";
+    /** A newly entered cookie should be removed if permission or probing fails. */
+    clearCookieOnFailure?: boolean;
+  };
+  /** Resumes node discovery after Chrome's host-permission prompt closes the popup. */
+  pendingDiscovery?: { chain: string; url: string; autoSelect: boolean };
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
   /** Never trim these. Remove one only after its withdrawal is confirmed. */
   openDeposits: OpenDeposit[];
+  /** Never trim these. Remove one only after its child withdrawal confirms. */
+  openPurchases: OpenPurchase[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, openDeposits: [], fees: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, openDeposits: [], openPurchases: [], fees: {} };
 
 /** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
 export const FALLBACK_FEE = "1";
@@ -93,5 +131,12 @@ export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Set
   return {
     ...settings,
     openDeposits: [deposit, ...settings.openDeposits.filter((item) => item.transactionCID !== deposit.transactionCID)],
+  };
+}
+
+export function recordOpenPurchase(settings: Settings, purchase: OpenPurchase): Settings {
+  return {
+    ...settings,
+    openPurchases: [purchase, ...settings.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID)],
   };
 }

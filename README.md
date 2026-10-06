@@ -69,14 +69,15 @@ reading (*nonce spent*).
 
 ### Cross-chain deposits
 
-The wallet saves every signed, unwithdrawn deposit in a separate unbounded
-`openDeposits` list before attempting submission. It retains the transaction
-CID, seller, deposit nonce, both amounts and both chain paths until a future
-withdrawal flow confirms settlement. This local metadata is not reconstructed
-by restoring a recovery phrase. Recovery from chain state requires the active
-deposit listing/proof API that is also required for safe buy-order discovery.
-Until deposit status/withdrawal is implemented, a definitively rejected
-deposit attempt also remains in this list and must be cleared by that flow.
+The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded
+`openDeposits` list before attempting submission. Buy requests read active
+child-chain deposits, reject already-receipted offers, sign the parent payment,
+and persist the exact signed receipt and child withdrawal in `openPurchases`.
+Those records are removed only after the withdrawal confirms, so an uncertain
+network response can be recovered by resubmitting the identical transaction
+rather than signing a second payment or claim. This local metadata is not
+reconstructed by restoring a recovery phrase; seed-only recovery still needs
+chain scanning.
 
 > one proof. every chain.
 

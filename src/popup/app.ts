@@ -8,13 +8,13 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, recordOpenPurchase, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
-import { decodeOrderRequest, type SellOrder } from "../lib/wallet/order.ts";
+import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
-import { scanner } from "./scanner.ts";
+import { scanner, scannerFileTexts } from "./scanner.ts";
 
 export interface Platform {
   /** The signer: the extension's background worker, or the desktop app's in-page signer. */
@@ -23,6 +23,8 @@ export interface Platform {
   store: KeyValueStore;
   /** Ask for network reach to these origin patterns (inside the user's click). */
   requestOrigins(origins: string[]): Promise<boolean>;
+  /** Whether these origins were already granted, used to resume after Chrome closes a permission prompt. */
+  hasOrigins?(origins: string[]): Promise<boolean>;
   /**
    * The host's own node (its loopback operator URL), when it runs one: every
    * chain then reads and submits through it, and no endpoint is chosen. A
@@ -51,7 +53,7 @@ export interface Platform {
   /** This page may open the camera (an extension popup cannot hold the permission). */
   camera?: boolean;
   /** Reopen a backup flow in a full page (the extension: a tab, for camera, files and print). */
-  openFullPage?(view: "backup" | "restore"): void;
+  openFullPage?(view: "backup" | "restore" | "wallet"): void;
   /** Start in this flow (the full page the popup opened). */
   initialView?: "backup" | "restore";
   /** Save a text file (default: a browser download); resolves to where it went. */
@@ -76,17 +78,23 @@ const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slic
 // Exact: amounts are UInt64, never rounded through a double.
 const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
 const view = () => document.getElementById("view")!;
-export const render = (node: El) => view().replaceChildren(node);
+export const render = (node: El) => {
+  closeChainMenu();
+  view().replaceChildren(node);
+};
 
 let st: WalletState = { initialized: false, locked: true, accounts: [], active: null };
 let settings: Settings;
 let platform: Platform;
 let wallet: WalletClient;
 let store: KeyValueStore;
+const dropReady = new WeakSet<Document>();
 const chainPath = () => parseChainPath(settings.chain) ?? [ROOT_CHAIN];
 // The operator route of the host's own node accepts its owner's submits.
 const endpoint = (): ChosenEndpoint | undefined =>
   platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[settings.chain];
+const endpointFor = (chain: string): ChosenEndpoint | undefined =>
+  platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[chain];
 // The chosen node's cookie header when the user paired it (its operator port requires one).
 let nodeAuth: string | undefined;
 const client = () => reader(endpoint()!.url, chainPath(), platform.fetch, nodeAuth);
@@ -103,7 +111,131 @@ async function update(change: (s: Settings) => Settings) {
 
 function syncBadge() {
   const b = document.getElementById("net-badge")!;
-  b.textContent = settings.chain;
+  b.textContent = `${settings.chain} ▾`;
+  b.title = `${settings.chain} — show child chains`;
+  b.setAttribute("aria-label", `Current chain ${settings.chain}. Show child chains`);
+  const parentButton = document.getElementById("parent-chain") as HTMLButtonElement | null;
+  if (parentButton) {
+    const parent = chainPath().slice(0, -1).join("/");
+    parentButton.hidden = !parent;
+    parentButton.textContent = "↑";
+    parentButton.title = parent ? `Go to ${parent}` : "";
+    parentButton.setAttribute("aria-label", parent ? `Go to parent chain ${parent}` : "No parent chain");
+  }
+}
+
+function closeChainMenu() {
+  document.querySelector(".chain-menu")?.remove();
+  document.getElementById("net-badge")?.setAttribute("aria-expanded", "false");
+}
+
+async function switchToChain(chain: string, status: El) {
+  if (chain === settings.chain) { document.querySelector(".chain-menu")?.remove(); return; }
+  if (settings.nodeMode === "automatic" && !platform.ownNode && !settings.endpoints[chain] && chain !== ROOT_CHAIN) {
+    status.textContent = `Finding a node for ${chain}…`;
+    const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+    // Persist before Chrome opens its permission prompt: the prompt can close
+    // this popup and destroy the remainder of this async handler.
+    await update((s) => ({
+      ...s, chain, pendingAutomaticChain: chain,
+      chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
+    }));
+    const granted = await platform.requestOrigins([originPattern(bootstrap), "https://*/*"]).catch(() => false);
+    if (granted) {
+      if (await finishAutomaticChain(chain, status)) { route(); return; }
+    }
+    await update((s) => { const { pendingAutomaticChain: _, ...rest } = s; return rest; });
+    endpointScreen();
+    return;
+  }
+  await update((s) => ({ ...s, chain, chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain] }));
+  route();
+}
+
+async function finishAutomaticChain(chain: string, status: El): Promise<boolean> {
+  const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+  try {
+    const candidates = (await discover(bootstrap, parseChainPath(chain)!, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
+    for (const candidate of candidates) {
+      if (await chooseEndpoint(candidate.url, "discovered", status, true, undefined, true, true)) {
+        await update((s) => { const { pendingAutomaticChain: _, ...rest } = s; return rest; });
+        return true;
+      }
+    }
+  } catch { /* The connection screen provides the manual fallback. */ }
+  return false;
+}
+
+async function finishPendingEndpoint(status: El): Promise<boolean> {
+  const pending = settings.pendingEndpoint;
+  if (!pending || pending.chain !== settings.chain) return false;
+  if (!await chooseEndpoint(pending.url, pending.source, status, pending.declaredSubmit, undefined, pending.requireSubmit, true)) {
+    if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
+    await update((s) => { const { pendingEndpoint: _, ...rest } = s; return rest; });
+    return false;
+  }
+  await update((s) => {
+    const { pendingEndpoint: _, ...rest } = s;
+    return pending.nodeMode ? { ...rest, nodeMode: pending.nodeMode } : rest;
+  });
+  return true;
+}
+
+async function requestEndpoint(
+  pending: NonNullable<Settings["pendingEndpoint"]>, status: El, cookie?: string,
+): Promise<boolean> {
+  if (cookie) {
+    const paired = await wallet.setNodeCookie(pending.url, cookie);
+    if (!paired.ok) { status.textContent = "Cookie: " + paired.error; return false; }
+  }
+  await update((s) => ({ ...s, pendingEndpoint: pending }));
+  const granted = await platform.requestOrigins([originPattern(pending.url)]).catch(() => false);
+  if (granted) return finishPendingEndpoint(status);
+  if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
+  await update((s) => { const { pendingEndpoint: _, ...rest } = s; return rest; });
+  status.textContent = "Permission to reach that node was not granted.";
+  return false;
+}
+
+async function toggleChainMenu() {
+  const existing = document.querySelector(".chain-menu");
+  if (existing) { closeChainMenu(); return; }
+  document.getElementById("net-badge")?.setAttribute("aria-expanded", "true");
+  const status = h("div", { class: "toast" });
+  const items = h("div", { class: "chain-menu-items" });
+  const menu = h("div", { class: "chain-menu", role: "navigation", "aria-label": "Child chains" },
+    h("div", { class: "chain-menu-heading" },
+      h("div", {},
+        h("div", { class: "section-label" }, "Child chains"),
+        h("div", { class: "chain-path", title: settings.chain }, settings.chain),
+      ),
+      h("button", { class: "text-action", onclick: closeChainMenu }, "Close"),
+    ),
+    items, status,
+  );
+  const shown = new Set<string>();
+  const add = (chain: string, label: string, relation: string) => {
+    if (!chain || shown.has(chain)) return;
+    shown.add(chain);
+    items.append(h("button", {
+      class: chain === settings.chain ? "chain-menu-item current" : "chain-menu-item",
+      ...(chain === settings.chain ? { "aria-current": "page", disabled: "true" } : {}),
+      onclick: () => switchToChain(chain, status),
+    }, h("span", { class: "chain-name", title: chain }, label), h("span", { class: "muted" }, relation)));
+  };
+  const current = settings.chain;
+  for (const saved of settings.chains) {
+    if (saved.split("/").slice(0, -1).join("/") === current) add(saved, saved.slice(current.length + 1), "Open");
+  }
+  document.body.append(menu);
+  status.textContent = "Loading…";
+  try {
+    const latest = await client().latestBlock();
+    for (const child of await client().children(latest.hash)) {
+      if (child.directory && !child.directory.includes("/")) add(`${current}/${child.directory}`, child.directory, "Open");
+    }
+    status.textContent = shown.size ? "" : "No child chains.";
+  } catch { status.textContent = shown.size ? "" : "Could not load child chains."; }
 }
 
 const activeAccount = (): AccountView | undefined => st.accounts.find((a) => a.address === st.active);
@@ -113,6 +245,26 @@ export async function refresh() {
   if (r.ok) st = r.state;
   settings = await loadSettings(store);
   syncBadge();
+  if (settings.pendingEndpoint?.chain === settings.chain && !endpoint() && platform.hasOrigins) {
+    const origins = [originPattern(settings.pendingEndpoint.url)];
+    if (await platform.hasOrigins(origins).catch(() => false)) {
+      const status = h("div");
+      if (await finishPendingEndpoint(status)) { route(); return; }
+    }
+    if (settings.pendingEndpoint) {
+      if (settings.pendingEndpoint.clearCookieOnFailure) await wallet.setNodeCookie(settings.pendingEndpoint.url, null);
+      await update((s) => { const { pendingEndpoint: _, ...rest } = s; return rest; });
+    }
+  }
+  if (settings.pendingAutomaticChain === settings.chain && !endpoint() && platform.hasOrigins) {
+    const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+    const origins = [originPattern(bootstrap), "https://*/*"];
+    if (await platform.hasOrigins(origins).catch(() => false)) {
+      const status = h("div");
+      if (await finishAutomaticChain(settings.chain, status)) { route(); return; }
+    }
+    await update((s) => { const { pendingAutomaticChain: _, ...rest } = s; return rest; });
+  }
   route();
 }
 
@@ -240,7 +392,7 @@ function unlockScreen() {
   p.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") submit(); });
   render(
     h("div", { class: "stack" },
-      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "NEXUS")),
+      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "WALLET")),
       h("h1", {}, "Unlock"),
       p, err,
       h("button", { class: "block", onclick: submit }, "Unlock"),
@@ -314,14 +466,23 @@ function endpointScreen() {
       h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
       ...(settings.chain === ROOT_CHAIN && !platform.ownNode ? [
         h("button", { class: "block", onclick: async () => {
-          if (await chooseEndpoint(LATTICE_BUILD_RPC, "user", err, true, undefined, true)) {
-            await update((s) => ({ ...s, nodeMode: "automatic" }));
-            route();
-          }
+          if (await requestEndpoint({
+            chain: settings.chain, url: LATTICE_BUILD_RPC, source: "user",
+            declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+          }, err)) route();
         } }, "Use Lattice.build"),
         h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
       ] : []),
       ...(isChild ? [
+        ...(settings.chain === "Nexus/testnet" ? [
+          h("button", { class: "block", onclick: async () => {
+            if (await requestEndpoint({
+              chain: settings.chain, url: LATTICE_TESTNET_RPC, source: "user",
+              declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+            }, err)) route();
+          } }, "Use Lattice.build testnet"),
+          h("p", { class: "muted" }, "Optional hosted testnet node. You can replace it with automatic discovery or any custom node."),
+        ] : []),
         h("button", { class: "block", onclick: () => discoverFrom(true) }, "Find node automatically"),
         h("p", { class: "muted" }, "Uses the explorer's configured Nexus service to find and verify a node that accepts transactions for this chain."),
       ] : []),
@@ -330,10 +491,11 @@ function endpointScreen() {
       h("button", { class: "block", onclick: async () => {
         const n = normalizeNodeURL(url.value);
         if (!n) { err.textContent = "Enter an https:// URL (http:// only for 127.0.0.1/localhost)."; return; }
-        if (await chooseEndpoint(n, "user", err, true, cookie.value.trim() || undefined)) {
-          await update((s) => ({ ...s, nodeMode: "custom" }));
-          route();
-        }
+        const enteredCookie = cookie.value.trim() || undefined;
+        if (await requestEndpoint({
+          chain: settings.chain, url: n, source: "user", declaredSubmit: true,
+          requireSubmit: false, nodeMode: "custom", clearCookieOnFailure: enteredCookie !== undefined,
+        }, err, enteredCookie)) route();
       } }, "Use this node"),
       ...(isChild ? [
         h("p", { class: "muted" }, "Or discover endpoints for " + settings.chain + " through a Nexus node you choose:"),
@@ -347,12 +509,20 @@ function endpointScreen() {
     ),
   );
 
-  async function discoverFrom(autoSelect = false) {
-    const n = normalizeNodeURL(start.value);
+  async function discoverFrom(autoSelect = false, permissionGranted = false, resumeURL?: string) {
+    const n = normalizeNodeURL(resumeURL ?? start.value);
     if (!n) { err.textContent = "Enter the starting node's URL."; return; }
-    // Discovery may reach any declared host: ask for broad reach once, in this click.
-    const granted = await platform.requestOrigins([originPattern(n), "https://*/*"]).catch(() => false);
-    if (!granted) { err.textContent = "Permission not granted."; return; }
+    if (!permissionGranted) {
+      // Discovery may reach any declared host. Persist first because Chrome can
+      // close the popup while it asks for this broad reach.
+      await update((s) => ({ ...s, pendingDiscovery: { chain: s.chain, url: n, autoSelect } }));
+      const granted = await platform.requestOrigins([originPattern(n), "https://*/*"]).catch(() => false);
+      if (!granted) {
+        await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
+        err.textContent = "Permission not granted.";
+        return;
+      }
+    }
     err.textContent = "discovering…";
     found.replaceChildren();
     try {
@@ -365,8 +535,11 @@ function endpointScreen() {
           return;
         }
         for (const candidate of candidates) {
-          if (await chooseEndpoint(candidate.url, "discovered", err, true, undefined, true)) {
-            await update((s) => ({ ...s, nodeMode: "automatic" }));
+          if (await chooseEndpoint(candidate.url, "discovered", err, true, undefined, true, true)) {
+            await update((s) => {
+              const { pendingDiscovery: _, ...rest } = s;
+              return { ...rest, nodeMode: "automatic" };
+            });
             route();
             return;
           }
@@ -378,13 +551,24 @@ function endpointScreen() {
         found.append(h("div", { class: "row" },
           h("span", { class: "v mono" }, short(e.url)),
           h("span", { class: "tag" }, e.declaresSubmit ? "declares submit" : "read-only"),
-          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit)) route(); } }, "Use"),
+          h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit, undefined, false, true)) route(); } }, "Use"),
         ));
       }
       if (list.length) found.append(h("p", { class: "muted" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
     } catch (e) {
       err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
+    } finally {
+      if (settings.pendingDiscovery) await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
     }
+  }
+
+  const pendingDiscovery = settings.pendingDiscovery;
+  if (pendingDiscovery?.chain === settings.chain && platform.hasOrigins) {
+    const origins = [originPattern(pendingDiscovery.url), "https://*/*"];
+    void platform.hasOrigins(origins).then(async (granted) => {
+      if (granted) await discoverFrom(pendingDiscovery.autoSelect, true, pendingDiscovery.url);
+      else await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
+    }).catch(async () => update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; }));
   }
 }
 
@@ -444,68 +628,13 @@ async function mainScreen() {
   accountPicker.append(h("option", { value: "__add" }, "+ Add account"));
   accountPicker.append(h("option", { value: "__import" }, "+ Import key"));
 
-  let availableChains = settings.chains;
-  if (platform.chains) {
-    try { availableChains = await platform.chains.list(); } catch { /* keep the saved list */ }
-  }
-  const parentChain = chainPath().slice(0, -1).join("/");
-  availableChains = [...new Set([...(parentChain ? [parentChain] : []), settings.chain, ...availableChains])];
-  const switchChain = async (chain: string) => {
-    if (settings.nodeMode === "automatic" && !platform.ownNode && !settings.endpoints[chain] && chain !== ROOT_CHAIN) {
-      toast.textContent = `Finding a node for ${chain}…`;
-      const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
-      const granted = await platform.requestOrigins([originPattern(bootstrap), "https://*/*"]).catch(() => false);
-      await update((s) => ({
-        ...s, chain,
-        chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
-      }));
-      if (granted) {
-        try {
-          const path = parseChainPath(chain)!;
-          const candidates = (await discover(bootstrap, path, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
-          for (const candidate of candidates) {
-            if (await chooseEndpoint(candidate.url, "discovered", toast, true, undefined, true, true)) {
-              route();
-              return;
-            }
-          }
-        } catch { /* Fall through to the connection screen. */ }
-      }
-      endpointScreen();
-      return;
-    }
-    await update((s) => ({
-      ...s, chain,
-      chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
-    }));
-    route();
-  };
-  const chainPicker = h("select", { class: "chain-quick-picker", "aria-label": "Active chain", onchange: async (e: Event) => {
-    const chain = (e.target as HTMLSelectElement).value;
-    if (chain === "__manage") { chainScreen(); return; }
-    if (chain === settings.chain) return;
-    await switchChain(chain);
-  } }) as HTMLSelectElement;
-  for (const chain of availableChains) chainPicker.append(h("option", { value: chain, ...(chain === settings.chain ? { selected: "true" } : {}) }, chain));
-  const manageOption = h("option", { value: "__manage" }, "Manage chains…");
-  chainPicker.append(manageOption);
-  const childChainButtons = h("div", { class: "child-chain-buttons" });
-  const childChainsSection = h("div", { class: "child-chains" },
-    h("p", { class: "section-label" }, "Direct child chains"),
-    childChainButtons,
-  );
-  childChainsSection.hidden = true;
-
   render(
     h("div", { class: "stack wallet-home" },
       accountPicker,
       h("div", { class: "balance-card" },
         h("div", { class: "balance-heading" },
           h("span", { class: "balance-label" }, "Balance"),
-          h("div", { class: "balance-tools" },
-            chainPicker,
-            h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
-          ),
+          h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
         ),
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
@@ -523,15 +652,9 @@ async function mainScreen() {
           } }, "Copy address"),
         ),
       ),
-      childChainsSection,
       h("div", { class: "primary-actions" },
         h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
-      ),
-      h("button", { class: "btn block", onclick: orderFlow }, "Scan cross-chain order"),
-      h("div", { class: "secondary-actions" },
-        h("button", { class: "btn", onclick: historyScreen }, "Transactions"),
-        h("button", { class: "btn", onclick: settingsScreen }, "Settings"),
       ),
       ...actionButtons(),
       toast,
@@ -545,26 +668,7 @@ async function mainScreen() {
       balanceV.textContent = balance.toLocaleString();
     } catch (e) { balanceV.textContent = describe(e); }
   }
-  async function loadChildChains() {
-    try {
-      const latest = await client().latestBlock();
-      const children = await client().children(latest.hash);
-      const paths = [...new Set(children
-        .filter((child) => child.directory.length > 0 && !child.directory.includes("/"))
-        .map((child) => `${settings.chain}/${child.directory}`))];
-      if (!paths.length) return;
-      for (const path of paths) {
-        if (![...chainPicker.options].some((option) => option.value === path)) {
-          chainPicker.insertBefore(h("option", { value: path }, path), manageOption);
-        }
-        const label = path.slice(path.lastIndexOf("/") + 1);
-        childChainButtons.append(h("button", { class: "btn", onclick: () => switchChain(path) }, label));
-      }
-      childChainsSection.hidden = false;
-    } catch { /* The wallet still works when this endpoint cannot list children. */ }
-  }
   loadBalance();
-  loadChildChains();
 }
 
 function settingsScreen() {
@@ -580,11 +684,129 @@ function settingsScreen() {
     ),
     h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
     ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
+    ...(platform.openFullPage && !platform.camera
+      ? [h("button", { class: "btn block", onclick: () => platform.openFullPage!("wallet") }, "Open wallet in tab")]
+      : []),
+    h("button", { class: "btn block", onclick: orderFlow }, "Open cross-chain order"),
+    ...(settings.openPurchases.length
+      ? [h("button", { class: "btn block", onclick: purchasesScreen }, `Pending purchases (${settings.openPurchases.length})`)]
+      : []),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
     h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
     h("button", { class: "btn block", onclick: mainScreen }, "Done"),
   ));
+}
+
+function purchasesScreen() {
+  const list = h("div", { class: "kv" });
+  for (const purchase of settings.openPurchases) {
+    const receive = purchase.offers.reduce((sum, offer) => sum + BigInt(offer.amountDeposited), 0n);
+    list.append(h("button", { class: "chain-menu-item", onclick: () => purchaseScreen(purchase) },
+      h("span", {}, `${fmt(receive)} on ${purchase.childChain.join("/")}`),
+      h("span", { class: "muted" }, purchase.withdrawalCID ? "Withdrawal submitted" : "Complete")));
+  }
+  render(h("div", { class: "stack" }, h("h1", {}, "Pending purchases"), list,
+    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
+}
+
+function purchaseScreen(purchase: OpenPurchase) {
+  const childName = purchase.childChain.join("/");
+  const parentName = purchase.parentChain.join("/");
+  const childEndpoint = endpointFor(childName);
+  const parentEndpoint = endpointFor(parentName);
+  const totalReceive = purchase.offers.reduce((sum, offer) => sum + BigInt(offer.amountDeposited), 0n);
+  const totalPaid = purchase.offers.reduce((sum, offer) => sum + BigInt(offer.amountDemanded), 0n);
+  const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, childName) }) as HTMLInputElement;
+  const toast = h("div", { class: "toast" }, purchase.withdrawalCID ? "Checking withdrawal…" : "Check the parent receipt before withdrawing.");
+  const withdraw = h("button", { class: "block" }, "Check & withdraw tokens") as HTMLButtonElement;
+  render(h("div", { class: "stack" }, h("h1", {}, "Complete purchase"),
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "Paid"), h("span", { class: "v" }, `${fmt(totalPaid)} on ${parentName}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Claim"), h("span", { class: "v" }, `${fmt(totalReceive)} on ${childName}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Receipt"), h("span", { class: "v mono" }, short(purchase.receiptCID))),
+    ),
+    ...(purchase.withdrawalCID ? [] : [h("label", { class: "k" }, "Child-chain fee"), feeInput, withdraw]),
+    toast,
+    h("button", { class: "btn block", onclick: purchasesScreen }, "Back"),
+  ));
+  if (!childEndpoint || !parentEndpoint) {
+    toast.textContent = `Connect both ${parentName} and ${childName} to continue.`;
+    withdraw.disabled = true;
+    return;
+  }
+  if (purchase.withdrawalCID) {
+    void (async () => {
+      try {
+        const auth = await authorizationFor(childEndpoint.url);
+        const result = await sentStatus(reader(childEndpoint.url, purchase.childChain, platform.fetch, auth), purchase.withdrawalCID!);
+        toast.textContent = `Withdrawal: ${statusText(result)}.`;
+        if (result.kind === "included") {
+          await update((s) => ({ ...s, openPurchases: s.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID) }));
+          toast.textContent = "Withdrawal confirmed. Purchase complete.";
+        } else if (purchase.withdrawalSubmit && (result.kind === "unknown to node" || result.kind === "pending or dropped")) {
+          const retry = h("button", { class: "btn block", onclick: async () => {
+            retry.disabled = true; toast.textContent = "Resubmitting the exact saved withdrawal…";
+            try {
+              await submitChecked(submitter(childEndpoint.url, platform.fetch, auth), purchase.withdrawalSubmit!);
+              toast.textContent = "Exact withdrawal resubmitted.";
+            } catch (e) { toast.textContent = describe(e); retry.disabled = false; }
+          } }, "Resubmit exact withdrawal") as HTMLButtonElement;
+          toast.after(retry);
+        }
+      } catch (e) { toast.textContent = describe(e); }
+    })();
+    return;
+  }
+  withdraw.addEventListener("click", async () => {
+    const fee = parseFee(feeInput.value);
+    if (fee === null) { toast.textContent = "Enter a whole fee of 0 or more."; return; }
+    if (totalReceive <= fee) { toast.textContent = "The child amount must exceed the withdrawal fee."; return; }
+    withdraw.disabled = true; feeInput.disabled = true; toast.textContent = "Checking parent receipt…";
+    try {
+      const [parentAuth, childAuth] = await Promise.all([authorizationFor(parentEndpoint.url), authorizationFor(childEndpoint.url)]);
+      const offers: ActiveDeposit[] = purchase.offers.map((offer) => ({
+        demander: offer.demander, depositNonce: BigInt(offer.depositNonce),
+        amountDemanded: BigInt(offer.amountDemanded), amountDeposited: BigInt(offer.amountDeposited),
+      }));
+      for (const offer of offers) {
+        const recorded = await receiptWithdrawer(parentEndpoint.url, purchase.parentChain, purchase.childChain, offer, platform.fetch, parentAuth);
+        if (recorded !== null && recorded !== purchase.withdrawer) throw new Error("Another account purchased one of these sell orders.");
+        if (recorded === null) {
+          await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), purchase.receiptSubmit);
+          throw new Error("The parent receipt is not confirmed yet. Its exact saved transaction was resubmitted; check again after it mines.");
+        }
+      }
+      const child = reader(childEndpoint.url, purchase.childChain, platform.fetch, childAuth);
+      const account = await child.account(purchase.withdrawer);
+      toast.textContent = "signing child withdrawal…";
+      const signed = await wallet.signWithdrawal({
+        from: purchase.withdrawer, offers: purchase.offers, fee: fee.toString(),
+        nonce: account.nonce.toString(), chainPath: purchase.childChain,
+      });
+      if (!signed.ok) throw new Error(signed.error);
+      const withdrawalCID = signed.signedSubmit.transactionCID;
+      await update((s) => ({
+        ...recordSent(s, childName, {
+          cid: withdrawalCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
+          from: purchase.withdrawer, fee: fee.toString(), nonce: account.nonce.toString(),
+        }),
+        openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
+          ? { ...item, withdrawalCID, withdrawalSubmit: signed.signedSubmit } : item),
+      }));
+      toast.textContent = "submitting child withdrawal…";
+      try {
+        await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
+      } catch {
+        toast.textContent = "Withdrawal outcome unknown. Check this saved purchase before taking another action.";
+        return;
+      }
+      toast.textContent = "Withdrawal submitted. Reopen this purchase to check confirmation.";
+    } catch (e) {
+      toast.textContent = e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e);
+      withdraw.disabled = false; feeInput.disabled = false;
+    }
+  });
 }
 
 function connectionScreen() {
@@ -608,22 +830,9 @@ function connectionScreen() {
 function orderFlow() {
   const scan = scanner({
     camera: platform.camera === true,
+    openFullPage: platform.openFullPage && (() => platform.openFullPage!("wallet")),
     pasteHint: "paste the lattice://order request",
-    onText(text) {
-      try {
-        const order = decodeOrderRequest(text);
-        if (order.side === "buy_child") {
-          scan.status.textContent = "Buy requests need verified active-deposit discovery, which this node does not provide yet.";
-          return false;
-        }
-        if (order.childChain.join("/") !== settings.chain) {
-          scan.status.textContent = `Select ${order.childChain.join("/")} in the wallet before opening this request.`;
-          return false;
-        }
-        reviewSellOrder(order);
-        return true;
-      } catch (e) { scan.status.textContent = (e as Error).message; return false; }
-    },
+    onText: (text) => openOrderText(text, scan.status),
   });
   render(h("div", { class: "stack" },
     h("h1", {}, "Open order"),
@@ -631,6 +840,252 @@ function orderFlow() {
     scan.node,
     h("button", { class: "btn block", onclick: () => { scan.stop(); mainScreen(); } }, "Cancel"),
   ));
+}
+
+function openOrderText(text: string, status: El): boolean {
+  try {
+    const order = decodeOrderRequest(text);
+    if (order.side === "buy_child") {
+      void reviewBuyOrder(order);
+      return true;
+    }
+    if (order.childChain.join("/") !== settings.chain) {
+      status.textContent = `Select ${order.childChain.join("/")} in the wallet before opening this request.`;
+      return false;
+    }
+    reviewSellOrder(order);
+    return true;
+  } catch (e) { status.textContent = (e as Error).message; return false; }
+}
+
+const wireOffer = (offer: ActiveDeposit) => ({
+  demander: offer.demander,
+  amountDemanded: offer.amountDemanded.toString(),
+  amountDeposited: offer.amountDeposited.toString(),
+  depositNonce: offer.depositNonce.toString(),
+});
+
+function chooseBuyOffers(order: BuyOrder, offers: ActiveDeposit[]): ActiveDeposit[] {
+  const sorted = [...offers].sort((a, b) => {
+    const left = a.amountDemanded * b.amountDeposited;
+    const right = b.amountDemanded * a.amountDeposited;
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const chosen: ActiveDeposit[] = [];
+  if (order.maxAmountDemanded) {
+    let remaining = BigInt(order.maxAmountDemanded);
+    for (const offer of sorted) {
+      if (offer.amountDemanded <= remaining) { chosen.push(offer); remaining -= offer.amountDemanded; }
+    }
+  } else {
+    const desired = BigInt(order.desiredAmountDeposited!);
+    let received = 0n;
+    for (const offer of sorted) {
+      chosen.push(offer); received += offer.amountDeposited;
+      if (received >= desired) break;
+    }
+    if (received < desired) return [];
+  }
+  return chosen;
+}
+
+async function reviewBuyOrder(order: BuyOrder) {
+  const acct = activeAccount()!;
+  const parentName = order.parentChain.join("/");
+  const childName = order.childChain.join("/");
+  const childEndpoint = endpointFor(childName);
+  const parentEndpoint = endpointFor(parentName);
+  const toast = h("div", { class: "toast" }, "Finding available sell orders…");
+  render(h("div", { class: "stack" }, h("h1", {}, "Find sell orders"), toast,
+    h("button", { class: "btn block", onclick: orderFlow }, "Cancel")));
+  if (!childEndpoint || !parentEndpoint) { toast.textContent = `Connect both ${parentName} and ${childName} before buying.`; return; }
+  if (!parentEndpoint.acceptsSubmit || !childEndpoint.acceptsSubmit) {
+    toast.textContent = "Both the parent and child nodes must accept transactions before buying.";
+    return;
+  }
+  let childAuth: string | undefined, parentAuth: string | undefined;
+  try { [childAuth, parentAuth] = await Promise.all([authorizationFor(childEndpoint.url), authorizationFor(parentEndpoint.url)]); }
+  catch (e) { toast.textContent = describe(e); return; }
+  let offers: ActiveDeposit[], minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
+  const currentTips = async () => {
+    const parent = reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth);
+    const latest = await parent.latestBlock();
+    const directory = order.childChain.at(-1)!;
+    const child = (await parent.children(latest.hash)).find((entry) => entry.directory === directory);
+    if (!child) throw new Error(`The current ${parentName} tip does not commit ${childName}.`);
+    return { parent: latest.hash, child: child.blockHash };
+  };
+  const stableDeposits = async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const before = await currentTips();
+        const listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, before.child);
+        const after = await currentTips();
+        if (before.parent === after.parent && before.child === after.child) return { tips: after, listed };
+        lastError = new Error("The chain advanced while sell orders were loading.");
+      } catch (error) { lastError = error; }
+    }
+    throw lastError ?? new Error("Could not read a stable chain tip.");
+  };
+  const unclaimedOffers = async (listed: ActiveDeposit[], parentTip: string) => {
+    let eligible = [...listed];
+    const verified = new Set<string>();
+    const identity = (offer: ActiveDeposit) => `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
+    while (true) {
+      const selected = chooseBuyOffers(order, eligible);
+      if (!selected.length) return selected;
+      const unchecked = selected.find((offer) => !verified.has(identity(offer)));
+      if (!unchecked) return selected;
+      if (await receiptWithdrawer(parentEndpoint.url, order.parentChain, order.childChain, unchecked, platform.fetch, parentAuth, parentTip) === null) {
+        verified.add(identity(unchecked));
+      } else {
+        const claimed = identity(unchecked);
+        eligible = eligible.filter((offer) => identity(offer) !== claimed);
+      }
+    }
+  };
+  try {
+    const { tips, listed } = await stableDeposits();
+    offers = await unclaimedOffers(listed, tips.parent);
+    [minRelayFee, childMinRelayFee] = await Promise.all([
+      reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth).chainInfo().then((info) => info.minRelayFee),
+      reader(childEndpoint.url, [...order.childChain], platform.fetch, childAuth).chainInfo().then((info) => info.minRelayFee),
+    ]);
+  } catch (e) { toast.textContent = "Could not read active sell orders: " + describe(e); return; }
+  if (!offers.length) { toast.textContent = "No active sell orders satisfy this purchase amount."; return; }
+  const totalPay = offers.reduce((sum, offer) => sum + offer.amountDemanded, 0n);
+  const totalReceive = offers.reduce((sum, offer) => sum + offer.amountDeposited, 0n);
+  if (childMinRelayFee === undefined || totalReceive <= childMinRelayFee) {
+    toast.textContent = "These sell orders cannot safely cover the child-chain withdrawal fee.";
+    return;
+  }
+  const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, parentName) }) as HTMLInputElement;
+  const feeNote = h("div", { class: "warn" });
+  const checkFee = () => {
+    const fee = parseFee(feeInput.value);
+    feeNote.textContent = fee === null ? "Enter a whole fee of 0 or more." : feeWarning(fee, minRelayFee) ?? "";
+  };
+  feeInput.addEventListener("input", checkFee); checkFee();
+  const buyButton = h("button", { class: "block" }, "Pay & reserve tokens") as HTMLButtonElement;
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Review purchase"),
+    h("p", { class: "warn" }, "Payment on the parent chain is irreversible. After it confirms, complete the child-chain withdrawal from Settings."),
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "You pay"), h("span", { class: "v" }, `${fmt(totalPay)} on ${parentName}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "You receive"), h("span", { class: "v" }, `${fmt(totalReceive)} on ${childName}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Sell orders"), h("span", { class: "v" }, offers.length.toString())),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Child withdrawal fee"), h("span", { class: "v" }, `at least ${fmt(childMinRelayFee)}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
+    ),
+    h("label", { class: "k" }, "Parent-chain fee"), feeInput, feeNote, toast, buyButton,
+    h("button", { class: "btn block", onclick: orderFlow }, "Cancel"),
+  ));
+  buyButton.addEventListener("click", async () => {
+    if (Date.parse(order.expiresAt) <= Date.now() + 60_000) { toast.textContent = "This request is expired or has less than one minute left."; return; }
+    const fee = parseFee(feeInput.value);
+    if (fee === null) { toast.textContent = "Enter a whole fee of 0 or more."; return; }
+    buyButton.disabled = true; feeInput.disabled = true; toast.textContent = "Rechecking sell orders…";
+    try {
+      const { tips, listed: currentDeposits } = await stableDeposits();
+      for (const offer of offers) {
+        const stillLocked = currentDeposits.some((current) => current.demander === offer.demander
+          && current.depositNonce === offer.depositNonce && current.amountDemanded === offer.amountDemanded
+          && current.amountDeposited === offer.amountDeposited);
+        if (!stillLocked) throw new Error("A selected sell order is no longer locked. Create a fresh request.");
+        if (await receiptWithdrawer(parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, tips.parent) !== null) {
+          throw new Error("A selected sell order was already purchased. Create a fresh request.");
+        }
+      }
+      const parent = reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth);
+      const account = await parent.account(acct.address);
+      if (totalPay + fee > account.balance) throw new Error(`Insufficient parent balance (have ${fmt(account.balance)}, need ${fmt(totalPay + fee)}).`);
+      toast.textContent = "signing parent receipt…";
+      const signed = await wallet.signReceipt({
+        from: acct.address, offers: offers.map(wireOffer), directory: order.childChain.at(-1)!,
+        fee: fee.toString(), nonce: account.nonce.toString(), chainPath: [...order.parentChain],
+      });
+      if (!signed.ok) throw new Error(signed.error);
+      const purchase: OpenPurchase = {
+        receiptCID: signed.signedSubmit.transactionCID, receiptSubmit: signed.signedSubmit, withdrawer: acct.address,
+        offers: offers.map(wireOffer), parentChain: [...order.parentChain], childChain: [...order.childChain], createdAt: Date.now(),
+      };
+      await update((s) => recordSent(recordOpenPurchase(s, purchase), parentName, {
+        cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
+        from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
+      }));
+      toast.textContent = "submitting parent receipt…";
+      try {
+        await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
+      } catch {
+        purchaseScreen(purchase);
+        return;
+      }
+      purchaseScreen(purchase);
+    } catch (e) {
+      toast.textContent = e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e);
+      buyButton.disabled = false; feeInput.disabled = false;
+    }
+  });
+}
+
+function enableOrderDrop() {
+  if (dropReady.has(document)) return;
+  dropReady.add(document);
+  let depth = 0;
+  let notice: El | undefined;
+  const available = () => st.initialized && !st.locked && !!activeAccount() && !!endpoint();
+  const show = (text = "Drop a cross-chain order") => {
+    notice ??= h("div", { class: "order-drop", role: "status" });
+    notice.className = "order-drop";
+    notice.textContent = text;
+    if (!notice.isConnected) document.body.append(notice);
+  };
+  const hide = () => { notice?.remove(); notice = undefined; };
+
+  document.addEventListener("dragenter", (event) => {
+    if (!available()) return;
+    event.preventDefault();
+    depth += 1;
+    show();
+  });
+  document.addEventListener("dragover", (event) => {
+    if (!available()) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  });
+  document.addEventListener("dragleave", () => {
+    if (depth > 0) depth -= 1;
+    if (depth === 0) hide();
+  });
+  document.addEventListener("drop", async (event) => {
+    if (!available()) return;
+    event.preventDefault();
+    depth = 0;
+    show("Opening cross-chain order…");
+    const transfer = event.dataTransfer;
+    const texts: string[] = [];
+    try {
+      if (transfer) {
+        const lattice = transfer.getData("application/x-lattice-order").trim();
+        const plain = transfer.getData("text/plain").trim();
+        const uri = transfer.getData("text/uri-list").trim();
+        if (lattice) texts.push(lattice);
+        if (plain) texts.push(plain, ...plain.split(/\s+/));
+        if (uri) texts.push(uri, ...uri.split(/\s+/));
+        for (const file of Array.from(transfer.files)) texts.push(...await scannerFileTexts(file));
+      }
+      for (const text of new Set(texts)) {
+        if (openOrderText(text, notice!)) { hide(); return; }
+      }
+      notice!.className = "order-drop error";
+      if (!texts.length) notice!.textContent = "Drop order text, a text file, or a QR image.";
+    } catch (e) {
+      notice!.className = "order-drop error";
+      notice!.textContent = (e as Error).message;
+    }
+    setTimeout(hide, 2500);
+  });
 }
 
 function randomNonce(): bigint {
@@ -1001,8 +1456,20 @@ export function startWallet(host: Platform) {
   wallet = host.wallet;
   store = host.store;
   initialView = host.initialView;
-  document.getElementById("net-badge")!.addEventListener("click", () => {
-    if (st.initialized && !st.locked) chainScreen();
+  enableOrderDrop();
+  const badge = document.getElementById("net-badge")!;
+  badge.setAttribute("aria-haspopup", "true");
+  badge.setAttribute("aria-expanded", "false");
+  badge.addEventListener("click", () => {
+    if (st.initialized && !st.locked && endpoint()) toggleChainMenu();
+  });
+  document.getElementById("parent-chain")?.addEventListener("click", () => {
+    if (!st.initialized || st.locked || !endpoint()) return;
+    const parent = chainPath().slice(0, -1).join("/");
+    if (parent) switchToChain(parent, h("div"));
+  });
+  document.getElementById("settings-button")?.addEventListener("click", () => {
+    if (st.initialized && !st.locked && activeAccount() && endpoint()) settingsScreen();
   });
   return refresh();
 }

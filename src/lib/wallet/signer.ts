@@ -5,7 +5,7 @@
 // on every key-touching event; the host calls `lock()` when it fires.
 
 import { encryptVault, decryptVault, type Vault } from "../crypto/keystore.ts";
-import { deriveAccounts, toView, nextHdLabel, signDeposit, signTransfer, type LiveAccount } from "./session.ts";
+import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
@@ -292,6 +292,31 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
             amountDeposited: BigInt(msg.amountDeposited), amountDemanded: BigInt(msg.amountDemanded),
             depositNonce: BigInt(msg.depositNonce), fee: BigInt(msg.fee), nonce: BigInt(msg.nonce), chainPath,
           }) } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
+        }
+      }
+
+      case "signReceipt":
+      case "signWithdrawal": {
+        if (!session) return { ok: false, error: "Locked" };
+        const acct = findAccount(msg.from);
+        if (!acct) return { ok: false, error: "Unknown sender" };
+        const chainPath = parseChainPath(msg.chainPath.join("/"));
+        if (!chainPath) return { ok: false, error: "Invalid chain path" };
+        try {
+          const offers = msg.offers.map((offer) => ({
+            demander: offer.demander,
+            amountDemanded: BigInt(offer.amountDemanded),
+            amountDeposited: BigInt(offer.amountDeposited),
+            depositNonce: BigInt(offer.depositNonce),
+          }));
+          const common = { offers, fee: BigInt(msg.fee), nonce: BigInt(msg.nonce), chainPath };
+          if (msg.type === "signReceipt") {
+            if (!msg.directory) return { ok: false, error: "Missing child directory" };
+            return { ok: true, signedSubmit: signReceipt(acct, { ...common, directory: msg.directory }) } as Response;
+          }
+          return { ok: true, signedSubmit: signWithdrawal(acct, common) } as Response;
         } catch (e) {
           return { ok: false, error: (e as Error).message };
         }

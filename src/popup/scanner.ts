@@ -11,6 +11,23 @@ import { h } from "./app.ts";
 import { latin1 } from "../lib/qr/seedqr.ts";
 const MAX_FILE = 2_000_000;
 
+/** Decode the same image/text files accepted by the scanner, including dropped files. */
+export async function scannerFileTexts(file: File): Promise<string[]> {
+  if (file.size > MAX_FILE) throw new Error("That file is too large.");
+  if (file.type.startsWith("image/")) {
+    const bmp = await createImageBitmap(file);
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    const ctx = c.getContext("2d")!;
+    ctx.drawImage(bmp, 0, 0);
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const decoded = decodeQR(img, { textDecoder: latin1, effort: Infinity, timeLimit: Infinity });
+    if (!decoded) throw new Error("No QR code found in that image.");
+    return [decoded];
+  }
+  return (await file.text()).split(/\s+/).filter(Boolean);
+}
+
 export interface ScannerOpts {
   /** May this page open the camera (an extension popup may not)? */
   camera: boolean;
@@ -65,22 +82,11 @@ export function scanner(opts: ScannerOpts): { node: HTMLElement; status: HTMLEle
   }
 
   async function loadFile(file: File) {
-    if (file.size > MAX_FILE) { status.textContent = "That file is too large."; return; }
-    if (file.type.startsWith("image/")) {
-      try {
-        const bmp = await createImageBitmap(file);
-        const c = document.createElement("canvas");
-        c.width = bmp.width; c.height = bmp.height;
-        const ctx = c.getContext("2d")!;
-        ctx.drawImage(bmp, 0, 0);
-        const img = ctx.getImageData(0, 0, c.width, c.height);
-        feed(decodeQR(img, { textDecoder: latin1, effort: Infinity, timeLimit: Infinity }));
-      } catch {
-        status.textContent = "No QR code found in that image.";
-      }
-      return;
+    try {
+      for (const text of await scannerFileTexts(file)) feed(text);
+    } catch (e) {
+      status.textContent = (e as Error).message;
     }
-    for (const line of (await file.text()).split(/\s+/)) if (line) feed(line);
   }
 
   const file = h("input", { type: "file", accept: "image/*,.txt,text/plain" }) as HTMLInputElement;
