@@ -75,3 +75,64 @@ export function signDeposit(
   const signatures = { [publicKey]: signature };
   return { payload: transactionPayload(signatures, body), bodyCID, transactionCID: signedTransactionCID(signatures, body) };
 }
+
+export interface SwapOffer {
+  demander: string;
+  amountDemanded: bigint;
+  amountDeposited: bigint;
+  depositNonce: bigint;
+}
+
+function signBody(acct: Account, body: TransactionBody): SignedSubmit {
+  const { bodyCID, publicKey, signature } = signTransactionBody(body, acct.privateKey);
+  const signatures = { [publicKey]: signature };
+  return { payload: transactionPayload(signatures, body), bodyCID, transactionCID: signedTransactionCID(signatures, body) };
+}
+
+export function signReceipt(
+  acct: Account,
+  args: { offers: SwapOffer[]; directory: string; fee: bigint; nonce: bigint; chainPath: string[] },
+): SignedSubmit {
+  const { offers, directory, fee, nonce, chainPath } = args;
+  const int64Max = (1n << 63n) - 1n;
+  if (!offers.length) throw new Error("at least one deposit is required");
+  if (!directory || chainPath.length < 1) throw new Error("receipt requires a parent and child directory");
+  if (fee < 0n) throw new Error("fee must not be negative");
+  const demanded = offers.reduce((sum, offer) => sum + offer.amountDemanded, 0n);
+  if (demanded + fee > int64Max) throw new Error("purchase plus fee is too large");
+  for (const offer of offers) {
+    if (offer.amountDemanded <= 0n || offer.amountDeposited <= 0n) throw new Error("deposit amounts must be positive");
+  }
+  return signBody(acct, {
+    accountActions: [{ owner: acct.address, delta: -fee }],
+    actions: [], depositActions: [], withdrawalActions: [],
+    receiptActions: offers.map((offer) => ({
+      withdrawer: acct.address, nonce: offer.depositNonce, demander: offer.demander,
+      amountDemanded: offer.amountDemanded, directory,
+    })),
+    signers: [acct.address], nonce, chainPath,
+  });
+}
+
+export function signWithdrawal(
+  acct: Account,
+  args: { offers: SwapOffer[]; fee: bigint; nonce: bigint; chainPath: string[] },
+): SignedSubmit {
+  const { offers, fee, nonce, chainPath } = args;
+  const int64Max = (1n << 63n) - 1n;
+  if (!offers.length) throw new Error("at least one deposit is required");
+  if (chainPath.length < 2) throw new Error("withdrawal requires a child chain");
+  if (fee < 0n) throw new Error("fee must not be negative");
+  const deposited = offers.reduce((sum, offer) => sum + offer.amountDeposited, 0n);
+  if (deposited <= fee) throw new Error("deposit must exceed the withdrawal fee");
+  if (deposited - fee > int64Max) throw new Error("withdrawal credit is too large");
+  return signBody(acct, {
+    accountActions: [{ owner: acct.address, delta: deposited - fee }],
+    actions: [], depositActions: [], receiptActions: [],
+    withdrawalActions: offers.map((offer) => ({
+      withdrawer: acct.address, nonce: offer.depositNonce, demander: offer.demander,
+      amountDemanded: offer.amountDemanded, amountWithdrawn: offer.amountDeposited,
+    })),
+    signers: [acct.address], nonce, chainPath,
+  });
+}

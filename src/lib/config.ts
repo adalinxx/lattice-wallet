@@ -7,6 +7,9 @@ export const ROOT_CHAIN = "Nexus";
 /** Optional public Nexus endpoint. It is never selected until the user chooses
  * it and the wallet verifies both the served chain and submission support. */
 export const LATTICE_BUILD_RPC = "https://rpc.lattice.build";
+/** Optional public Nexus/testnet submit endpoint. It is presented alongside
+ * automatic discovery and custom-node entry, never silently selected. */
+export const LATTICE_TESTNET_RPC = "https://lattice-mainnet-testnet.fly.dev";
 /** Nexus read service used by the explorer and as the default bootstrap for
  * child-chain endpoint discovery. It is never used to submit transactions. */
 export const LATTICE_EXPLORER_RPC = "https://lattice-mainnet-read.fly.dev";

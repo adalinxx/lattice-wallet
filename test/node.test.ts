@@ -4,13 +4,40 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
+
+const proofEntry = (cid: string, data: string): VolumeEntry => ({ cid, bytes: Uint8Array.from(Buffer.from(data, "base64")) });
+const goldenProofs = JSON.parse(readFileSync(
+  new URL("./fixtures/cross-chain-state-proofs.json", import.meta.url), "utf8",
+)) as Record<string, { dictionaryRoot: string; claims: Array<{ key: string; value?: string }>; witness: Array<{ cid: string; data: string }> }>;
+
+test("Swift cashew proof vectors verify compressed-prefix existence and absence", () => {
+  // Emitted by lattice-node's Swift StateDictionaryProof builder from real
+  // DepositState and ReceiptState tries. These deliberately exercise cashew's
+  // edge-inclusive compressed prefixes, not a TypeScript-built imitation.
+  const entries = (proof: typeof goldenProofs[string]) => proof.witness.map(({ cid, data }) => proofEntry(cid, data));
+  const deposit = goldenProofs.deposit!;
+  const depositClaim = deposit.claims[0]!;
+  assert.equal(verifySparseProof(deposit.dictionaryRoot, depositClaim.key, BigInt(depositClaim.value!), entries(deposit)), true);
+  assert.equal(verifySparseProof(deposit.dictionaryRoot, depositClaim.key, undefined, entries(deposit)), false);
+
+  const present = goldenProofs.receiptExists!;
+  const presentClaim = present.claims[0]!;
+  assert.equal(verifySparseProof(present.dictionaryRoot, presentClaim.key, presentClaim.value!, entries(present)), true);
+  assert.equal(verifySparseProof(present.dictionaryRoot, presentClaim.key, undefined, entries(present)), false, "an existing receipt cannot be forged as absent");
+  const compressed = goldenProofs.receiptCompressedAbsence!;
+  assert.equal(verifySparseProof(compressed.dictionaryRoot, compressed.claims[0]!.key, undefined, entries(compressed)), true, "divergence inside the compressed prefix");
+  const missing = goldenProofs.receiptMissingRouteAbsence!;
+  assert.equal(verifySparseProof(missing.dictionaryRoot, missing.claims[0]!.key, undefined, entries(missing)), true, "missing routing character");
+});
 
 test("no default node, and only https or the CSP's loopback http", async () => {
   const defaults = await loadSettings({ get: async () => ({}), set: async () => {} });
