@@ -173,3 +173,60 @@ test("the optional Lattice.build endpoint is offered but a failed submit probe i
   assert.deepEqual(stored.settings.endpoints, {});
   assert.match(document.body.textContent ?? "", /not accepting transactions/i);
 });
+
+test("a child chain automatically discovers and selects a verified submit node through the explorer bootstrap", async () => {
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  for (const [name, value] of Object.entries({
+    window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
+    Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
+    HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
+  })) Object.defineProperty(globalThis, name, { configurable: true, value });
+
+  const address = "bafyaccount";
+  const wallet = {
+    getState: async () => ({ ok: true, state: {
+      initialized: true, locked: false,
+      accounts: [{ address, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }],
+      active: address,
+    } }),
+    nodeAuthorization: async () => ({ ok: true }),
+  } as unknown as WalletClient;
+  let stored = { settings: { ...structuredClone(DEFAULT_SETTINGS), chain: "Nexus/testnet", chains: ["Nexus", "Nexus/testnet"] } };
+  const store = {
+    get: async () => stored,
+    set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
+  };
+  const requested: string[][] = [];
+  const block = {
+    height: "3", hash: "bafycommitted", timestamp: "1", transactionCount: 0, childBlockCount: 0,
+    nonce: "0", version: 1, target: "0x1", nextTarget: "0x1", transactionsCID: "bafyt",
+    postStateCID: "bafys", chain: ["Nexus", "testnet"],
+  };
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.host === "lattice-mainnet-read.fly.dev" && url.pathname === "/api/chain/endpoints") {
+      return new Response(JSON.stringify({
+        chainPath: ["Nexus", "testnet"], committedBlock: "bafycommitted",
+        endpoints: ["https://testnet-node.example"], submitEndpoints: ["https://testnet-node.example"],
+      }));
+    }
+    if (url.host === "testnet-node.example" && url.pathname === "/api/block/bafycommitted") return new Response(JSON.stringify(block));
+    if (url.host === "testnet-node.example" && url.pathname === "/api/chain/info") {
+      return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], minRelayFee: "1", acceptsSubmit: true }));
+    }
+    return new Response("not found", { status: 404 });
+  };
+
+  const { startWallet } = await import("../src/popup/app.ts");
+  await startWallet({
+    wallet, store, fetch,
+    requestOrigins: async (origins) => { requested.push(origins); return true; },
+  });
+
+  button("Find node automatically").click();
+  await settle();
+  assert.equal(stored.settings.endpoints["Nexus/testnet"]?.url, "https://testnet-node.example");
+  assert.equal(stored.settings.endpoints["Nexus/testnet"]?.acceptsSubmit, true);
+  assert.deepEqual(requested[0], ["https://lattice-mainnet-read.fly.dev/*", "https://*/*"]);
+  assert.ok(requested.some((origins) => origins.includes("https://testnet-node.example/*")));
+});

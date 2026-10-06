@@ -9,7 +9,7 @@ import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
+import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type SellOrder } from "../lib/wallet/order.ts";
@@ -299,7 +299,10 @@ function endpointScreen() {
   const current = endpoint();
   const url = h("input", { type: "text", placeholder: "your node, e.g. http://127.0.0.1:8080", spellcheck: "false", value: current?.url ?? "" }) as HTMLInputElement;
   const cookie = h("textarea", { rows: "2", placeholder: "your node's cookie (__cookie__:…), for a node on this computer", spellcheck: "false", autocomplete: "off" }) as HTMLTextAreaElement;
-  const start = h("input", { type: "text", placeholder: "a Nexus node you trust to start from", spellcheck: "false" }) as HTMLInputElement;
+  const start = h("input", {
+    type: "text", placeholder: "a Nexus node you trust to start from", spellcheck: "false",
+    value: settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC,
+  }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
   const found = h("div", { class: "kv" });
   const isChild = chainPath().length > 1;
@@ -312,6 +315,10 @@ function endpointScreen() {
           if (await chooseEndpoint(LATTICE_BUILD_RPC, "user", err, true, undefined, true)) route();
         } }, "Use Lattice.build"),
         h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
+      ] : []),
+      ...(isChild ? [
+        h("button", { class: "block", onclick: () => discoverFrom(true) }, "Find node automatically"),
+        h("p", { class: "muted" }, "Uses the explorer's configured Nexus service to find and verify a node that accepts transactions for this chain."),
       ] : []),
       url,
       ...(platform.pairOrigin ? pairingSteps(platform.pairOrigin, cookie) : []),
@@ -332,7 +339,7 @@ function endpointScreen() {
     ),
   );
 
-  async function discoverFrom() {
+  async function discoverFrom(autoSelect = false) {
     const n = normalizeNodeURL(start.value);
     if (!n) { err.textContent = "Enter the starting node's URL."; return; }
     // Discovery may reach any declared host: ask for broad reach once, in this click.
@@ -343,6 +350,21 @@ function endpointScreen() {
     try {
       const list = await discover(n, chainPath(), platform.fetch);
       err.textContent = list.length ? "" : "No endpoint served the block its parent commits.";
+      if (autoSelect) {
+        const candidates = list.filter((endpoint) => endpoint.declaresSubmit);
+        if (!candidates.length) {
+          err.textContent = "No verified node declares transaction submission for this chain.";
+          return;
+        }
+        for (const candidate of candidates) {
+          if (await chooseEndpoint(candidate.url, "discovered", err, true, undefined, true)) {
+            route();
+            return;
+          }
+        }
+        err.textContent = "No verified node is currently accepting transactions for this chain.";
+        return;
+      }
       for (const e of list) {
         found.append(h("div", { class: "row" },
           h("span", { class: "v mono" }, short(e.url)),
