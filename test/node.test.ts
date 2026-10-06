@@ -9,7 +9,7 @@ import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof, estimateFeeMarket, confirmationEstimate } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -144,6 +144,25 @@ test("submission posts the signer's payload to /transactions; refusals are typed
 const projection = (extra: Record<string, unknown> = {}) => ({
   txCID: "bafytx", nonce: "4", signers: ["bafyalice"], chainPath: ["Nexus"],
   accountActions: [], depositActions: [], receiptActions: [], withdrawalActions: [], ...extra,
+});
+
+test("fee estimate ranks the live mempool against chain capacity and block time", async () => {
+  const fees: Record<string, string> = { a: "9", b: "5", c: "2" };
+  const { fetch } = scripted((url) => {
+    if (url.pathname === "/api/chain/info") return { status: 200, body: { chain: ["Nexus"], minRelayFee: "1" } };
+    if (url.pathname === "/api/chain/spec") return { status: 200, body: { targetBlockTime: "60000", maxNumberOfTransactionsPerBlock: "2" } };
+    if (url.pathname === "/api/mempool") return { status: 200, body: { count: 3, transactions: ["a", "b", "c"] } };
+    const cid = url.pathname.split("/").at(-1)!;
+    if (url.pathname.startsWith("/api/transaction/") && fees[cid]) return { status: 200, body: projection({ txCID: cid,
+      accountActions: [{ owner: "sender", delta: `-${BigInt(fees[cid]!) + 10n}` }, { owner: "recipient", delta: "10" }] }) };
+  });
+  const market = await estimateFeeMarket("http://127.0.0.1:8080", ["Nexus"], fetch);
+  assert.equal(market.minimum, 1n);
+  assert.equal(market.recommended, 1n, "the minimum clears within the two-block target");
+  assert.equal(market.priority, 6n, "one more than the next-block boundary avoids an unknown equal-fee tie");
+  assert.deepEqual(confirmationEstimate(6n, market), { blocks: 1, milliseconds: 60_000n, complete: true });
+  assert.deepEqual(confirmationEstimate(1n, market), { blocks: 2, milliseconds: 120_000n, complete: true });
+  assert.equal(confirmationEstimate(0n, market), undefined);
 });
 
 test("status: included in block N, pending, replaced, unknown", async () => {
