@@ -4,6 +4,9 @@
 import { normalizeNodeURL as sdkNormalizeNodeURL } from "@adalinxx/lattice-client";
 
 export const ROOT_CHAIN = "Nexus";
+/** Optional public Nexus endpoint. It is never selected until the user chooses
+ * it and the wallet verifies both the served chain and submission support. */
+export const LATTICE_BUILD_RPC = "https://rpc.lattice.build";
 
 /** "Nexus/Alpha" -> ["Nexus","Alpha"]; null unless Nexus-rooted with plain names. */
 export function parseChainPath(text: string): string[] | null {
