@@ -13,7 +13,9 @@ import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
 
 test("no default node, and only https or the CSP's loopback http", async () => {
-  assert.deepEqual((await loadSettings({ get: async () => ({}), set: async () => {} })).endpoints, {});
+  const defaults = await loadSettings({ get: async () => ({}), set: async () => {} });
+  assert.deepEqual(defaults.endpoints, {});
+  assert.equal(defaults.nodeMode, "automatic");
   assert.deepEqual(DEFAULT_SETTINGS.endpoints, {});
   assert.equal(normalizeNodeURL("http://127.0.0.1:8080/"), "http://127.0.0.1:8080");
   assert.equal(normalizeNodeURL(" https://reads.example.org/base/ "), "https://reads.example.org/base");
