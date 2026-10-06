@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
-import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
+import { LATTICE_BUILD_RPC, normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
