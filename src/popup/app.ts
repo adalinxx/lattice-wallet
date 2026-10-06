@@ -423,8 +423,18 @@ async function mainScreen() {
         ),
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
-          h("span", {}, acct.label),
-          h("span", { class: "mono" }, short(acct.address)),
+          h("div", { class: "account-identity" },
+            h("span", {}, acct.label),
+            h("span", { class: "mono account-address" }, acct.address),
+          ),
+          h("button", { class: "text-action", onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(acct.address);
+              toast.textContent = "Account address copied.";
+            } catch {
+              toast.textContent = "Could not copy the account address.";
+            }
+          } }, "Copy address"),
         ),
       ),
       h("div", { class: "primary-actions" },

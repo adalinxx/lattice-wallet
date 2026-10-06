@@ -33,13 +33,15 @@ async function openOrder(uri: string) {
 
 test("sell-order UI refuses a stale review and never re-signs after an uncertain submit", async () => {
   const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  let copied = "";
+  Object.defineProperty(dom.window.navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copied = text; } } });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
     HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
   })) Object.defineProperty(globalThis, name, { configurable: true, value });
 
-  const address = "bafyseller";
+  const address = "bafy" + "a".repeat(48);
   let signCalls = 0;
   const signedSubmit = {
     transactionCID: "bafytx", bodyCID: "bafybody",
@@ -80,10 +82,15 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   const { startWallet } = await import("../src/popup/app.ts");
   await startWallet({ wallet, store, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true });
 
-  for (const label of ["Refresh", "Send", "Receive", "Scan cross-chain order", "Transactions", "Settings"]) button(label);
+  for (const label of ["Refresh", "Copy address", "Send", "Receive", "Scan cross-chain order", "Transactions", "Settings"]) button(label);
   for (const hidden of ["Node", "Fee", "Backup", "Lock"]) {
     assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
   }
+  assert.match(document.body.textContent ?? "", new RegExp(address), "the home screen displays the full account address");
+  button("Copy address").click();
+  await settle();
+  assert.equal(copied, address, "copies the full address rather than its shortened display");
+  assert.match(document.body.textContent ?? "", /Account address copied/);
 
   button("Send").click();
   await settle();
