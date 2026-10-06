@@ -7,9 +7,7 @@ export const ROOT_CHAIN = "Nexus";
 /** Public root-chain relay operated for lattice.build. It is always probed
  * before selection; the wallet refuses it unless it serves Nexus and declares
  * public transaction submission. */
-// Production public relay. Keep this on the Fly hostname until
-// rpc.lattice.build has validated DNS and TLS.
-export const LATTICE_BUILD_RPC = "https://lattice-mainnet-read.fly.dev";
+export const LATTICE_BUILD_RPC = "https://rpc.lattice.build";
 
 /** "Nexus/Alpha" -> ["Nexus","Alpha"]; null unless Nexus-rooted with plain names. */
 export function parseChainPath(text: string): string[] | null {
