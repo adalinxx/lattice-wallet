@@ -7,6 +7,9 @@ export const ROOT_CHAIN = "Nexus";
 /** Optional public Nexus endpoint. It is never selected until the user chooses
  * it and the wallet verifies both the served chain and submission support. */
 export const LATTICE_BUILD_RPC = "https://rpc.lattice.build";
+/** Nexus read service used by the explorer and as the default bootstrap for
+ * child-chain endpoint discovery. It is never used to submit transactions. */
+export const LATTICE_EXPLORER_RPC = "https://lattice-mainnet-read.fly.dev";
 
 /** "Nexus/Alpha" -> ["Nexus","Alpha"]; null unless Nexus-rooted with plain names. */
 export function parseChainPath(text: string): string[] | null {
