@@ -109,6 +109,11 @@ async function update(change: (s: Settings) => Settings) {
   syncBadge();
 }
 
+export async function ensureOrigins(host: Pick<Platform, "hasOrigins" | "requestOrigins">, origins: string[]): Promise<boolean> {
+  if (host.hasOrigins && await host.hasOrigins(origins).catch(() => false)) return true;
+  return host.requestOrigins(origins).catch(() => false);
+}
+
 function syncBadge() {
   const b = document.getElementById("net-badge")!;
   b.textContent = `${settings.chain} ▾`;
@@ -140,7 +145,7 @@ async function switchToChain(chain: string, status: El) {
       ...s, chain, pendingAutomaticChain: chain,
       chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
     }));
-    const granted = await platform.requestOrigins([originPattern(bootstrap), "https://*/*"]).catch(() => false);
+    const granted = await ensureOrigins(platform, [originPattern(bootstrap), "https://*/*"]);
     if (granted) {
       if (await finishAutomaticChain(chain, status)) { route(); return; }
     }
@@ -189,7 +194,12 @@ async function requestEndpoint(
     if (!paired.ok) { status.textContent = "Cookie: " + paired.error; return false; }
   }
   await update((s) => ({ ...s, pendingEndpoint: pending }));
-  const granted = await platform.requestOrigins([originPattern(pending.url)]).catch(() => false);
+  // Choosing the hosted Nexus bootstrap opts into automatic HTTPS discovery.
+  // Ask for that reach once here, so its hosted child chains do not trigger a
+  // second Chrome permission prompt on first use.
+  const origins = pending.chain === ROOT_CHAIN && pending.url === LATTICE_BUILD_RPC
+    && pending.nodeMode === "automatic" ? ["https://*/*"] : [originPattern(pending.url)];
+  const granted = await ensureOrigins(platform, origins);
   if (granted) return finishPendingEndpoint(status);
   if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
   await update((s) => { const { pendingEndpoint: _, ...rest } = s; return rest; });
@@ -409,7 +419,7 @@ function actionButtons(): El[] {
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
 async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false, permissionGranted = false): Promise<boolean> {
   if (!permissionGranted) {
-    const granted = await platform.requestOrigins([originPattern(url)]).catch(() => false);
+    const granted = await ensureOrigins(platform, [originPattern(url)]);
     if (!granted) { err.textContent = "Permission to reach that node was not granted."; return false; }
   }
   let authorization: string | undefined;
@@ -516,7 +526,7 @@ function endpointScreen() {
       // Discovery may reach any declared host. Persist first because Chrome can
       // close the popup while it asks for this broad reach.
       await update((s) => ({ ...s, pendingDiscovery: { chain: s.chain, url: n, autoSelect } }));
-      const granted = await platform.requestOrigins([originPattern(n), "https://*/*"]).catch(() => false);
+      const granted = await ensureOrigins(platform, [originPattern(n), "https://*/*"]);
       if (!granted) {
         await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
         err.textContent = "Permission not granted.";

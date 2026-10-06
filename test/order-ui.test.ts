@@ -5,9 +5,21 @@ import type { WalletClient } from "../src/lib/wallet/client.ts";
 import { DEFAULT_SETTINGS, type Settings } from "../src/lib/wallet/settings.ts";
 import { cidV1DagCbor, encodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { ensureOrigins } from "../src/popup/app.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 20; i++) await tick(); }
+
+test("an already granted node permission is reused without another prompt", async () => {
+  let prompts = 0;
+  const origins = ["https://rpc.lattice.build/*", "https://*/*"];
+  const granted = await ensureOrigins({
+    hasOrigins: async (requested) => { assert.deepEqual(requested, origins); return true; },
+    requestOrigins: async () => { prompts += 1; return true; },
+  }, origins);
+  assert.equal(granted, true);
+  assert.equal(prompts, 0);
+});
 
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 function testTrie(values: ReadonlyMap<string, bigint | string>) {
@@ -397,7 +409,7 @@ test("the optional Lattice.build endpoint is offered but a failed submit probe i
 
   button("Use Lattice.build").click();
   await settle();
-  assert.deepEqual(requested, [["https://rpc.lattice.build/*"]]);
+  assert.deepEqual(requested, [["https://*/*"]]);
   assert.deepEqual(stored.settings.endpoints, {});
   assert.match(document.body.textContent ?? "", /not accepting transactions/i);
 });
