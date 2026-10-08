@@ -10,7 +10,7 @@ import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, forgetSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
@@ -699,6 +699,9 @@ function settingsScreen() {
     ...(settings.openDeposits.length
       ? [h("button", { class: "btn block", onclick: depositsScreen }, `Pending sales (${settings.openDeposits.length})`)]
       : []),
+    ...(settings.pendingSubmissions.length
+      ? [h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, `Pending transactions (${settings.pendingSubmissions.length})`)]
+      : []),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
     h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
@@ -712,12 +715,39 @@ function depositsScreen() {
     const toast = h("span", { class: "muted" }, "Not checked");
     const check = h("button", { class: "btn", onclick: async () => {
       const parentName = deposit.parentChain.join("/");
+      const childName = deposit.childChain.join("/");
       const parentEndpoint = endpointFor(parentName);
-      if (!parentEndpoint) { toast.textContent = `Connect ${parentName} first.`; return; }
+      const childEndpoint = endpointFor(childName);
+      if (!parentEndpoint || !childEndpoint) { toast.textContent = `Connect ${parentName} and ${childName} first.`; return; }
       check.disabled = true;
-      toast.textContent = "Checking verified receipt…";
+      toast.textContent = "Checking the saved deposit…";
       try {
-        const authorization = await authorizationFor(parentEndpoint.url);
+        const [authorization, childAuth] = await Promise.all([
+          authorizationFor(parentEndpoint.url), authorizationFor(childEndpoint.url),
+        ]);
+        const result = await sentStatus(reader(childEndpoint.url, deposit.childChain, platform.fetch, childAuth), deposit.transactionCID,
+          { from: deposit.demander, nonce: BigInt(deposit.transactionNonce) });
+        if (result.kind !== "included") {
+          toast.textContent = `Deposit: ${statusText(result)}.`;
+          if ((result.kind === "unknown to node" || result.kind === "pending or dropped") && deposit.signedSubmit) {
+            const retry = h("button", { class: "btn", onclick: async () => {
+              retry.disabled = true; toast.textContent = "Resubmitting the exact saved deposit…";
+              try {
+                await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), deposit.signedSubmit!);
+                toast.textContent = "Exact deposit resubmitted.";
+              } catch (e) {
+                if (isDefiniteSubmissionRefusal(e)) {
+                  await update((s) => forgetSent(completeOpenDeposit(s, deposit.transactionCID), childName, deposit.transactionCID));
+                  toast.textContent = `Deposit rejected: ${describe(e)}`; check.remove(); retry.remove();
+                } else { toast.textContent = describe(e); retry.disabled = false; }
+              }
+            } }, "Resubmit exact deposit") as HTMLButtonElement;
+            check.after(retry);
+          }
+          check.disabled = false;
+          return;
+        }
+        toast.textContent = "Deposit confirmed; checking verified receipt…";
         const withdrawer = await receiptWithdrawer(parentEndpoint.url, deposit.parentChain, deposit.childChain, {
           demander: deposit.demander,
           depositNonce: BigInt(deposit.depositNonce),
@@ -725,7 +755,7 @@ function depositsScreen() {
           amountDemanded: BigInt(deposit.amountDemanded),
         }, platform.fetch, authorization);
         if (withdrawer === null) {
-          toast.textContent = "Still available; no verified payment receipt yet.";
+          toast.textContent = "Deposit confirmed and available; no verified payment receipt yet.";
           check.disabled = false;
           return;
         }
@@ -846,7 +876,19 @@ function purchaseScreen(purchase: OpenPurchase) {
       toast.textContent = "submitting child withdrawal…";
       try {
         await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
-      } catch {
+      } catch (e) {
+        if (isDefiniteSubmissionRefusal(e)) {
+          try {
+            await update((s) => ({
+              ...forgetSent(s, childName, withdrawalCID),
+              openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
+                ? { ...item, withdrawalCID: undefined, withdrawalSubmit: undefined } : item),
+            }));
+          } catch { /* Refusal remains definite. */ }
+          toast.textContent = describe(e);
+          withdraw.disabled = false; feeInput.disabled = false;
+          return;
+        }
         toast.textContent = "Withdrawal outcome unknown. Check this saved purchase before taking another action.";
         return;
       }
@@ -1066,7 +1108,18 @@ async function reviewBuyOrder(order: BuyOrder) {
       toast.textContent = "submitting parent receipt…";
       try {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
-      } catch {
+      } catch (e) {
+        if (isDefiniteSubmissionRefusal(e)) {
+          try {
+            await update((s) => ({
+              ...forgetSent(s, parentName, purchase.receiptCID),
+              openPurchases: s.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID),
+            }));
+          } catch { /* Refusal remains definite. */ }
+          toast.textContent = describe(e);
+          buyButton.disabled = false; feeInput.disabled = false;
+          return;
+        }
         purchaseScreen(purchase);
         return;
       }
@@ -1217,10 +1270,11 @@ async function reviewSellOrder(order: SellOrder) {
         depositNonce: depositNonce.toString(), amountDeposited: order.amountDeposited,
         amountDemanded: order.amountDemanded, fee: fee.toString(), transactionNonce: nonce.toString(),
         childChain: [...order.childChain], parentChain: [...order.parentChain],
-        createdAt: Date.now(), expiresAt: order.expiresAt,
+        createdAt: Date.now(), expiresAt: order.expiresAt, signedSubmit: signed.signedSubmit,
       }), chain, {
         cid, to: `sell for ${order.parentChain.join("/")}`,
         amount: order.amountDeposited, at: Date.now(), from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
+        signedSubmit: signed.signedSubmit,
       }));
     } catch {
       toast.textContent = "Could not save the deposit record; nothing was submitted.";
@@ -1230,7 +1284,13 @@ async function reviewSellOrder(order: SellOrder) {
     try {
       await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
       sentScreen(cid);
-    } catch {
+    } catch (e) {
+      if (isDefiniteSubmissionRefusal(e)) {
+        try { await update((s) => forgetSent(completeOpenDeposit(s, cid), chain, cid)); } catch { /* Refusal remains definite. */ }
+        toast.textContent = describe(e);
+        lockButton.disabled = false; feeInput.disabled = false;
+        return;
+      }
       // Never return to a control that re-signs with a newly read account
       // nonce. Track this exact CID; resubmission must reuse its signed bytes.
       sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" });
@@ -1406,10 +1466,12 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
     const cid = signed.signedSubmit.transactionCID;
     const chain = settings.chain;
     try {
-      await update((s) => recordSent(s, chain, {
+      const pending = {
         cid, to, amount: amount.toString(), at: Date.now(),
         from: acct.address, fee: fee.toString(), nonce: nonce.toString(), signedSubmit: signed.signedSubmit,
-      }));
+        chain,
+      };
+      await update((s) => recordPendingSubmission(recordSent(s, chain, pending), pending));
     } catch {
       toast.textContent = "Could not save the signed transaction; nothing was submitted.";
       if (sendButton) sendButton.disabled = false;
@@ -1420,7 +1482,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       sentScreen(cid);
     } catch (e) {
       if (isDefiniteSubmissionRefusal(e)) {
-        try { await update((s) => forgetSent(s, chain, cid)); } catch { /* The refusal remains definite. */ }
+        try { await update((s) => completePendingSubmission(forgetSent(s, chain, cid), cid)); } catch { /* The refusal remains definite. */ }
         toast.textContent = describe(e);
         if (sendButton) sendButton.disabled = false;
         return;
@@ -1428,6 +1490,50 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       sentScreen(cid, { uncertain: true, from: acct.address, nonce });
     }
   }
+}
+
+function pendingSubmissionsScreen() {
+  const list = h("div", { class: "kv" });
+  for (const pending of settings.pendingSubmissions) {
+    const state = h("span", { class: "muted" }, "Checking…");
+    const row = h("div", { class: "stack compact" },
+      h("div", { class: "row" }, h("span", { class: "v mono" }, short(pending.cid)), h("span", { class: "v" }, pending.chain)),
+      h("div", { class: "row-actions" }, state));
+    list.append(row);
+    const chosen = endpointFor(pending.chain);
+    if (!chosen) { state.textContent = `Connect ${pending.chain} to check or resubmit.`; continue; }
+    void (async () => {
+      try {
+        const auth = await authorizationFor(chosen.url);
+        const result = await sentStatus(reader(chosen.url, pending.chain.split("/"), platform.fetch, auth), pending.cid,
+          { from: pending.from, nonce: BigInt(pending.nonce) });
+        state.textContent = statusText(result);
+        if (result.kind === "included" || result.kind === "replaced" || result.kind === "nonce spent") {
+          await update((s) => completePendingSubmission(s, pending.cid));
+          return;
+        }
+        const retry = h("button", { class: "btn", onclick: async () => {
+          retry.disabled = true; state.textContent = "Resubmitting the exact saved transaction…";
+          try {
+            await submitChecked(submitter(chosen.url, platform.fetch, auth), pending.signedSubmit);
+            state.textContent = "Exact transaction resubmitted.";
+          } catch (e) {
+            if (isDefiniteSubmissionRefusal(e)) {
+              await update((s) => completePendingSubmission(forgetSent(s, pending.chain, pending.cid), pending.cid));
+              state.textContent = `Rejected: ${describe(e)}`;
+              retry.remove();
+            } else {
+              state.textContent = describe(e); retry.disabled = false;
+            }
+          }
+        } }, "Resubmit exact") as HTMLButtonElement;
+        row.append(retry);
+      } catch (e) { state.textContent = describe(e); }
+    })();
+  }
+  render(h("div", { class: "stack" }, h("h1", {}, "Pending transactions"), list,
+    h("p", { class: "muted" }, "The wallet keeps exact signed transactions here until the chain reports a final outcome."),
+    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 
 function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }) {

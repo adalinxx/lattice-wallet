@@ -67,6 +67,12 @@ node's pool, and *replaced* if its nonce was spent by another transaction.
 Only a node too old to report inclusion falls back to the account-nonce
 reading (*nonce spent*).
 
+The exact signed bytes for ordinary transfers with no final chain outcome are
+kept in a separate, unbounded `pendingSubmissions` list. The 50-item sent list
+is display history only and cannot delete recovery material. Settings exposes
+pending transactions for status checks and exact-byte resubmission; definite
+4xx refusals are removed so the user can correct the fee or transaction.
+
 ### Cross-chain deposits
 
 The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded

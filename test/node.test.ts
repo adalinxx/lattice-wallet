@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import type { SignedSubmit } from "../src/lib/wallet/types.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
@@ -78,6 +79,20 @@ test("open deposits are self-contained, deduplicated and never trimmed with sent
   assert.deepEqual(s.openDeposits, [{ ...deposit, createdAt: 2 }]);
   s = completeOpenDeposit(s, deposit.transactionCID);
   assert.deepEqual(s.openDeposits, []);
+});
+
+test("pending signed submissions survive trimmed display history until explicitly completed", () => {
+  const signedSubmit = { transactionCID: "pending" } as unknown as SignedSubmit;
+  let s = recordPendingSubmission(DEFAULT_SETTINGS, {
+    cid: "pending", chain: "Nexus", to: "recipient", amount: "2", at: 1,
+    from: "sender", fee: "1", nonce: "7", signedSubmit,
+  });
+  for (let i = 0; i < 75; i++) s = recordSent(s, "Nexus", { cid: `send-${i}`, to: "t", amount: "1", at: i });
+  assert.equal(s.sent.Nexus.length, 50);
+  assert.equal(s.pendingSubmissions.length, 1);
+  assert.equal(s.pendingSubmissions[0]?.signedSubmit.transactionCID, "pending");
+  s = completePendingSubmission(s, "pending");
+  assert.equal(s.pendingSubmissions.length, 0);
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {

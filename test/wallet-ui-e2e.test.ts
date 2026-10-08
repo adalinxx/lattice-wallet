@@ -242,6 +242,8 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   assert.match(document.body.textContent ?? "", /unknown to node/i);
   assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, "bafyuncertain");
   assert.deepEqual(store.value.settings.sent.Nexus?.[0]?.signedSubmit, signedSubmit);
+  assert.equal(store.value.settings.pendingSubmissions?.[0]?.cid, "bafyuncertain");
+  assert.deepEqual(store.value.settings.pendingSubmissions?.[0]?.signedSubmit, signedSubmit);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Sign & send"), false);
 });
 
@@ -268,4 +270,5 @@ test("wallet UI e2e: a definite refusal is removed from recovery history and can
   assert.match(document.body.textContent ?? "", /belowMinRelayFee/);
   assert.equal(button("Sign & send").disabled, false);
   assert.deepEqual(store.value.settings.sent.Nexus ?? [], []);
+  assert.deepEqual(store.value.settings.pendingSubmissions ?? [], []);
 });

@@ -26,6 +26,16 @@ export interface SentTransaction {
   signedSubmit?: SignedSubmit;
 }
 
+/** An ordinary transfer whose final chain outcome is not known yet. This is
+ * recovery state, not display history, so it must never be trimmed. */
+export interface PendingSubmission extends SentTransaction {
+  from: string;
+  fee: string;
+  nonce: string;
+  signedSubmit: SignedSubmit;
+  chain: string;
+}
+
 /** Claim-critical metadata for a deposit that has not yet been withdrawn.
  * This is deliberately separate from trimmed display history. */
 export interface OpenDeposit {
@@ -40,6 +50,8 @@ export interface OpenDeposit {
   parentChain: string[];
   createdAt: number;
   expiresAt: string;
+  /** Exact bytes used for safe resubmission after an ambiguous network error. */
+  signedSubmit?: SignedSubmit;
 }
 
 export interface PurchaseOffer {
@@ -84,6 +96,8 @@ export interface Settings {
   pendingDiscovery?: { chain: string; url: string; autoSelect: boolean };
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
+  /** Never trim these. Remove only after inclusion/replacement or definite refusal. */
+  pendingSubmissions: PendingSubmission[];
   /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
   /** Never trim these. Remove one only after its child withdrawal confirms. */
@@ -92,7 +106,7 @@ export interface Settings {
   fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, openDeposits: [], openPurchases: [], fees: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, pendingSubmissions: [], openDeposits: [], openPurchases: [], fees: {} };
 
 /** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
 export const FALLBACK_FEE = "1";
@@ -129,6 +143,17 @@ export function recordSent(settings: Settings, chain: string, tx: SentTransactio
 
 export function forgetSent(settings: Settings, chain: string, cid: string): Settings {
   return { ...settings, sent: { ...settings.sent, [chain]: (settings.sent[chain] ?? []).filter((tx) => tx.cid !== cid) } };
+}
+
+export function recordPendingSubmission(settings: Settings, submission: PendingSubmission): Settings {
+  return {
+    ...settings,
+    pendingSubmissions: [submission, ...settings.pendingSubmissions.filter((item) => item.cid !== submission.cid)],
+  };
+}
+
+export function completePendingSubmission(settings: Settings, cid: string): Settings {
+  return { ...settings, pendingSubmissions: settings.pendingSubmissions.filter((item) => item.cid !== cid) };
 }
 
 /** Save before submission: an ambiguous network failure may still mean the
