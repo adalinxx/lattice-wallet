@@ -384,7 +384,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       return new Response(JSON.stringify({ height: "1", hash: receiptState().proof.blockHash, timestamp: "1", transactionCount: 0 }));
     }
     if (url.pathname.startsWith("/api/block/") && url.pathname.endsWith("/children") && url.hostname === "parent.example") {
-      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: depositProof.blockHash }] }));
+      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash }] }));
     }
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "1" }));
     if (url.pathname === "/transactions" && init?.method === "POST") {

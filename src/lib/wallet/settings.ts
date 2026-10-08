@@ -22,7 +22,7 @@ export interface SentTransaction {
   from?: string;
   fee?: string;
   nonce?: string;
-  /** Exact signed bytes for safely resubmitting an uncertain attempt. */
+  /** Legacy recovery bytes. New versions keep these in pendingSubmissions. */
   signedSubmit?: SignedSubmit;
 }
 
@@ -183,14 +183,19 @@ export function completeOpenPurchase(settings: Settings, receiptCID: string): Se
   return { ...settings, openPurchases: settings.openPurchases.filter((item) => item.receiptCID !== receiptCID) };
 }
 
+export function purchaseWithdrawalAttempts(purchase: OpenPurchase): SignedSubmit[] {
+  return purchase.withdrawalAttempts?.length
+    ? purchase.withdrawalAttempts
+    : purchase.withdrawalSubmit ? [purchase.withdrawalSubmit] : [];
+}
+
 /** Append a same-nonce withdrawal attempt without losing any earlier CID. */
 export function recordWithdrawalAttempt(settings: Settings, receiptCID: string, signed: SignedSubmit): Settings {
   return {
     ...settings,
     openPurchases: settings.openPurchases.map((item) => {
       if (item.receiptCID !== receiptCID) return item;
-      const attempts = item.withdrawalAttempts?.length
-        ? item.withdrawalAttempts : item.withdrawalSubmit ? [item.withdrawalSubmit] : [];
+      const attempts = purchaseWithdrawalAttempts(item);
       return {
         ...item,
         withdrawalCID: signed.transactionCID,
@@ -208,8 +213,7 @@ export function forgetWithdrawalAttempt(settings: Settings, receiptCID: string, 
     ...settings,
     openPurchases: settings.openPurchases.map((item) => {
       if (item.receiptCID !== receiptCID) return item;
-      const attempts = (item.withdrawalAttempts?.length
-        ? item.withdrawalAttempts : item.withdrawalSubmit ? [item.withdrawalSubmit] : [])
+      const attempts = purchaseWithdrawalAttempts(item)
         .filter((attempt) => attempt.transactionCID !== transactionCID);
       const latest = attempts.at(-1);
       return { ...item, withdrawalCID: latest?.transactionCID, withdrawalSubmit: latest, withdrawalAttempts: attempts.length ? attempts : undefined };

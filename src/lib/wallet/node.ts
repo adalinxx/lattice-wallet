@@ -203,17 +203,20 @@ export async function activeDeposits(
   throw new TypeError("deposits response has too many pages");
 }
 
-/** Proof-verified values for specific deposit keys at the node's declared
- * canonical tip. Missing keys are unknown, never inferred absent from a
- * discovery listing. Spent deposits have the consensus marker value 0. */
+/** Proof-verified values for specific deposit keys at a parent-committed tip.
+ * The Lattice deposits route includes proof claims for scanned spent entries
+ * even though it omits them from `deposits`; their consensus marker is 0.
+ * Missing keys are unknown, never inferred absent from a discovery listing. */
 export async function depositValues(
   url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+  expectedTip?: string,
 ): Promise<Map<string, bigint>> {
   const wanted = new Set(keys);
   const found = new Map<string, bigint>();
   if (!wanted.size) return found;
   const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
   if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("deposit state must match the parent-committed child tip");
   let after: string | undefined;
   for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
     const query = new URLSearchParams({ limit: "100" });
@@ -388,7 +391,10 @@ export async function sentStatus(
     signer = tx.signers[0];
     nonce = tx.nonce;
   } catch (e) {
-    if (e instanceof NodeError && e.status === 404) return { kind: "unknown to node" };
+    if (e instanceof NodeError && e.status === 404) {
+      if (recorded !== undefined && (await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce spent" };
+      return { kind: "unknown to node" };
+    }
     if (!isWireMismatch(e) || recorded === undefined) throw e;
     reportsInclusion = false;
   }
@@ -406,3 +412,6 @@ export async function sentStatus(
   // The mempool listing is bounded: absence from it is not proof of absence.
   return { kind: "pending or dropped" };
 }
+
+export const isFinalSentStatus = (status: SentStatus): boolean =>
+  status.kind === "included" || status.kind === "replaced" || status.kind === "nonce spent";

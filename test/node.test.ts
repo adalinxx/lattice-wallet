@@ -207,6 +207,8 @@ test("status: included in block N, pending, replaced, unknown", async () => {
   assert.deepEqual(included, { kind: "included", height: 12n, hash: "bafyblock" });
   assert.equal(statusText(included), "included in block 12");
   assert.deepEqual(await sentStatus(client, "bafyunknown"), { kind: "unknown to node" });
+  assert.deepEqual(await sentStatus(client, "bafyunknown", { from: "bafyalice", nonce: 4n }), { kind: "nonce spent" },
+    "a pruned or never-admitted transaction becomes final once its saved nonce is spent");
 });
 
 test("status falls back to the nonce only for a node that does not report inclusion", async () => {
