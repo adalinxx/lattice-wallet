@@ -324,6 +324,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
 test("a market buy discovers deposits, pays the parent receipt, and withdraws on the child", async () => {
   const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => true });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -409,7 +410,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "1" }));
     if (url.pathname === "/transactions" && init?.method === "POST") {
       posts += 1;
-      if (posts === 1) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
+      if (posts === 1) return new Response(JSON.stringify({ error: { message: "belowMinRelayFee" } }), { status: 400 });
+      if (posts === 2) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
       withdrawalMined = true;
       return new Response(JSON.stringify({ transactionCID: "bafywithdraw" }));
     }
@@ -441,12 +443,28 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.deepEqual(signedOffers.map((offer) => offer.demander), [seller, expensiveSeller], "unclaimed offers are signed from best to worst price");
   assert.equal(stored.settings.openPurchases.length, 1);
   assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
+  assert.match(document.body.textContent ?? "", /Receipt refused:.*belowMinRelayFee.*Nothing was paid.*dismiss this record/i,
+    "a definite receipt refusal remains visible after navigation");
+  assert.equal(receiptMined, false);
+  button("Dismiss saved recovery").click();
+  await settle();
+  assert.equal(stored.settings.openPurchases.length, 0, "an irreversible purchase record is deleted only by explicit dismissal");
+  button("Back").click();
+  button("Open cross-chain order").click();
+  const retryPaste = document.querySelector("textarea") as HTMLTextAreaElement;
+  retryPaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
+  button("Use pasted text").click();
+  await settle();
+  button("Pay & reserve tokens").click();
+  await settle();
+  assert.equal(receiptSigns, 2);
+  assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
   button("Check & withdraw tokens").click();
   await settle();
   assert.equal(withdrawalSigns, 1);
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
   assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
-  assert.equal(posts, 2);
+  assert.equal(posts, 3);
   button("Back").click();
   (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
   await settle();
