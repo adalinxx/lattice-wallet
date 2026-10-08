@@ -228,7 +228,8 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
     signTransfer: async (args) => { signCalls += 1; return { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; },
   });
   const store = memoryStore();
-  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch({ failSubmit: true }), requestOrigins: async () => true });
+  const submitState = { failSubmit: true, submitRefusal: undefined as string | undefined };
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(submitState), requestOrigins: async () => true });
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
@@ -241,10 +242,22 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   assert.equal(document.querySelector("h1")?.textContent, "Sent");
   assert.match(document.body.textContent ?? "", /unknown to node/i);
   assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, "bafyuncertain");
-  assert.deepEqual(store.value.settings.sent.Nexus?.[0]?.signedSubmit, signedSubmit);
+  assert.equal(store.value.settings.sent.Nexus?.[0]?.signedSubmit, undefined, "display history does not duplicate recovery bytes");
   assert.equal(store.value.settings.pendingSubmissions?.[0]?.cid, "bafyuncertain");
   assert.deepEqual(store.value.settings.pendingSubmissions?.[0]?.signedSubmit, signedSubmit);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Sign & send"), false);
+  button("Done").click();
+  await settle();
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Pending transactions (1)").click();
+  await settle();
+  submitState.failSubmit = false;
+  submitState.submitRefusal = "conflictingNonce";
+  button("Resubmit exact").click();
+  await settle();
+  assert.equal(store.value.settings.pendingSubmissions?.[0]?.cid, "bafyuncertain", "a retry refusal cannot erase an earlier ambiguous attempt");
+  assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, "bafyuncertain");
+  assert.match(document.body.textContent ?? "", /saved transaction was kept/i);
 });
 
 test("wallet UI e2e: a definite refusal is removed from recovery history and can be corrected", async () => {

@@ -70,8 +70,9 @@ reading (*nonce spent*).
 The exact signed bytes for ordinary transfers with no final chain outcome are
 kept in a separate, unbounded `pendingSubmissions` list. The 50-item sent list
 is display history only and cannot delete recovery material. Settings exposes
-pending transactions for status checks and exact-byte resubmission; definite
-4xx refusals are removed so the user can correct the fee or transaction.
+pending transactions for status checks and exact-byte resubmission. A definite
+refusal of the first submission is removed so the user can correct it; a
+refused rebroadcast is retained because it cannot disprove earlier admission.
 
 ### Cross-chain deposits
 
@@ -81,10 +82,11 @@ child-chain deposits, reject already-receipted offers, sign the parent payment,
 and persist the exact signed receipt and child withdrawal in `openPurchases`.
 Withdrawal records retain every same-nonce attempt. A node-reported inclusion
 is displayed but does not delete recovery state: Lattice's “verify locally”
-rule requires an exact proof against current child state before automatic
-completion. Until that targeted proof exists, an uncertain network response
-can be recovered by resubmitting the identical transaction rather than signing
-a second payment or claim. Deposit recovery checks the
+rule requires exact proof claims against current child state before automatic
+completion. The wallet scans the proof-bearing deposit pages for every claimed
+key and completes the purchase only when every value is the spent marker `0`.
+Until then, an uncertain network response can be recovered by resubmitting the
+identical transaction rather than signing a second payment or claim. Deposit recovery checks the
 proof-backed deposit state before transaction history, because a node may prune
 the original transaction while its locked deposit remains active. A refusal to
 rebroadcast never deletes that deposit key. Rejected withdrawal rebroadcasts

@@ -203,6 +203,34 @@ export async function activeDeposits(
   throw new TypeError("deposits response has too many pages");
 }
 
+/** Proof-verified values for specific deposit keys at the node's declared
+ * canonical tip. Missing keys are unknown, never inferred absent from a
+ * discovery listing. Spent deposits have the consensus marker value 0. */
+export async function depositValues(
+  url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+): Promise<Map<string, bigint>> {
+  const wanted = new Set(keys);
+  const found = new Map<string, bigint>();
+  if (!wanted.size) return found;
+  const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
+  if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+  let after: string | undefined;
+  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (after !== undefined) query.set("after", after);
+    const body = object(await nodeJSON(url, `/api/deposits?${query}`, chainPath, fetchImpl, authorization), "deposits response");
+    const claims = verifyStateProof(body.proof, "deposits", info.tipCID);
+    for (const key of wanted) {
+      const value = claims.get(key);
+      if (value !== undefined && value !== null) found.set(key, BigInt(value));
+    }
+    if (found.size === wanted.size || body.next === null) return found;
+    if (typeof body.next !== "string" || body.next === after) throw new TypeError("deposits response next must advance");
+    after = body.next;
+  }
+  throw new TypeError("deposits response has too many pages");
+}
+
 export async function receiptWithdrawer(
   url: string, parentChain: readonly string[], childChain: readonly string[], offer: ActiveDeposit,
   fetchImpl: Fetch = browserFetch, authorization?: string, expectedTip?: string,

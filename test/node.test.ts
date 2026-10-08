@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
@@ -107,6 +107,9 @@ test("withdrawal fee replacements retain every earlier transaction CID", () => {
   s = recordWithdrawalAttempt(s, "receipt", replacement);
   assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1", "withdraw-2"]);
   assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-2");
+  s = forgetWithdrawalAttempt(s, "receipt", "withdraw-2");
+  assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1"]);
+  assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-1");
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {

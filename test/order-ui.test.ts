@@ -234,8 +234,8 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   button("Send").click();
   await settle();
-  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "3", "a new chain starts at the node's relay floor");
-  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, false, "a safe default does not force custom controls open");
+  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "1", "an asynchronous node response never overwrites the user's fee field");
+  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a below-floor fee opens the warning without clamping the value");
   (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = importPrivateKey("b0".repeat(32)).address;
   (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
@@ -323,7 +323,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       signers: [address], nonce: "1", chainPath,
     } } },
   });
-  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, receiptMined = false;
+  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, receiptMined = false, withdrawalMined = false;
   let signedOffers: Array<{ demander: string }> = [];
   const depositRows = [
     { demander: expensiveSeller, amountDemanded: "100", nonce: "43", amountDeposited: "100" },
@@ -332,6 +332,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   ].map((row) => ({ ...row, key: `${row.demander}/${row.amountDemanded}/${row.nonce}` }));
   const depositTrie = testTrie(new Map(depositRows.map((row) => [row.key, BigInt(row.amountDeposited)])));
   const depositProof = testProof("deposits", depositTrie, depositRows.map((row) => ({ key: row.key, value: row.amountDeposited })));
+  const spentDepositTrie = testTrie(new Map(depositRows.map((row) => [row.key, 0n])));
+  const spentDepositProof = testProof("deposits", spentDepositTrie, depositRows.map((row) => ({ key: row.key, value: "0" })));
   const receiptState = () => {
     const rows = depositRows.filter((row) => receiptMined || row.demander === claimedSeller);
     const values = new Map(rows.map((row) => [testReceiptKey("testnet", row.demander, row.amountDemanded, row.nonce), address]));
@@ -362,9 +364,9 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   const store = { get: async () => stored, set: async (items: Record<string, unknown>) => { stored = items as typeof stored; } };
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input);
-    if (url.pathname === "/api/deposits") return new Response(JSON.stringify({
-      deposits: depositRows, next: null, proof: depositProof,
-    }));
+    if (url.pathname === "/api/deposits") return new Response(JSON.stringify(withdrawalMined
+      ? { deposits: [], next: null, proof: spentDepositProof }
+      : { deposits: depositRows, next: null, proof: depositProof }));
     if (url.pathname === "/api/receipt-state") {
       const claimed = url.searchParams.get("demander") === claimedSeller;
       const state = receiptState();
@@ -376,7 +378,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     if (url.pathname === "/api/chain/info") {
       const parent = url.hostname === "parent.example";
       return new Response(JSON.stringify({ chain: url.searchParams.get("chainPath")?.split("/"), minRelayFee: "1", acceptsSubmit: true,
-        tipCID: parent ? receiptState().proof.blockHash : depositProof.blockHash, height: "1" }));
+        tipCID: parent ? receiptState().proof.blockHash : (withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash), height: "1" }));
     }
     if (url.pathname === "/api/block/latest" && url.hostname === "parent.example") {
       return new Response(JSON.stringify({ height: "1", hash: receiptState().proof.blockHash, timestamp: "1", transactionCount: 0 }));
@@ -388,6 +390,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     if (url.pathname === "/transactions" && init?.method === "POST") {
       posts += 1;
       if (posts === 1) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
+      withdrawalMined = true;
       return new Response(JSON.stringify({ transactionCID: "bafywithdraw" }));
     }
     return new Response("not found", { status: 404 });
@@ -423,6 +426,10 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
   assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
   assert.equal(posts, 2);
+  button("Back").click();
+  (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
+  await settle();
+  assert.equal(stored.settings.openPurchases.length, 0, "a proof of spent deposits completes and removes the purchase");
 });
 
 test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {

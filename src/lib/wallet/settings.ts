@@ -99,11 +99,11 @@ export interface Settings {
   pendingDiscovery?: { chain: string; url: string; autoSelect: boolean };
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
-  /** Never trim these. Remove only after inclusion/replacement or definite refusal. */
+  /** Never trim these. Remove only after chain status proves a final outcome. */
   pendingSubmissions: PendingSubmission[];
   /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
-  /** Never trim these. Remove one only after its child withdrawal confirms. */
+  /** Never trim these. Remove only after a current child-state proof shows every claimed deposit spent. */
   openPurchases: OpenPurchase[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
@@ -179,6 +179,10 @@ export function recordOpenPurchase(settings: Settings, purchase: OpenPurchase): 
   };
 }
 
+export function completeOpenPurchase(settings: Settings, receiptCID: string): Settings {
+  return { ...settings, openPurchases: settings.openPurchases.filter((item) => item.receiptCID !== receiptCID) };
+}
+
 /** Append a same-nonce withdrawal attempt without losing any earlier CID. */
 export function recordWithdrawalAttempt(settings: Settings, receiptCID: string, signed: SignedSubmit): Settings {
   return {
@@ -193,6 +197,22 @@ export function recordWithdrawalAttempt(settings: Settings, receiptCID: string, 
         withdrawalSubmit: signed,
         withdrawalAttempts: [...attempts.filter((attempt) => attempt.transactionCID !== signed.transactionCID), signed],
       };
+    }),
+  };
+}
+
+/** Remove one definitely refused replacement and restore the preceding
+ * attempt as current without discarding its CID or signed bytes. */
+export function forgetWithdrawalAttempt(settings: Settings, receiptCID: string, transactionCID: string): Settings {
+  return {
+    ...settings,
+    openPurchases: settings.openPurchases.map((item) => {
+      if (item.receiptCID !== receiptCID) return item;
+      const attempts = (item.withdrawalAttempts?.length
+        ? item.withdrawalAttempts : item.withdrawalSubmit ? [item.withdrawalSubmit] : [])
+        .filter((attempt) => attempt.transactionCID !== transactionCID);
+      const latest = attempts.at(-1);
+      return { ...item, withdrawalCID: latest?.transactionCID, withdrawalSubmit: latest, withdrawalAttempts: attempts.length ? attempts : undefined };
     }),
   };
 }
