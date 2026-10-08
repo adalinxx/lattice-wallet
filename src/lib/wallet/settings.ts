@@ -127,6 +127,10 @@ export function recordSent(settings: Settings, chain: string, tx: SentTransactio
   return { ...settings, sent: { ...settings.sent, [chain]: list } };
 }
 
+export function forgetSent(settings: Settings, chain: string, cid: string): Settings {
+  return { ...settings, sent: { ...settings.sent, [chain]: (settings.sent[chain] ?? []).filter((tx) => tx.cid !== cid) } };
+}
+
 /** Save before submission: an ambiguous network failure may still mean the
  * node accepted the deposit. Deduplicate retries by the wallet-computed CID. */
 export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Settings {

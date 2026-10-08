@@ -214,7 +214,8 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   button("Send").click();
   await settle();
-  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a fee warning reveals its control");
+  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "3", "a new chain starts at the node's relay floor");
+  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, false, "a safe default does not force custom controls open");
   (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = importPrivateKey("b0".repeat(32)).address;
   (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
