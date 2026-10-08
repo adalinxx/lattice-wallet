@@ -1501,7 +1501,7 @@ async function sendFlow() {
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
-  const feeHelp = h("p", { class: "muted" }, "The wallet never changes your fee. It warns when the value is below this node's minimum.");
+  const feeHelp = h("p", { class: "muted" }, "The wallet never changes your fee. A node minimum is only a warning; confirmation depends on miners and current demand.");
   const feeAdvanced = h("details", { class: "advanced" },
     h("summary", {}, "Custom fee"),
     h("div", { class: "advanced-content" },
