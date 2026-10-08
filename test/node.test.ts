@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -95,6 +95,29 @@ test("pending signed submissions survive trimmed display history until explicitl
   assert.equal(s.pendingSubmissions.length, 0);
 });
 
+test("deep confirmation archives recovery bytes in capped stores instead of deleting them", () => {
+  const signedSubmit = { transactionCID: "pending" } as unknown as SignedSubmit;
+  let s = recordPendingSubmission(DEFAULT_SETTINGS, {
+    cid: "pending", chain: "Nexus", to: "recipient", amount: "2", at: 1,
+    from: "sender", fee: "1", nonce: "7", signedSubmit,
+  });
+  s = archivePendingSubmission(s, "pending");
+  assert.equal(s.pendingSubmissions.length, 0);
+  assert.equal(s.confirmedSubmissions[0]?.signedSubmit, signedSubmit);
+  for (let i = 0; i < 55; i++) {
+    const item = { ...signedSubmit, transactionCID: `confirmed-${i}` } as SignedSubmit;
+    s = recordPendingSubmission(s, { cid: item.transactionCID, chain: "Nexus", to: "r", amount: "1", at: i,
+      from: "s", fee: "1", nonce: String(i), signedSubmit: item });
+    s = archivePendingSubmission(s, item.transactionCID);
+  }
+  assert.equal(s.confirmedSubmissions.length, 50);
+  s = recordOpenPurchase(s, { receiptCID: "receipt", receiptSubmit: signedSubmit, withdrawer: "buyer", offers: [],
+    parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1 });
+  s = archiveOpenPurchase(s, "receipt");
+  assert.equal(s.openPurchases.length, 0);
+  assert.equal(s.confirmedPurchases[0]?.receiptSubmit, signedSubmit);
+});
+
 test("withdrawal fee replacements retain every earlier transaction CID", () => {
   const receipt = { transactionCID: "receipt" } as unknown as SignedSubmit;
   const attempt = (transactionCID: string, nonce = "7") => ({ transactionCID, payload: { transaction: { body: { nonce } } } }) as unknown as SignedSubmit;
@@ -131,6 +154,7 @@ test("load migrates a legacy current withdrawal into the durable attempts list",
     withdrawer: "buyer", offers: [], parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1,
   }] } }), set: async () => {} });
   assert.deepEqual(loaded.openPurchases[0]?.withdrawalAttempts, [legacy]);
+  assert.equal("withdrawalSubmit" in loaded.openPurchases[0]!, false);
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {
@@ -202,9 +226,13 @@ test("submission posts the signer's payload to /transactions; refusals are typed
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(500)), false);
   assert.equal(isDefiniteSubmissionRefusal(new TypeError("connection lost")), false);
   assert.equal(shouldOfferFeeReplacement(new SubmissionError(400, "belowMinRelayFee")), true);
+  assert.equal(shouldOfferFeeReplacement(new SubmissionError(400, "feeTooLow")), true);
   assert.equal(shouldOfferFeeReplacement(new SubmissionError(401)), false);
   assert.equal(shouldOfferFeeReplacement(new SubmissionError(429, "rate limited")), false);
   assert.equal(shouldOfferFeeReplacement(new SubmissionError(503, "shuttingDown")), false);
+  assert.equal(isTransientSubmissionRefusal(new SubmissionError(401)), true);
+  assert.equal(isTransientSubmissionRefusal(new SubmissionError(429, "rate limited")), true);
+  assert.equal(isTransientSubmissionRefusal(new SubmissionError(400, "full")), true);
 });
 
 const projection = (extra: Record<string, unknown> = {}) => ({

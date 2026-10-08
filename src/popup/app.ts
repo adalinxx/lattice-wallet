@@ -8,9 +8,9 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, completeOpenPurchase, recordWithdrawalAttempt, forgetWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, completeOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, forgetWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
@@ -78,6 +78,8 @@ export const h = (tag: string, attrs: Record<string, unknown> = {}, ...kids: (No
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
 // Exact: amounts are UInt64, never rounded through a double.
 const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
+const depositKey = (offer: { demander: string; amountDemanded: string | bigint; depositNonce: string | bigint }) =>
+  `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
 const view = () => document.getElementById("view")!;
 export const render = (node: El) => {
   closeChainMenu();
@@ -104,11 +106,16 @@ async function authorizationFor(url: string): Promise<string | undefined> {
   const r = await wallet.nodeAuthorization(url);
   return r.ok ? r.authorization : undefined;
 }
-async function update(change: (s: Settings) => Settings) {
-  const next = change(settings);
-  await saveSettings(store, next);
-  settings = next;
-  syncBadge();
+let updateQueue: Promise<unknown> = Promise.resolve();
+function update(change: (s: Settings) => Settings): Promise<void> {
+  const run = updateQueue.then(async () => {
+    const next = change(settings);
+    await saveSettings(store, next);
+    settings = next;
+    syncBadge();
+  });
+  updateQueue = run.catch(() => {});
+  return run;
 }
 
 type ResubmitResult = { kind: "submitted" } | { kind: "refused" | "uncertain"; error: unknown };
@@ -125,32 +132,30 @@ async function resubmitExact(url: string, authorization: string | undefined, sig
 
 /** Resolve the current child block through its parent commitment. Child state
  * is only final enough to delete recovery data when it matches this anchor. */
-async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], parentAuth?: string) {
+async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], parentAuth?: string, expectedParentTip?: string) {
   const parent = reader(parentEndpoint.url, [...parentChain], platform.fetch, parentAuth);
-  const latest = await parent.latestBlock();
+  const parentTip = expectedParentTip ?? (await parent.latestBlock()).hash;
   const directory = childChain.at(-1);
   if (!directory || childChain.length !== parentChain.length + 1
     || childChain.slice(0, -1).some((part, index) => part !== parentChain[index])) {
     throw new Error("Cross-chain recovery requires a direct parent and child.");
   }
-  const child = (await parent.children(latest.hash)).find((entry) => entry.directory === directory);
+  const child = (await parent.children(parentTip)).find((entry) => entry.directory === directory);
   if (!child) throw new Error(`The current ${parentChain.join("/")} tip does not commit ${childChain.join("/")}.`);
-  return { parent: latest.hash, child: child.blockHash };
+  return { parent: parentTip, child: child.blockHash };
 }
 
+class TipMovedError extends Error {}
 async function withStableTip<T>(chosen: ChosenEndpoint, chain: readonly string[], authorization: string | undefined, read: (tip: string) => Promise<T>): Promise<T> {
   const client = reader(chosen.url, [...chain], platform.fetch, authorization);
-  let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const before = await client.latestBlock();
-      const result = await read(before.hash);
-      const after = await client.latestBlock();
-      if (before.hash === after.hash) return result;
-      lastError = new Error("The chain advanced while verified state was read.");
-    } catch (error) { lastError = error; }
+    const before = await client.latestBlock();
+    const result = await read(before.hash);
+    const after = await client.latestBlock();
+    if (before.hash === after.hash) return result;
+    if (attempt === 2) throw new TipMovedError("The chain kept advancing while verified state was read.");
   }
-  throw lastError ?? new Error("Could not read a stable chain tip.");
+  throw new TipMovedError("Could not read a stable chain tip.");
 }
 
 async function stableReceiptOwners(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], offers: readonly ActiveDeposit[], parentAuth?: string) {
@@ -160,19 +165,23 @@ async function stableReceiptOwners(parentEndpoint: ChosenEndpoint, parentChain: 
 }
 
 const CONFIRMATION_DEPTH = 6n;
-async function deeplyIncluded(chosen: ChosenEndpoint, chain: readonly string[], cid: string, from: string, nonce: bigint, authorization?: string): Promise<boolean> {
+async function inclusionDepth(chosen: ChosenEndpoint, chain: readonly string[], cid: string, from: string, nonce: bigint, authorization?: string) {
   const node = reader(chosen.url, [...chain], platform.fetch, authorization);
   const status = await sentStatus(node, cid, { from, nonce });
-  if (status.kind !== "included") return false;
+  if (status.kind !== "included") return { status, deep: false };
   const tip = await node.chainInfo();
-  if (tip.height === undefined) return false;
-  return tip.height >= status.height && tip.height - status.height + 1n >= CONFIRMATION_DEPTH;
+  return { status, deep: tip.height !== undefined && tip.height >= status.height && tip.height - status.height + 1n >= CONFIRMATION_DEPTH };
 }
 
-let reconciliation: Promise<void> | undefined;
-function reconcileRecovery(): Promise<void> {
+type RecoveryStatuses = Map<string, Awaited<ReturnType<typeof sentStatus>>>;
+let reconciliation: Promise<RecoveryStatuses> | undefined;
+let lastReconciliationAt = 0;
+let lastRecoveryStatuses: RecoveryStatuses = new Map();
+function reconcileRecovery(): Promise<RecoveryStatuses> {
   if (reconciliation) return reconciliation;
+  if (Date.now() - lastReconciliationAt < 30_000) return Promise.resolve(lastRecoveryStatuses);
   reconciliation = (async () => {
+    const statuses: RecoveryStatuses = new Map();
     const auths = new Map<string, Promise<string | undefined>>();
     const auth = (url: string) => {
       let pending = auths.get(url);
@@ -185,7 +194,9 @@ function reconcileRecovery(): Promise<void> {
       const chosen = endpointFor(pending.chain);
       if (!chosen) return;
       try {
-        if (await deeplyIncluded(chosen, pending.chain.split("/"), pending.cid, pending.from, BigInt(pending.nonce), await auth(chosen.url))) {
+        const result = await inclusionDepth(chosen, pending.chain.split("/"), pending.cid, pending.from, BigInt(pending.nonce), await auth(chosen.url));
+        statuses.set(pending.cid, result.status);
+        if (result.deep) {
           completedTransfers.push(pending.cid);
         }
       } catch { /* Keep recovery on every inconclusive read. */ }
@@ -197,24 +208,29 @@ function reconcileRecovery(): Promise<void> {
       try {
         const childAuth = await auth(child.url);
         const attempts = purchaseWithdrawalAttempts(purchase);
-        const included = (await Promise.all(attempts.map((attempt) => deeplyIncluded(
+        const attemptsStatus = await Promise.all(attempts.map((attempt) => inclusionDepth(
           child, purchase.childChain, attempt.transactionCID, purchase.withdrawer,
           BigInt(attempt.payload.transaction.body.nonce), childAuth,
-        )))).some(Boolean);
-        if (!included) return;
+        )));
+        attemptsStatus.forEach((result, index) => statuses.set(attempts[index]!.transactionCID, result.status));
+        if (!attemptsStatus.some((result) => result.deep)) return;
         const tips = await adjacentTips(parent, purchase.parentChain, purchase.childChain, await auth(parent.url));
-        const keys = purchase.offers.map((offer) => `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`);
+        const keys = purchase.offers.map(depositKey);
         const values = await depositValues(child.url, purchase.childChain, keys, platform.fetch, childAuth, tips.child);
         if (keys.every((key) => values.get(key) === 0n)) completedPurchases.push(purchase.receiptCID);
       } catch { /* Missing targeted proof support is inconclusive, not failure. */ }
     }));
     if (completedTransfers.length || completedPurchases.length) {
-      await update((current) => ({
-        ...current,
-        pendingSubmissions: current.pendingSubmissions.filter((item) => !completedTransfers.includes(item.cid)),
-        openPurchases: current.openPurchases.filter((item) => !completedPurchases.includes(item.receiptCID)),
-      }));
+      await update((current) => {
+        let next = current;
+        for (const cid of completedTransfers) next = archivePendingSubmission(next, cid);
+        for (const receiptCID of completedPurchases) next = archiveOpenPurchase(next, receiptCID);
+        return next;
+      });
     }
+    lastRecoveryStatuses = statuses;
+    lastReconciliationAt = Date.now();
+    return statuses;
   })().finally(() => { reconciliation = undefined; });
   return reconciliation;
 }
@@ -810,14 +826,18 @@ function settingsScreen() {
       ? [h("button", { class: "btn block", onclick: () => platform.openFullPage!("wallet") }, "Open wallet in tab")]
       : []),
     h("button", { class: "btn block", onclick: orderFlow }, "Open cross-chain order"),
-    ...(settings.openPurchases.length
-      ? [h("button", { class: "btn block", onclick: purchasesScreen }, `Pending purchases (${settings.openPurchases.length})`)]
+    ...(settings.openPurchases.length || settings.confirmedPurchases.length
+      ? [h("button", { class: "btn block", onclick: purchasesScreen }, settings.confirmedPurchases.length
+        ? `Purchase recovery (${settings.openPurchases.length} pending, ${settings.confirmedPurchases.length} confirmed)`
+        : `Pending purchases (${settings.openPurchases.length})`)]
       : []),
     ...(settings.openDeposits.length
       ? [h("button", { class: "btn block", onclick: depositsScreen }, `Pending sales (${settings.openDeposits.length})`)]
       : []),
-    ...(settings.pendingSubmissions.length
-      ? [h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, `Pending transactions (${settings.pendingSubmissions.length})`)]
+    ...(settings.pendingSubmissions.length || settings.confirmedSubmissions.length
+      ? [h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, settings.confirmedSubmissions.length
+        ? `Transaction recovery (${settings.pendingSubmissions.length} pending, ${settings.confirmedSubmissions.length} confirmed)`
+        : `Pending transactions (${settings.pendingSubmissions.length})`)]
       : []),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
@@ -858,6 +878,7 @@ function depositsScreen() {
         } else receiptMessage = `connect ${parentName} to verify payment`;
         if (typeof withdrawer === "string") {
           toast.textContent = `Paid by ${short(withdrawer)}. Keep this recovery record until the receipt is final, then dismiss it.`;
+          check.disabled = false;
           return;
         }
         let statusMessage: string;
@@ -934,12 +955,22 @@ function purchasesScreen() {
         if (await dismissRecovery("this pending purchase", (s) => completeOpenPurchase(s, purchase.receiptCID))) purchasesScreen();
       } }, "Dismiss")));
   }
+  for (const purchase of settings.confirmedPurchases) {
+    const receive = purchase.offers.reduce((sum, offer) => sum + BigInt(offer.amountDeposited), 0n);
+    list.append(h("div", { class: "stack compact" },
+      h("div", { class: "row" }, h("span", {}, `${fmt(receive)} on ${purchase.childChain.join("/")}`), h("span", { class: "tag" }, "confirmed archive")),
+      h("button", { class: "text-action", onclick: async () => {
+        if (await dismissRecovery("this confirmed purchase archive", (s) => ({
+          ...s, confirmedPurchases: s.confirmedPurchases.filter((item) => item.receiptCID !== purchase.receiptCID),
+        }))) purchasesScreen();
+      } }, "Dismiss")));
+  }
   render(h("div", { class: "stack" }, h("h1", {}, "Pending purchases"), list,
     h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 
 function purchaseScreen(purchase: OpenPurchase) {
-  void reconcileRecovery();
+  const reconciliationResult = reconcileRecovery();
   const childName = purchase.childChain.join("/");
   const parentName = purchase.parentChain.join("/");
   const childEndpoint = endpointFor(childName);
@@ -1036,8 +1067,11 @@ function purchaseScreen(purchase: OpenPurchase) {
           else if (submitted.kind === "refused" && shouldOfferFeeReplacement(submitted.error)) {
             retry.remove();
             offerFeeReplacement(`Exact retry rejected: ${describe(submitted.error)}`, auth);
-          } else {
+          } else if (submitted.kind === "refused" && isTransientSubmissionRefusal(submitted.error)) {
             toast.textContent = `${describe(submitted.error)} Fix the connection or try the exact transaction again; no higher fee is needed.`;
+            retry.disabled = false;
+          } else {
+            toast.textContent = describe(submitted.error);
             retry.disabled = false;
           }
         } catch (error) { toast.textContent = describe(error); retry.disabled = false; }
@@ -1055,6 +1089,8 @@ function purchaseScreen(purchase: OpenPurchase) {
           return;
         }
         const statuses = await Promise.all(attempts.map(async (attempt) => {
+          const cached = (await reconciliationResult).get(attempt.transactionCID);
+          if (cached) return { attempt, result: cached };
           try {
             return { attempt, result: await sentStatus(reader(childEndpoint.url, purchase.childChain, platform.fetch, auth), attempt.transactionCID,
               { from: purchase.withdrawer, nonce: BigInt(attempt.payload.transaction.body.nonce) }) };
@@ -1075,13 +1111,13 @@ function purchaseScreen(purchase: OpenPurchase) {
         if (!included && latest && (latest.kind === "replaced" || latest.kind === "nonce advanced") && parentEndpoint) {
           try {
             const tips = await adjacentTips(parentEndpoint, purchase.parentChain, purchase.childChain, await authorizationFor(parentEndpoint.url));
-            const keys = purchase.offers.map((offer) => `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`);
+            const keys = purchase.offers.map(depositKey);
             const values = await depositValues(childEndpoint.url, purchase.childChain, keys, platform.fetch, auth, tips.child);
             if (keys.every((key) => (values.get(key) ?? 0n) > 0n)) {
               const restart = h("button", { class: "btn block", onclick: async () => {
                 restart.disabled = true;
                 await update((s) => ({ ...s, openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
-                  ? { ...item, withdrawalCID: undefined, withdrawalSubmit: undefined } : item) }));
+                  ? { ...item, withdrawalCID: undefined } : item) }));
                 const current = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID);
                 if (current) purchaseScreen(current);
               } }, "Try withdrawal with current nonce") as HTMLButtonElement;
@@ -1129,6 +1165,8 @@ function purchaseScreen(purchase: OpenPurchase) {
       });
       if (!signed.ok) throw new Error(signed.error);
       const withdrawalCID = signed.signedSubmit.transactionCID;
+      const attemptAlreadySaved = settings.openPurchases.some((item) => item.receiptCID === purchase.receiptCID
+        && purchaseWithdrawalAttempts(item).some((attempt) => attempt.transactionCID === withdrawalCID));
       await update((s) => recordWithdrawalAttempt(recordSent(s, childName, {
           cid: withdrawalCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
           from: purchase.withdrawer, fee: fee.toString(), nonce: account.nonce.toString(),
@@ -1138,11 +1176,15 @@ function purchaseScreen(purchase: OpenPurchase) {
         await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
       } catch (e) {
         if (isDefiniteSubmissionRefusal(e)) {
-          try {
-            await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, withdrawalCID), purchase.receiptCID, withdrawalCID));
-          } catch { /* Refusal remains definite. */ }
-          toast.textContent = describe(e);
-          withdraw.disabled = false; feeInput.disabled = false;
+          if (!attemptAlreadySaved) {
+            try {
+              await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, withdrawalCID), purchase.receiptCID, withdrawalCID));
+            } catch { /* Refusal remains definite. */ }
+            toast.textContent = describe(e);
+            withdraw.disabled = false; feeInput.disabled = false;
+          } else {
+            toast.textContent = `Retry rejected: ${describe(e)} The earlier withdrawal attempt remains saved.`;
+          }
           return;
         }
         toast.textContent = "Withdrawal outcome unknown. Check this saved purchase before taking another action.";
@@ -1255,17 +1297,14 @@ async function reviewBuyOrder(order: BuyOrder) {
   catch (e) { toast.textContent = describe(e); return; }
   let offers: ActiveDeposit[], minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
   const stableDeposits = () => withStableTip(parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
-    const directory = order.childChain.at(-1)!;
-    const parent = reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth);
-    const child = (await parent.children(parentTip)).find((entry) => entry.directory === directory);
-    if (!child) throw new Error(`The current ${parentName} tip does not commit ${childName}.`);
-    const listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, child.blockHash);
-    return { tips: { parent: parentTip, child: child.blockHash }, listed };
+    const tips = await adjacentTips(parentEndpoint, order.parentChain, order.childChain, parentAuth, parentTip);
+    const listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
+    return { tips, listed };
   });
   const unclaimedOffers = async (listed: ActiveDeposit[], parentTip: string) => {
     let eligible = [...listed];
     const verified = new Set<string>();
-    const identity = (offer: ActiveDeposit) => `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
+    const identity = depositKey;
     while (true) {
       const selected = chooseBuyOffers(order, eligible);
       if (!selected.length) return selected;
@@ -1349,6 +1388,7 @@ async function reviewBuyOrder(order: BuyOrder) {
         cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
         from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
       }));
+      const storedPurchase = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID) ?? purchase;
       toast.textContent = "submitting parent receipt…";
       try {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
@@ -1368,10 +1408,10 @@ async function reviewBuyOrder(order: BuyOrder) {
           }
           return;
         }
-        purchaseScreen(purchase);
+        purchaseScreen(storedPurchase);
         return;
       }
-      purchaseScreen(purchase);
+      purchaseScreen(storedPurchase);
     } catch (e) {
       toast.textContent = e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e);
       buyButton.disabled = false; feeInput.disabled = false;
@@ -1755,7 +1795,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
 }
 
 function pendingSubmissionsScreen() {
-  void reconcileRecovery();
+  const reconciliationResult = reconcileRecovery();
   const list = h("div", { class: "kv" });
   for (const pending of settings.pendingSubmissions) {
     const state = h("span", { class: "muted" }, "Checking…");
@@ -1781,12 +1821,22 @@ function pendingSubmissionsScreen() {
     void (async () => {
       try {
         const auth = await authorizationFor(chosen.url);
-        const result = await sentStatus(reader(chosen.url, pending.chain.split("/"), platform.fetch, auth), pending.cid,
+        const result = (await reconciliationResult).get(pending.cid) ?? await sentStatus(
+          reader(chosen.url, pending.chain.split("/"), platform.fetch, auth), pending.cid,
           { from: pending.from, nonce: BigInt(pending.nonce) });
         state.textContent = statusText(result);
         if (result.kind === "included") state.textContent += " — signed recovery retained against reorgs.";
       } catch (e) { state.textContent = describe(e); }
     })();
+  }
+  for (const confirmed of settings.confirmedSubmissions) {
+    list.append(h("div", { class: "stack compact" },
+      h("div", { class: "row" }, h("span", { class: "v mono" }, short(confirmed.cid)), h("span", { class: "tag" }, "confirmed archive")),
+      h("button", { class: "text-action", onclick: async () => {
+        if (await dismissRecovery("this confirmed transaction archive", (s) => ({
+          ...s, confirmedSubmissions: s.confirmedSubmissions.filter((item) => item.cid !== confirmed.cid),
+        }))) pendingSubmissionsScreen();
+      } }, "Dismiss")));
   }
   render(h("div", { class: "stack" }, h("h1", {}, "Pending transactions"), list,
     h("p", { class: "muted" }, "The wallet keeps exact signed transactions here until the chain reports a final outcome."),
@@ -1844,8 +1894,10 @@ async function historyScreen() {
     const recorded = t.from && t.nonce !== undefined ? { from: t.from, nonce: BigInt(t.nonce) } : undefined;
     checks.push(sentStatus(client(), t.cid, recorded).then((result) => {
       s.textContent = statusText(result);
-      if (result.kind === "included") { s.textContent += " (recovery retained)"; return; }
-      const recovery = settings.pendingSubmissions.find((pending) => pending.cid === t.cid)?.signedSubmit ?? t.signedSubmit;
+      const retained = settings.pendingSubmissions.find((pending) => pending.cid === t.cid)
+        ?? settings.confirmedSubmissions.find((confirmed) => confirmed.cid === t.cid);
+      if (result.kind === "included") { if (retained) s.textContent += " (recovery retained)"; return; }
+      const recovery = retained?.signedSubmit ?? t.signedSubmit;
       if (!recovery) return undefined;
       const retry = h("button", { class: "btn", onclick: async () => {
         retry.disabled = true;

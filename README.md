@@ -71,8 +71,9 @@ The exact signed bytes for ordinary transfers with no final chain outcome are
 kept in a separate, unbounded `pendingSubmissions` list. The 50-item sent list
 is display history only and cannot delete recovery material. Settings exposes
 pending transactions for status checks and immediate exact-byte resubmission.
-Automatic cleanup requires six confirmations; every recovery record also has
-an explicit, confirmed **Dismiss** action for cases no endpoint can settle. A definite
+At six confirmations, active recovery moves into a capped 50-item confirmed
+archive instead of being destroyed; every recovery record also has an explicit,
+confirmed **Dismiss** action for cases no endpoint can settle. A definite
 refusal of the first submission is removed so the user can correct it; a
 refused rebroadcast is retained because it cannot disprove earlier admission.
 
@@ -84,8 +85,9 @@ child-chain deposits, reject already-receipted offers, sign the parent payment,
 and persist the exact signed receipt and child withdrawal in `openPurchases`.
 Withdrawal records retain every attempt and its signed nonce. A node-reported
 inclusion is displayed but does not immediately delete recovery state.
-Automatic completion requires one of this wallet's withdrawal CIDs at six
-confirmations and targeted proofs that every claimed deposit is `0` at the
+Automatic completion moves a purchase into the confirmed archive only when one
+of this wallet's withdrawal CIDs has six confirmations and targeted proofs show
+that every claimed deposit is `0` at the
 parent-committed child tip. A generic spent marker alone cannot identify who
 withdrew it. Nodes without `/api/deposit-state` leave the record available for
 recovery or explicit dismissal.

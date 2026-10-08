@@ -66,8 +66,7 @@ export interface OpenPurchase {
   receiptCID: string;
   receiptSubmit: SignedSubmit;
   withdrawalCID?: string;
-  withdrawalSubmit?: SignedSubmit;
-  /** Every same-nonce withdrawal attempt, oldest first. Never discard an
+  /** Every withdrawal attempt, oldest first. Never discard an
    * earlier CID merely because a fee replacement was created. */
   withdrawalAttempts?: SignedSubmit[];
   withdrawer: string;
@@ -101,15 +100,19 @@ export interface Settings {
   sent: Record<string, SentTransaction[]>;
   /** Never trim these. Remove only after chain status proves a final outcome. */
   pendingSubmissions: PendingSubmission[];
+  /** Deeply confirmed transfers, capped but still manually recoverable. */
+  confirmedSubmissions: PendingSubmission[];
   /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
   /** Never trim these. Remove only after verified state identifies this buyer's withdrawal, not merely a spent deposit. */
   openPurchases: OpenPurchase[];
+  /** Protocol-confirmed purchases, capped but retaining their signed bytes. */
+  confirmedPurchases: OpenPurchase[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
 }
 
-export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, pendingSubmissions: [], openDeposits: [], openPurchases: [], fees: {} };
+export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, pendingSubmissions: [], confirmedSubmissions: [], openDeposits: [], openPurchases: [], confirmedPurchases: [], fees: {} };
 
 /** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
 export const FALLBACK_FEE = "1";
@@ -131,12 +134,17 @@ export interface KeyValueStore {
 
 export async function loadSettings(store: KeyValueStore): Promise<Settings> {
   const raw = (await store.get("settings")).settings as Partial<Settings> | undefined;
-  const loaded = { ...DEFAULT_SETTINGS, ...(raw ?? {}) };
+  const loaded = { ...DEFAULT_SETTINGS, ...(raw ?? {}),
+    confirmedSubmissions: raw?.confirmedSubmissions ?? [], confirmedPurchases: raw?.confirmedPurchases ?? [] };
   return {
     ...loaded,
-    openPurchases: loaded.openPurchases.map((purchase) => purchase.withdrawalSubmit && !purchase.withdrawalAttempts?.length
-      ? { ...purchase, withdrawalAttempts: [purchase.withdrawalSubmit] }
-      : purchase),
+    openPurchases: loaded.openPurchases.map((purchase) => {
+      const legacy = purchase as OpenPurchase & { withdrawalSubmit?: SignedSubmit };
+      const { withdrawalSubmit, ...current } = legacy;
+      return withdrawalSubmit && !current.withdrawalAttempts?.length
+        ? { ...current, withdrawalAttempts: [withdrawalSubmit] }
+        : current;
+    }),
   };
 }
 
@@ -165,6 +173,16 @@ export function completePendingSubmission(settings: Settings, cid: string): Sett
   return { ...settings, pendingSubmissions: settings.pendingSubmissions.filter((item) => item.cid !== cid) };
 }
 
+export function archivePendingSubmission(settings: Settings, cid: string): Settings {
+  const item = settings.pendingSubmissions.find((candidate) => candidate.cid === cid);
+  if (!item) return settings;
+  return {
+    ...settings,
+    pendingSubmissions: settings.pendingSubmissions.filter((candidate) => candidate.cid !== cid),
+    confirmedSubmissions: [item, ...settings.confirmedSubmissions.filter((candidate) => candidate.cid !== cid)].slice(0, 50),
+  };
+}
+
 /** Save before submission: an ambiguous network failure may still mean the
  * node accepted the deposit. Deduplicate retries by the wallet-computed CID. */
 export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Settings {
@@ -191,10 +209,18 @@ export function completeOpenPurchase(settings: Settings, receiptCID: string): Se
   return { ...settings, openPurchases: settings.openPurchases.filter((item) => item.receiptCID !== receiptCID) };
 }
 
+export function archiveOpenPurchase(settings: Settings, receiptCID: string): Settings {
+  const item = settings.openPurchases.find((candidate) => candidate.receiptCID === receiptCID);
+  if (!item) return settings;
+  return {
+    ...settings,
+    openPurchases: settings.openPurchases.filter((candidate) => candidate.receiptCID !== receiptCID),
+    confirmedPurchases: [item, ...settings.confirmedPurchases.filter((candidate) => candidate.receiptCID !== receiptCID)].slice(0, 50),
+  };
+}
+
 export function purchaseWithdrawalAttempts(purchase: OpenPurchase): SignedSubmit[] {
-  return purchase.withdrawalAttempts?.length
-    ? purchase.withdrawalAttempts
-    : purchase.withdrawalSubmit ? [purchase.withdrawalSubmit] : [];
+  return purchase.withdrawalAttempts ?? [];
 }
 
 /** Append a same-nonce withdrawal attempt without losing any earlier CID. */
@@ -207,7 +233,6 @@ export function recordWithdrawalAttempt(settings: Settings, receiptCID: string, 
       return {
         ...item,
         withdrawalCID: signed.transactionCID,
-        withdrawalSubmit: signed,
         withdrawalAttempts: [...attempts.filter((attempt) => attempt.transactionCID !== signed.transactionCID), signed],
       };
     }),
@@ -225,7 +250,7 @@ export function forgetWithdrawalAttempt(settings: Settings, receiptCID: string, 
       const removedNonce = all.find((attempt) => attempt.transactionCID === transactionCID)?.payload.transaction.body.nonce;
       const attempts = all.filter((attempt) => attempt.transactionCID !== transactionCID);
       const latest = [...attempts].reverse().find((attempt) => attempt.payload.transaction.body.nonce === removedNonce);
-      return { ...item, withdrawalCID: latest?.transactionCID, withdrawalSubmit: latest, withdrawalAttempts: attempts.length ? attempts : undefined };
+      return { ...item, withdrawalCID: latest?.transactionCID, withdrawalAttempts: attempts.length ? attempts : undefined };
     }),
   };
 }

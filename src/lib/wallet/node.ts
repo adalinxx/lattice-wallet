@@ -310,7 +310,12 @@ export function isDefiniteSubmissionRefusal(error: unknown): boolean {
  * replacement. Authentication, rate limits and availability need repair or
  * a later exact retry, not a more expensive transaction. */
 export function shouldOfferFeeReplacement(error: unknown): boolean {
-  return error instanceof SubmissionError && error.reason === "belowMinRelayFee";
+  return error instanceof SubmissionError && (error.reason === "belowMinRelayFee" || error.reason === "feeTooLow");
+}
+
+export function isTransientSubmissionRefusal(error: unknown): boolean {
+  return error instanceof SubmissionError && (error.status === 401 || error.status === 403 || error.status === 429
+    || error.reason === "full" || error.reason === "shuttingDown");
 }
 
 /** A refusal or failure, in words, keeping the node's own name for it. */
