@@ -203,13 +203,40 @@ export async function activeDeposits(
   throw new TypeError("deposits response has too many pages");
 }
 
+/** Read exact deposit keys without scanning discovery pages. Nodes that do
+ * not implement the targeted route simply cannot trigger automatic cleanup. */
+export async function depositValues(
+  url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+  expectedTip?: string,
+): Promise<Map<string, bigint>> {
+  let tipCID = expectedTip;
+  if (tipCID === undefined) {
+    const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
+    if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+    tipCID = info.tipCID;
+  }
+  const values = new Map<string, bigint>();
+  await Promise.all([...new Set(keys)].map(async (key) => {
+    const query = new URLSearchParams({ key });
+    const body = object(await nodeJSON(url, `/api/deposit-state?${query}`, chainPath, fetchImpl, authorization), "deposit state response");
+    if (body.key !== key || (typeof body.value !== "string" && body.value !== null)) throw new TypeError("deposit state response must match its requested key");
+    const claims = verifyStateProof(body.proof, "deposits", tipCID);
+    if (claims.get(key) !== body.value) throw new TypeError("deposit state response must have a valid state claim");
+    if (typeof body.value === "string") values.set(key, unsigned(body.value, "deposit value"));
+  }));
+  return values;
+}
+
 export async function receiptWithdrawer(
   url: string, parentChain: readonly string[], childChain: readonly string[], offer: ActiveDeposit,
   fetchImpl: Fetch = browserFetch, authorization?: string, expectedTip?: string,
 ): Promise<string | null> {
-  const info = await reader(url, [...parentChain], fetchImpl, authorization).chainInfo();
-  if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
-  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("receipt state must match the current parent tip");
+  let tipCID = expectedTip;
+  if (tipCID === undefined) {
+    const info = await reader(url, [...parentChain], fetchImpl, authorization).chainInfo();
+    if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+    tipCID = info.tipCID;
+  }
   const path = new URL("/api/receipt-state", `${url}/`);
   path.searchParams.set("demander", offer.demander);
   path.searchParams.set("amount", offer.amountDemanded.toString());
@@ -218,7 +245,7 @@ export async function receiptWithdrawer(
   const response = await fetchImpl(path, { headers: authorization ? { authorization } : undefined });
   if (!response.ok) throw new NodeError(response.status, await response.text());
   const value = object(await response.json(), "receipt response");
-  const claims = verifyStateProof(value.proof, "receipts", info.tipCID);
+  const claims = verifyStateProof(value.proof, "receipts", tipCID);
   const proof = object(value.proof, "receipt proof");
   const directory = childChain.at(-1);
   if (directory === undefined || typeof proof.dictionaryRoot !== "string") throw new TypeError("receipt proof must match the anchored state");
@@ -330,7 +357,7 @@ export function feeWarning(fee: bigint, minRelayFee: bigint | undefined): string
 export type SentStatus =
   | { kind: "included"; height: bigint; hash: string }
   | { kind: "pending" }
-  | { kind: "nonce spent" }
+  | { kind: "nonce advanced" }
   | { kind: "replaced" }
   | { kind: "pending or dropped" }
   | { kind: "unknown to node" };
@@ -339,7 +366,7 @@ export function statusText(s: SentStatus): string {
   switch (s.kind) {
     case "included": return `included in block ${s.height}`;
     case "pending": return "pending";
-    case "nonce spent": return "nonce spent (this node does not report inclusion)";
+    case "nonce advanced": return "unknown; the account nonce has advanced";
     case "replaced": return "not included; its nonce was spent by another transaction";
     case "pending or dropped": return "pending or dropped";
     case "unknown to node": return "unknown to node";
@@ -370,7 +397,7 @@ export async function sentStatus(
     if (e instanceof NodeError && e.status === 404) {
       if (recorded !== undefined) {
         try {
-          if ((await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce spent" };
+          if ((await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce advanced" };
         } catch { /* A failed auxiliary read must not hide exact recovery. */ }
       }
       return { kind: "unknown to node" };
@@ -381,7 +408,7 @@ export async function sentStatus(
   if (blockHeight !== undefined && blockHash !== undefined) return { kind: "included", height: blockHeight, hash: blockHash };
   if ((await client.mempool()).transactions.includes(cid)) return { kind: "pending" };
   if (signer !== undefined && nonce !== undefined && (await client.account(signer)).nonce > nonce) {
-    if (!reportsInclusion) return { kind: "nonce spent" };
+    if (!reportsInclusion) return { kind: "nonce advanced" };
     // It may have been mined between the first read and this one.
     const again = await client.transaction(cid);
     if (again.blockHeight !== undefined && again.blockHash !== undefined) {

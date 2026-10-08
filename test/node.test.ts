@@ -97,8 +97,9 @@ test("pending signed submissions survive trimmed display history until explicitl
 
 test("withdrawal fee replacements retain every earlier transaction CID", () => {
   const receipt = { transactionCID: "receipt" } as unknown as SignedSubmit;
-  const first = { transactionCID: "withdraw-1" } as unknown as SignedSubmit;
-  const replacement = { transactionCID: "withdraw-2" } as unknown as SignedSubmit;
+  const attempt = (transactionCID: string, nonce = "7") => ({ transactionCID, payload: { transaction: { body: { nonce } } } }) as unknown as SignedSubmit;
+  const first = attempt("withdraw-1");
+  const replacement = attempt("withdraw-2");
   let s: Settings = { ...DEFAULT_SETTINGS, openPurchases: [{
     receiptCID: "receipt", receiptSubmit: receipt, withdrawer: "buyer", offers: [],
     parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1,
@@ -116,6 +117,20 @@ test("withdrawal fee replacements retain every earlier transaction CID", () => {
   s = forgetWithdrawalAttempt(s, "receipt", "withdraw-2");
   assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1"]);
   assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-1");
+  const newNonce = attempt("withdraw-3", "8");
+  s = recordWithdrawalAttempt(s, "receipt", newNonce);
+  s = forgetWithdrawalAttempt(s, "receipt", "withdraw-3");
+  assert.equal(s.openPurchases[0]?.withdrawalCID, undefined, "a refused new-nonce attempt cannot restore a stale-nonce attempt as current");
+  assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((item) => item.transactionCID), ["withdraw-1"]);
+});
+
+test("load migrates a legacy current withdrawal into the durable attempts list", async () => {
+  const legacy = { transactionCID: "withdraw", payload: { transaction: { body: { nonce: "7" } } } } as unknown as SignedSubmit;
+  const loaded = await loadSettings({ get: async () => ({ settings: { ...DEFAULT_SETTINGS, openPurchases: [{
+    receiptCID: "receipt", receiptSubmit: legacy, withdrawalCID: "withdraw", withdrawalSubmit: legacy,
+    withdrawer: "buyer", offers: [], parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1,
+  }] } }), set: async () => {} });
+  assert.deepEqual(loaded.openPurchases[0]?.withdrawalAttempts, [legacy]);
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {
@@ -217,8 +232,8 @@ test("status: included in block N, pending, replaced, unknown", async () => {
   assert.deepEqual(included, { kind: "included", height: 12n, hash: "bafyblock" });
   assert.equal(statusText(included), "included in block 12");
   assert.deepEqual(await sentStatus(client, "bafyunknown"), { kind: "unknown to node" });
-  assert.deepEqual(await sentStatus(client, "bafyunknown", { from: "bafyalice", nonce: 4n }), { kind: "nonce spent" },
-    "a pruned or never-admitted transaction becomes final once its saved nonce is spent");
+  assert.deepEqual(await sentStatus(client, "bafyunknown", { from: "bafyalice", nonce: 4n }), { kind: "nonce advanced" },
+    "a pruned or never-admitted transaction remains explicitly ambiguous after its nonce advances");
 });
 
 test("status falls back to the nonce only for a node that does not report inclusion", async () => {
@@ -231,8 +246,8 @@ test("status falls back to the nonce only for a node that does not report inclus
   });
   const client = reader("http://127.0.0.1:8080", ["Nexus"], fetch);
   const fallback = await sentStatus(client, "bafytx", { from: "bafyalice", nonce: 4n });
-  assert.deepEqual(fallback, { kind: "nonce spent" });
-  assert.match(statusText(fallback), /does not report inclusion/);
+  assert.deepEqual(fallback, { kind: "nonce advanced" });
+  assert.match(statusText(fallback), /unknown/);
   await assert.rejects(sentStatus(client, "bafytx"), TypeError, "without a record there is nothing to fall back on");
 });
 

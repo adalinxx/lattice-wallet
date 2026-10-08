@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS, type Settings } from "../src/lib/wallet/settings.ts";
 import { cidV1DagCbor, encodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ensureOrigins } from "../src/popup/app.ts";
-import { activeDeposits } from "../src/lib/wallet/node.ts";
+import { activeDeposits, depositValues } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -72,6 +72,26 @@ test("deposit discovery rejects a proof-valid offer repeated by the listing", as
     return new Response("not found", { status: 404 });
   };
   await assert.rejects(activeDeposits("https://child.example", ["Nexus", "testnet"], fetch), /repeats seller\/50\/42/);
+});
+
+test("targeted deposit state verifies requested keys without scanning discovery pages", async () => {
+  const key = "seller/50/42";
+  const trie = testTrie(new Map([[key, 0n]]));
+  const proof = testProof("deposits", trie, [{ key, value: "0" }]);
+  let targeted = 0, listings = 0;
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === "/api/deposit-state") {
+      targeted += 1;
+      assert.equal(url.searchParams.get("key"), key);
+      return new Response(JSON.stringify({ key, value: "0", proof }));
+    }
+    if (url.pathname === "/api/deposits") listings += 1;
+    return new Response("not found", { status: 404 });
+  };
+  assert.deepEqual(await depositValues("https://child.example", ["Nexus", "testnet"], [key], fetch, undefined, proof.blockHash), new Map([[key, 0n]]));
+  assert.equal(targeted, 1);
+  assert.equal(listings, 0);
 });
 
 function orderURI(expiresAt: string): string {
@@ -140,7 +160,6 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   let stored = { settings: { ...DEFAULT_SETTINGS, chain: "Nexus/testnet", chains: ["Nexus", "Nexus/testnet"] } };
   let savedBeforePost: typeof stored.settings | undefined;
   let postCalls = 0;
-  let depositListingFails = false;
   const store = {
     get: async () => stored,
     set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
@@ -162,7 +181,6 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
         minRelayFee: "3", acceptsSubmit: true, ...(saved ? { tipCID: saved.proof.blockHash } : {}) }));
     }
     if (url.pathname === "/api/deposits") {
-      if (depositListingFails) return new Response("unavailable", { status: 503 });
       const saved = savedDepositProof();
       assert.ok(saved);
       return new Response(JSON.stringify({ deposits: [saved.row], next: null, proof: saved.proof }));
@@ -281,11 +299,8 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   await settle();
   assert.equal(signCalls, 1, "a proof-backed active deposit is not reconstructed or resubmitted when transaction history is pruned");
   assert.equal(stored.settings.openDeposits.length, 1, "a pruned transaction cannot discard a live deposit key");
-  depositListingFails = true;
-  button("Check payment").click();
-  await settle();
   button("Resubmit exact deposit");
-  assert.equal(stored.settings.openDeposits.length, 1, "a failed discovery listing does not block transaction recovery");
+  assert.equal(stored.settings.openDeposits.length, 1, "exact transaction recovery does not depend on a discovery listing");
   button("Back").click();
   button("Done").click();
   await settle();
@@ -323,7 +338,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       signers: [address], nonce: "1", chainPath,
     } } },
   });
-  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, receiptMined = false, withdrawalMined = false;
+  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, depositReads = 0, receiptMined = false, withdrawalMined = false;
   let signedOffers: Array<{ demander: string }> = [];
   const depositRows = [
     { demander: expensiveSeller, amountDemanded: "100", nonce: "43", amountDeposited: "100" },
@@ -364,9 +379,12 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   const store = { get: async () => stored, set: async (items: Record<string, unknown>) => { stored = items as typeof stored; } };
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input);
-    if (url.pathname === "/api/deposits") return new Response(JSON.stringify(withdrawalMined
-      ? { deposits: [], next: null, proof: spentDepositProof }
-      : { deposits: depositRows, next: null, proof: depositProof }));
+    if (url.pathname === "/api/deposits") {
+      depositReads += 1;
+      return new Response(JSON.stringify(withdrawalMined
+        ? { deposits: [], next: null, proof: spentDepositProof }
+        : { deposits: depositRows, next: null, proof: depositProof }));
+    }
     if (url.pathname === "/api/receipt-state") {
       const claimed = url.searchParams.get("demander") === claimedSeller;
       const state = receiptState();
@@ -414,6 +432,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.ok(document.querySelector("h1"), document.body.textContent ?? "");
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Review purchase", document.body.textContent ?? "");
+  assert.ok(depositReads > 0, "buy discovery reads the proof-bearing deposits endpoint");
   button("Pay & reserve tokens").click();
   await settle();
   assert.equal(receiptSigns, 1);

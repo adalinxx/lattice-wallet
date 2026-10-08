@@ -131,7 +131,13 @@ export interface KeyValueStore {
 
 export async function loadSettings(store: KeyValueStore): Promise<Settings> {
   const raw = (await store.get("settings")).settings as Partial<Settings> | undefined;
-  return { ...DEFAULT_SETTINGS, ...(raw ?? {}) };
+  const loaded = { ...DEFAULT_SETTINGS, ...(raw ?? {}) };
+  return {
+    ...loaded,
+    openPurchases: loaded.openPurchases.map((purchase) => purchase.withdrawalSubmit && !purchase.withdrawalAttempts?.length
+      ? { ...purchase, withdrawalAttempts: [purchase.withdrawalSubmit] }
+      : purchase),
+  };
 }
 
 export async function saveSettings(store: KeyValueStore, settings: Settings): Promise<void> {
@@ -215,9 +221,10 @@ export function forgetWithdrawalAttempt(settings: Settings, receiptCID: string, 
     ...settings,
     openPurchases: settings.openPurchases.map((item) => {
       if (item.receiptCID !== receiptCID) return item;
-      const attempts = purchaseWithdrawalAttempts(item)
-        .filter((attempt) => attempt.transactionCID !== transactionCID);
-      const latest = attempts.at(-1);
+      const all = purchaseWithdrawalAttempts(item);
+      const removedNonce = all.find((attempt) => attempt.transactionCID === transactionCID)?.payload.transaction.body.nonce;
+      const attempts = all.filter((attempt) => attempt.transactionCID !== transactionCID);
+      const latest = [...attempts].reverse().find((attempt) => attempt.payload.transaction.body.nonce === removedNonce);
       return { ...item, withdrawalCID: latest?.transactionCID, withdrawalSubmit: latest, withdrawalAttempts: attempts.length ? attempts : undefined };
     }),
   };

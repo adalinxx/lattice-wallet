@@ -64,13 +64,15 @@ debit-over-credit excess the miner collects (the SDK's `buildTransfer`).
 A sent transaction reads **included in block N** once the node reports it on
 its canonical chain (`blockHeight`/`blockHash`), **pending** while it is in the
 node's pool, and *replaced* if its nonce was spent by another transaction.
-Only a node too old to report inclusion falls back to the account-nonce
-reading (*nonce spent*).
+If transaction history is unavailable but the account nonce advanced, the
+result remains explicitly unknown rather than being treated as final.
 
 The exact signed bytes for ordinary transfers with no final chain outcome are
 kept in a separate, unbounded `pendingSubmissions` list. The 50-item sent list
 is display history only and cannot delete recovery material. Settings exposes
-pending transactions for status checks and exact-byte resubmission. A definite
+pending transactions for status checks and immediate exact-byte resubmission.
+Automatic cleanup requires six confirmations; every recovery record also has
+an explicit, confirmed **Dismiss** action for cases no endpoint can settle. A definite
 refusal of the first submission is removed so the user can correct it; a
 refused rebroadcast is retained because it cannot disprove earlier admission.
 
@@ -80,17 +82,19 @@ The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded
 `openDeposits` list before attempting submission. Buy requests read active
 child-chain deposits, reject already-receipted offers, sign the parent payment,
 and persist the exact signed receipt and child withdrawal in `openPurchases`.
-Withdrawal records retain every same-nonce attempt. A node-reported inclusion
-is displayed but does not delete recovery state: Lattice's “verify locally”
-rule requires exact proof claims against current child state before automatic
-completion. The wallet scans the proof-bearing deposit pages for every claimed
-key and completes the purchase only when every value is the spent marker `0`.
+Withdrawal records retain every attempt and its signed nonce. A node-reported
+inclusion is displayed but does not immediately delete recovery state.
+Automatic completion requires one of this wallet's withdrawal CIDs at six
+confirmations and targeted proofs that every claimed deposit is `0` at the
+parent-committed child tip. A generic spent marker alone cannot identify who
+withdrew it. Nodes without `/api/deposit-state` leave the record available for
+recovery or explicit dismissal.
 Until then, an uncertain network response can be recovered by resubmitting the
-identical transaction rather than signing a second payment or claim. Deposit recovery checks the
-proof-backed deposit state before transaction history, because a node may prune
+identical transaction rather than signing a second payment or claim. Deposit recovery checks
+targeted proof-backed state instead of scanning discovery pages, because a node may prune
 the original transaction while its locked deposit remains active. A refusal to
-rebroadcast never deletes that deposit key. Rejected withdrawal rebroadcasts
-offer an explicit higher-fee replacement with the same account nonce and claim,
+rebroadcast never deletes that deposit key. Only an explicit `belowMinRelayFee`
+refusal offers a higher-fee replacement with the same account nonce and claim,
 without forgetting earlier transaction CIDs. This local metadata is not
 reconstructed by restoring a recovery phrase; seed-only recovery still needs
 chain scanning.
