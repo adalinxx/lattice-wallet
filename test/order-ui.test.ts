@@ -140,6 +140,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   let stored = { settings: { ...DEFAULT_SETTINGS, chain: "Nexus/testnet", chains: ["Nexus", "Nexus/testnet"] } };
   let savedBeforePost: typeof stored.settings | undefined;
   let postCalls = 0;
+  let depositListingFails = false;
   const store = {
     get: async () => stored,
     set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
@@ -161,6 +162,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
         minRelayFee: "3", acceptsSubmit: true, ...(saved ? { tipCID: saved.proof.blockHash } : {}) }));
     }
     if (url.pathname === "/api/deposits") {
+      if (depositListingFails) return new Response("unavailable", { status: 503 });
       const saved = savedDepositProof();
       assert.ok(saved);
       return new Response(JSON.stringify({ deposits: [saved.row], next: null, proof: saved.proof }));
@@ -279,6 +281,11 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   await settle();
   assert.equal(signCalls, 1, "a proof-backed active deposit is not reconstructed or resubmitted when transaction history is pruned");
   assert.equal(stored.settings.openDeposits.length, 1, "a pruned transaction cannot discard a live deposit key");
+  depositListingFails = true;
+  button("Check payment").click();
+  await settle();
+  button("Resubmit exact deposit");
+  assert.equal(stored.settings.openDeposits.length, 1, "a failed discovery listing does not block transaction recovery");
   button("Back").click();
   button("Done").click();
   await settle();
@@ -414,6 +421,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   await settle();
   assert.equal(withdrawalSigns, 1);
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
+  assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
   assert.equal(posts, 2);
 });
 

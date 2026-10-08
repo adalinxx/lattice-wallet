@@ -67,6 +67,9 @@ export interface OpenPurchase {
   receiptSubmit: SignedSubmit;
   withdrawalCID?: string;
   withdrawalSubmit?: SignedSubmit;
+  /** Every same-nonce withdrawal attempt, oldest first. Never discard an
+   * earlier CID merely because a fee replacement was created. */
+  withdrawalAttempts?: SignedSubmit[];
   withdrawer: string;
   offers: PurchaseOffer[];
   parentChain: string[];
@@ -173,5 +176,23 @@ export function recordOpenPurchase(settings: Settings, purchase: OpenPurchase): 
   return {
     ...settings,
     openPurchases: [purchase, ...settings.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID)],
+  };
+}
+
+/** Append a same-nonce withdrawal attempt without losing any earlier CID. */
+export function recordWithdrawalAttempt(settings: Settings, receiptCID: string, signed: SignedSubmit): Settings {
+  return {
+    ...settings,
+    openPurchases: settings.openPurchases.map((item) => {
+      if (item.receiptCID !== receiptCID) return item;
+      const attempts = item.withdrawalAttempts?.length
+        ? item.withdrawalAttempts : item.withdrawalSubmit ? [item.withdrawalSubmit] : [];
+      return {
+        ...item,
+        withdrawalCID: signed.transactionCID,
+        withdrawalSubmit: signed,
+        withdrawalAttempts: [...attempts.filter((attempt) => attempt.transactionCID !== signed.transactionCID), signed],
+      };
+    }),
   };
 }

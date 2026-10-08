@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
@@ -93,6 +93,20 @@ test("pending signed submissions survive trimmed display history until explicitl
   assert.equal(s.pendingSubmissions[0]?.signedSubmit.transactionCID, "pending");
   s = completePendingSubmission(s, "pending");
   assert.equal(s.pendingSubmissions.length, 0);
+});
+
+test("withdrawal fee replacements retain every earlier transaction CID", () => {
+  const receipt = { transactionCID: "receipt" } as unknown as SignedSubmit;
+  const first = { transactionCID: "withdraw-1" } as unknown as SignedSubmit;
+  const replacement = { transactionCID: "withdraw-2" } as unknown as SignedSubmit;
+  let s: Settings = { ...DEFAULT_SETTINGS, openPurchases: [{
+    receiptCID: "receipt", receiptSubmit: receipt, withdrawer: "buyer", offers: [],
+    parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1,
+  }] };
+  s = recordWithdrawalAttempt(s, "receipt", first);
+  s = recordWithdrawalAttempt(s, "receipt", replacement);
+  assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1", "withdraw-2"]);
+  assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-2");
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {

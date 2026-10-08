@@ -10,7 +10,7 @@ import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordWithdrawalAttempt, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
@@ -728,11 +728,17 @@ function depositsScreen() {
         // Transaction bodies may be pruned while their deposit remains in
         // consensus state. A positive, proof-verified state claim wins over
         // transaction-history availability.
-        const active = await activeDeposits(childEndpoint.url, deposit.childChain, platform.fetch, childAuth);
-        const stateHasDeposit = active.some((offer) => offer.demander === deposit.demander
-          && offer.depositNonce === BigInt(deposit.depositNonce)
-          && offer.amountDeposited === BigInt(deposit.amountDeposited)
-          && offer.amountDemanded === BigInt(deposit.amountDemanded));
+        let stateHasDeposit = false;
+        try {
+          const active = await activeDeposits(childEndpoint.url, deposit.childChain, platform.fetch, childAuth);
+          stateHasDeposit = active.some((offer) => offer.demander === deposit.demander
+            && offer.depositNonce === BigInt(deposit.depositNonce)
+            && offer.amountDeposited === BigInt(deposit.amountDeposited)
+            && offer.amountDemanded === BigInt(deposit.amountDemanded));
+        } catch {
+          // Discovery is optional positive evidence. An unavailable or
+          // incomplete listing must not block exact transaction recovery.
+        }
         const result = await sentStatus(reader(childEndpoint.url, deposit.childChain, platform.fetch, childAuth), deposit.transactionCID,
           { from: deposit.demander, nonce: BigInt(deposit.transactionNonce) });
         if (!stateHasDeposit && result.kind !== "included") {
@@ -843,8 +849,12 @@ function purchaseScreen(purchase: OpenPurchase) {
     return;
   }
   if (purchase.withdrawalCID) {
+    const attempts = purchase.withdrawalAttempts?.length
+      ? purchase.withdrawalAttempts
+      : purchase.withdrawalSubmit ? [purchase.withdrawalSubmit] : [];
+    const latestAttempt = attempts.at(-1);
     const offerFeeReplacement = (message: string, auth: string | undefined) => {
-      const body = purchase.withdrawalSubmit?.payload.transaction.body;
+      const body = latestAttempt?.payload.transaction.body;
       if (!body) { toast.textContent = `${message} This older record cannot be replaced automatically.`; return; }
       const oldCredit = body.accountActions.find((action) => action.owner === purchase.withdrawer)?.delta;
       const oldFee = oldCredit === undefined ? 0n : totalReceive - BigInt(oldCredit);
@@ -865,14 +875,10 @@ function purchaseScreen(purchase: OpenPurchase) {
           if (!signed.ok) throw new Error(signed.error);
           const replacementCID = signed.signedSubmit.transactionCID;
           try {
-            await update((s) => ({
-              ...recordSent(s, childName, {
+            await update((s) => recordWithdrawalAttempt(recordSent(s, childName, {
                 cid: replacementCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
                 from: purchase.withdrawer, fee: fee.toString(), nonce: body.nonce.toString(), signedSubmit: signed.signedSubmit,
-              }),
-              openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
-                ? { ...item, withdrawalCID: replacementCID, withdrawalSubmit: signed.signedSubmit } : item),
-            }));
+              }), purchase.receiptCID, signed.signedSubmit));
           } catch {
             toast.textContent = "Could not save the replacement; nothing was submitted.";
             replace.disabled = false; replacementFee.disabled = false;
@@ -902,16 +908,28 @@ function purchaseScreen(purchase: OpenPurchase) {
     void (async () => {
       try {
         const auth = await authorizationFor(childEndpoint.url);
-        const result = await sentStatus(reader(childEndpoint.url, purchase.childChain, platform.fetch, auth), purchase.withdrawalCID!);
-        toast.textContent = `Withdrawal: ${statusText(result)}.`;
-        if (result.kind === "included") {
-          await update((s) => ({ ...s, openPurchases: s.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID) }));
-          toast.textContent = "Withdrawal confirmed. Purchase complete.";
-        } else if (purchase.withdrawalSubmit && (result.kind === "unknown to node" || result.kind === "pending or dropped")) {
+        const statuses = [];
+        for (const attempt of attempts) {
+          statuses.push({ attempt, result: await sentStatus(
+            reader(childEndpoint.url, purchase.childChain, platform.fetch, auth), attempt.transactionCID,
+            { from: purchase.withdrawer, nonce: BigInt(attempt.payload.transaction.body.nonce) },
+          ) });
+        }
+        const included = statuses.find(({ result }) => result.kind === "included");
+        const latest = statuses.at(-1)?.result;
+        if (included) {
+          // The transaction endpoint is useful status, not a locally verified
+          // state proof. Keep recovery metadata until an exact current-state
+          // proof can establish that every claimed deposit was spent.
+          toast.textContent = `Node reports withdrawal ${short(included.attempt.transactionCID)} included. Recovery record kept pending verified child state.`;
+        } else if (latest) {
+          toast.textContent = `Withdrawal: ${statusText(latest)}.`;
+        }
+        if (!included && latestAttempt && latest && (latest.kind === "unknown to node" || latest.kind === "pending or dropped")) {
           const retry = h("button", { class: "btn block", onclick: async () => {
             retry.disabled = true; toast.textContent = "Resubmitting the exact saved withdrawal…";
             try {
-              await submitChecked(submitter(childEndpoint.url, platform.fetch, auth), purchase.withdrawalSubmit!);
+              await submitChecked(submitter(childEndpoint.url, platform.fetch, auth), latestAttempt);
               toast.textContent = "Exact withdrawal resubmitted.";
             } catch (e) {
               if (isDefiniteSubmissionRefusal(e)) {
@@ -954,14 +972,10 @@ function purchaseScreen(purchase: OpenPurchase) {
       });
       if (!signed.ok) throw new Error(signed.error);
       const withdrawalCID = signed.signedSubmit.transactionCID;
-      await update((s) => ({
-        ...recordSent(s, childName, {
+      await update((s) => recordWithdrawalAttempt(recordSent(s, childName, {
           cid: withdrawalCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
           from: purchase.withdrawer, fee: fee.toString(), nonce: account.nonce.toString(),
-        }),
-        openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
-          ? { ...item, withdrawalCID, withdrawalSubmit: signed.signedSubmit } : item),
-      }));
+        }), purchase.receiptCID, signed.signedSubmit));
       toast.textContent = "submitting child withdrawal…";
       try {
         await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
@@ -971,7 +985,7 @@ function purchaseScreen(purchase: OpenPurchase) {
             await update((s) => ({
               ...forgetSent(s, childName, withdrawalCID),
               openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
-                ? { ...item, withdrawalCID: undefined, withdrawalSubmit: undefined } : item),
+                ? { ...item, withdrawalCID: undefined, withdrawalSubmit: undefined, withdrawalAttempts: undefined } : item),
             }));
           } catch { /* Refusal remains definite. */ }
           toast.textContent = describe(e);

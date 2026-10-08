@@ -79,14 +79,17 @@ The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded
 `openDeposits` list before attempting submission. Buy requests read active
 child-chain deposits, reject already-receipted offers, sign the parent payment,
 and persist the exact signed receipt and child withdrawal in `openPurchases`.
-Those records are removed only after the withdrawal confirms, so an uncertain
-network response can be recovered by resubmitting the identical transaction
-rather than signing a second payment or claim. Deposit recovery checks the
+Withdrawal records retain every same-nonce attempt. A node-reported inclusion
+is displayed but does not delete recovery state: Lattice's “verify locally”
+rule requires an exact proof against current child state before automatic
+completion. Until that targeted proof exists, an uncertain network response
+can be recovered by resubmitting the identical transaction rather than signing
+a second payment or claim. Deposit recovery checks the
 proof-backed deposit state before transaction history, because a node may prune
 the original transaction while its locked deposit remains active. A refusal to
 rebroadcast never deletes that deposit key. Rejected withdrawal rebroadcasts
-offer an explicit higher-fee replacement with the same account nonce and claim.
-This local metadata is not
+offer an explicit higher-fee replacement with the same account nonce and claim,
+without forgetting earlier transaction CIDs. This local metadata is not
 reconstructed by restoring a recovery phrase; seed-only recovery still needs
 chain scanning.
 
