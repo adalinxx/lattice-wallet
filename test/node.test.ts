@@ -95,7 +95,7 @@ test("pending signed submissions survive trimmed display history until explicitl
   assert.equal(s.pendingSubmissions.length, 0);
 });
 
-test("deep confirmation archives recovery bytes in capped stores instead of deleting them", () => {
+test("deep confirmation archives recovery bytes until explicit dismissal", () => {
   const signedSubmit = { transactionCID: "pending" } as unknown as SignedSubmit;
   let s = recordPendingSubmission(DEFAULT_SETTINGS, {
     cid: "pending", chain: "Nexus", to: "recipient", amount: "2", at: 1,
@@ -110,7 +110,7 @@ test("deep confirmation archives recovery bytes in capped stores instead of dele
       from: "s", fee: "1", nonce: String(i), signedSubmit: item });
     s = archivePendingSubmission(s, item.transactionCID);
   }
-  assert.equal(s.confirmedSubmissions.length, 50);
+  assert.equal(s.confirmedSubmissions.length, 56);
   s = recordOpenPurchase(s, { receiptCID: "receipt", receiptSubmit: signedSubmit, withdrawer: "buyer", offers: [],
     parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 1 });
   s = archiveOpenPurchase(s, "receipt");

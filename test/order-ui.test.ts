@@ -76,21 +76,23 @@ test("deposit discovery rejects a proof-valid offer repeated by the listing", as
 
 test("targeted deposit state verifies requested keys without scanning discovery pages", async () => {
   const key = "seller/50/42";
+  const missing = "seller/50/43";
   const trie = testTrie(new Map([[key, 0n]]));
-  const proof = testProof("deposits", trie, [{ key, value: "0" }]);
+  const proof = testProof("deposits", trie, [{ key, value: "0" }, { key: missing, value: null }]);
   let targeted = 0, listings = 0;
   const fetch = async (input: string | URL) => {
     const url = new URL(input);
     if (url.pathname === "/api/deposit-state") {
       targeted += 1;
-      assert.equal(url.searchParams.get("key"), key);
-      return new Response(JSON.stringify({ key, value: "0", proof }));
+      const requested = url.searchParams.get("key")!;
+      return new Response(JSON.stringify({ key: requested, value: requested === key ? "0" : null, proof }));
     }
     if (url.pathname === "/api/deposits") listings += 1;
     return new Response("not found", { status: 404 });
   };
-  assert.deepEqual(await depositValues("https://child.example", ["Nexus", "testnet"], [key], fetch, undefined, proof.blockHash), new Map([[key, 0n]]));
-  assert.equal(targeted, 1);
+  assert.deepEqual(await depositValues("https://child.example", ["Nexus", "testnet"], [key, missing], fetch, undefined, proof.blockHash),
+    new Map([[key, 0n], [missing, null]]));
+  assert.equal(targeted, 2);
   assert.equal(listings, 0);
 });
 

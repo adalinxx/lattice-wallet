@@ -100,13 +100,13 @@ export interface Settings {
   sent: Record<string, SentTransaction[]>;
   /** Never trim these. Remove only after chain status proves a final outcome. */
   pendingSubmissions: PendingSubmission[];
-  /** Deeply confirmed transfers, capped but still manually recoverable. */
+  /** Deeply confirmed transfers retained until explicit dismissal. */
   confirmedSubmissions: PendingSubmission[];
   /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
   /** Never trim these. Remove only after verified state identifies this buyer's withdrawal, not merely a spent deposit. */
   openPurchases: OpenPurchase[];
-  /** Protocol-confirmed purchases, capped but retaining their signed bytes. */
+  /** Protocol-confirmed purchases retained until explicit dismissal. */
   confirmedPurchases: OpenPurchase[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
@@ -179,7 +179,7 @@ export function archivePendingSubmission(settings: Settings, cid: string): Setti
   return {
     ...settings,
     pendingSubmissions: settings.pendingSubmissions.filter((candidate) => candidate.cid !== cid),
-    confirmedSubmissions: [item, ...settings.confirmedSubmissions.filter((candidate) => candidate.cid !== cid)].slice(0, 50),
+    confirmedSubmissions: [item, ...settings.confirmedSubmissions.filter((candidate) => candidate.cid !== cid)],
   };
 }
 
@@ -215,7 +215,7 @@ export function archiveOpenPurchase(settings: Settings, receiptCID: string): Set
   return {
     ...settings,
     openPurchases: settings.openPurchases.filter((candidate) => candidate.receiptCID !== receiptCID),
-    confirmedPurchases: [item, ...settings.confirmedPurchases.filter((candidate) => candidate.receiptCID !== receiptCID)].slice(0, 50),
+    confirmedPurchases: [item, ...settings.confirmedPurchases.filter((candidate) => candidate.receiptCID !== receiptCID)],
   };
 }
 

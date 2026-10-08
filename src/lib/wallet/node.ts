@@ -208,21 +208,21 @@ export async function activeDeposits(
 export async function depositValues(
   url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
   expectedTip?: string,
-): Promise<Map<string, bigint>> {
+): Promise<Map<string, bigint | null>> {
   let tipCID = expectedTip;
   if (tipCID === undefined) {
     const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
     if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
     tipCID = info.tipCID;
   }
-  const values = new Map<string, bigint>();
+  const values = new Map<string, bigint | null>();
   await Promise.all([...new Set(keys)].map(async (key) => {
     const query = new URLSearchParams({ key });
     const body = object(await nodeJSON(url, `/api/deposit-state?${query}`, chainPath, fetchImpl, authorization), "deposit state response");
     if (body.key !== key || (typeof body.value !== "string" && body.value !== null)) throw new TypeError("deposit state response must match its requested key");
     const claims = verifyStateProof(body.proof, "deposits", tipCID);
     if (claims.get(key) !== body.value) throw new TypeError("deposit state response must have a valid state claim");
-    if (typeof body.value === "string") values.set(key, unsigned(body.value, "deposit value"));
+    values.set(key, typeof body.value === "string" ? unsigned(body.value, "deposit value") : null);
   }));
   return values;
 }
@@ -389,6 +389,7 @@ export async function sentStatus(
   client: NodeClient,
   cid: string,
   recorded?: { from: string; nonce: bigint },
+  knownMempool?: readonly string[] | (() => Promise<readonly string[]>),
 ): Promise<SentStatus> {
   let blockHeight: bigint | undefined, blockHash: string | undefined;
   let signer = recorded?.from, nonce = recorded?.nonce;
@@ -411,7 +412,9 @@ export async function sentStatus(
     reportsInclusion = false;
   }
   if (blockHeight !== undefined && blockHash !== undefined) return { kind: "included", height: blockHeight, hash: blockHash };
-  if ((await client.mempool()).transactions.includes(cid)) return { kind: "pending" };
+  const mempool = typeof knownMempool === "function" ? await knownMempool()
+    : knownMempool ?? (await client.mempool()).transactions;
+  if (mempool.includes(cid)) return { kind: "pending" };
   if (signer !== undefined && nonce !== undefined && (await client.account(signer)).nonce > nonce) {
     if (!reportsInclusion) return { kind: "nonce advanced" };
     // It may have been mined between the first read and this one.

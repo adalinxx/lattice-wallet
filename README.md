@@ -71,7 +71,7 @@ The exact signed bytes for ordinary transfers with no final chain outcome are
 kept in a separate, unbounded `pendingSubmissions` list. The 50-item sent list
 is display history only and cannot delete recovery material. Settings exposes
 pending transactions for status checks and immediate exact-byte resubmission.
-At six confirmations, active recovery moves into a capped 50-item confirmed
+At six confirmations, active recovery moves into a confirmed
 archive instead of being destroyed; every recovery record also has an explicit,
 confirmed **Dismiss** action for cases no endpoint can settle. A definite
 refusal of the first submission is removed so the user can correct it; a
