@@ -81,7 +81,12 @@ child-chain deposits, reject already-receipted offers, sign the parent payment,
 and persist the exact signed receipt and child withdrawal in `openPurchases`.
 Those records are removed only after the withdrawal confirms, so an uncertain
 network response can be recovered by resubmitting the identical transaction
-rather than signing a second payment or claim. This local metadata is not
+rather than signing a second payment or claim. Deposit recovery checks the
+proof-backed deposit state before transaction history, because a node may prune
+the original transaction while its locked deposit remains active. A refusal to
+rebroadcast never deletes that deposit key. Rejected withdrawal rebroadcasts
+offer an explicit higher-fee replacement with the same account nonce and claim.
+This local metadata is not
 reconstructed by restoring a recovery phrase; seed-only recovery still needs
 chain scanning.
 

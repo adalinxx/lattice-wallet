@@ -725,20 +725,46 @@ function depositsScreen() {
         const [authorization, childAuth] = await Promise.all([
           authorizationFor(parentEndpoint.url), authorizationFor(childEndpoint.url),
         ]);
+        // Transaction bodies may be pruned while their deposit remains in
+        // consensus state. A positive, proof-verified state claim wins over
+        // transaction-history availability.
+        const active = await activeDeposits(childEndpoint.url, deposit.childChain, platform.fetch, childAuth);
+        const stateHasDeposit = active.some((offer) => offer.demander === deposit.demander
+          && offer.depositNonce === BigInt(deposit.depositNonce)
+          && offer.amountDeposited === BigInt(deposit.amountDeposited)
+          && offer.amountDemanded === BigInt(deposit.amountDemanded));
         const result = await sentStatus(reader(childEndpoint.url, deposit.childChain, platform.fetch, childAuth), deposit.transactionCID,
           { from: deposit.demander, nonce: BigInt(deposit.transactionNonce) });
-        if (result.kind !== "included") {
+        if (!stateHasDeposit && result.kind !== "included") {
           toast.textContent = `Deposit: ${statusText(result)}.`;
-          if ((result.kind === "unknown to node" || result.kind === "pending or dropped") && deposit.signedSubmit) {
+          if (result.kind === "unknown to node" || result.kind === "pending or dropped") {
             const retry = h("button", { class: "btn", onclick: async () => {
               retry.disabled = true; toast.textContent = "Resubmitting the exact saved deposit…";
               try {
-                await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), deposit.signedSubmit!);
+                let exact = deposit.signedSubmit;
+                if (!exact) {
+                  const rebuilt = await wallet.signDeposit({
+                    from: deposit.demander, amountDeposited: deposit.amountDeposited,
+                    amountDemanded: deposit.amountDemanded, depositNonce: deposit.depositNonce,
+                    fee: deposit.fee, nonce: deposit.transactionNonce, chainPath: [...deposit.childChain],
+                  });
+                  if (!rebuilt.ok) throw new Error(rebuilt.error);
+                  if (rebuilt.signedSubmit.transactionCID !== deposit.transactionCID) {
+                    throw new Error("The reconstructed deposit does not match the saved transaction; nothing was submitted.");
+                  }
+                  exact = rebuilt.signedSubmit;
+                  await update((s) => ({ ...s, openDeposits: s.openDeposits.map((item) => item.transactionCID === deposit.transactionCID
+                    ? { ...item, signedSubmit: exact } : item) }));
+                }
+                await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), exact);
                 toast.textContent = "Exact deposit resubmitted.";
               } catch (e) {
                 if (isDefiniteSubmissionRefusal(e)) {
-                  await update((s) => forgetSent(completeOpenDeposit(s, deposit.transactionCID), childName, deposit.transactionCID));
-                  toast.textContent = `Deposit rejected: ${describe(e)}`; check.remove(); retry.remove();
+                  // A retry refusal does not prove that an earlier ambiguous
+                  // submission failed. Keep the claim key until state proves
+                  // the deposit spent or a receipt completes the sale.
+                  toast.textContent = `Retry rejected: ${describe(e)} The saved deposit was kept; check its state again.`;
+                  retry.disabled = false;
                 } else { toast.textContent = describe(e); retry.disabled = false; }
               }
             } }, "Resubmit exact deposit") as HTMLButtonElement;
@@ -747,7 +773,9 @@ function depositsScreen() {
           check.disabled = false;
           return;
         }
-        toast.textContent = "Deposit confirmed; checking verified receipt…";
+        toast.textContent = stateHasDeposit
+          ? "Deposit is active in verified state; checking its receipt…"
+          : "Deposit confirmed; checking verified receipt…";
         const withdrawer = await receiptWithdrawer(parentEndpoint.url, deposit.parentChain, deposit.childChain, {
           demander: deposit.demander,
           depositNonce: BigInt(deposit.depositNonce),
@@ -815,6 +843,62 @@ function purchaseScreen(purchase: OpenPurchase) {
     return;
   }
   if (purchase.withdrawalCID) {
+    const offerFeeReplacement = (message: string, auth: string | undefined) => {
+      const body = purchase.withdrawalSubmit?.payload.transaction.body;
+      if (!body) { toast.textContent = `${message} This older record cannot be replaced automatically.`; return; }
+      const oldCredit = body.accountActions.find((action) => action.owner === purchase.withdrawer)?.delta;
+      const oldFee = oldCredit === undefined ? 0n : totalReceive - BigInt(oldCredit);
+      const replacementFee = h("input", {
+        type: "text", inputmode: "numeric",
+        value: (oldFee + 1n > BigInt(defaultFee(settings, childName)) ? oldFee + 1n : BigInt(defaultFee(settings, childName))).toString(),
+      }) as HTMLInputElement;
+      const replace = h("button", { class: "btn block", onclick: async () => {
+        const fee = parseFee(replacementFee.value);
+        if (fee === null || fee <= oldFee) { toast.textContent = `Enter a fee above the previous ${oldFee}.`; return; }
+        if (fee >= totalReceive) { toast.textContent = "The child amount must exceed the replacement fee."; return; }
+        replace.disabled = true; replacementFee.disabled = true; toast.textContent = "Signing a same-nonce fee replacement…";
+        try {
+          const signed = await wallet.signWithdrawal({
+            from: purchase.withdrawer, offers: purchase.offers, fee: fee.toString(),
+            nonce: body.nonce.toString(), chainPath: purchase.childChain,
+          });
+          if (!signed.ok) throw new Error(signed.error);
+          const replacementCID = signed.signedSubmit.transactionCID;
+          try {
+            await update((s) => ({
+              ...recordSent(s, childName, {
+                cid: replacementCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
+                from: purchase.withdrawer, fee: fee.toString(), nonce: body.nonce.toString(), signedSubmit: signed.signedSubmit,
+              }),
+              openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
+                ? { ...item, withdrawalCID: replacementCID, withdrawalSubmit: signed.signedSubmit } : item),
+            }));
+          } catch {
+            toast.textContent = "Could not save the replacement; nothing was submitted.";
+            replace.disabled = false; replacementFee.disabled = false;
+            return;
+          }
+          try {
+            await submitChecked(submitter(childEndpoint.url, platform.fetch, auth), signed.signedSubmit);
+            toast.textContent = "Fee replacement submitted. Reopen this purchase to check confirmation.";
+            replacementFee.remove(); replace.remove();
+          } catch (e) {
+            if (isDefiniteSubmissionRefusal(e)) {
+              toast.textContent = `Replacement rejected: ${describe(e)} The latest signed attempt remains saved.`;
+              replace.disabled = false; replacementFee.disabled = false;
+            } else {
+              toast.textContent = "Replacement outcome unknown. The latest signed attempt remains saved; do not replace it again yet.";
+              replacementFee.remove(); replace.remove();
+            }
+          }
+        } catch (e) {
+          toast.textContent = e instanceof Error ? e.message : describe(e);
+          replace.disabled = false; replacementFee.disabled = false;
+        }
+      } }, "Replace with higher fee") as HTMLButtonElement;
+      toast.textContent = message;
+      toast.after(replacementFee, replace);
+    };
     void (async () => {
       try {
         const auth = await authorizationFor(childEndpoint.url);
@@ -829,7 +913,12 @@ function purchaseScreen(purchase: OpenPurchase) {
             try {
               await submitChecked(submitter(childEndpoint.url, platform.fetch, auth), purchase.withdrawalSubmit!);
               toast.textContent = "Exact withdrawal resubmitted.";
-            } catch (e) { toast.textContent = describe(e); retry.disabled = false; }
+            } catch (e) {
+              if (isDefiniteSubmissionRefusal(e)) {
+                retry.remove();
+                offerFeeReplacement(`Exact retry rejected: ${describe(e)}`, auth);
+              } else { toast.textContent = describe(e); retry.disabled = false; }
+            }
           } }, "Resubmit exact withdrawal") as HTMLButtonElement;
           toast.after(retry);
         }

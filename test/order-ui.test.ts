@@ -144,9 +144,27 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
     get: async () => stored,
     set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
   };
+  const savedDepositProof = () => {
+    const deposit = stored.settings.openDeposits[0];
+    if (!deposit) return undefined;
+    const key = `${deposit.demander}/${deposit.amountDemanded}/${deposit.depositNonce}`;
+    const trie = testTrie(new Map([[key, BigInt(deposit.amountDeposited)]]));
+    return { row: { key, demander: deposit.demander, amountDemanded: deposit.amountDemanded,
+      nonce: deposit.depositNonce, amountDeposited: deposit.amountDeposited },
+    proof: testProof("deposits", trie, [{ key, value: deposit.amountDeposited }]) };
+  };
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input);
-    if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], minRelayFee: "3", acceptsSubmit: true }));
+    if (url.pathname === "/api/chain/info") {
+      const saved = savedDepositProof();
+      return new Response(JSON.stringify({ chain: url.searchParams.get("chainPath")?.split("/") ?? ["Nexus", "testnet"],
+        minRelayFee: "3", acceptsSubmit: true, ...(saved ? { tipCID: saved.proof.blockHash } : {}) }));
+    }
+    if (url.pathname === "/api/deposits") {
+      const saved = savedDepositProof();
+      assert.ok(saved);
+      return new Response(JSON.stringify({ deposits: [saved.row], next: null, proof: saved.proof }));
+    }
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "7" }));
     if (url.pathname === "/api/block/latest") return new Response(JSON.stringify({ height: "8", hash: "bafytip", timestamp: "1", transactionCount: 0 }));
     if (url.pathname === "/api/block/bafytip/children") {
@@ -248,10 +266,20 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.equal(signCalls, 1);
   assert.equal(postCalls, 1);
   assert.equal(savedBeforePost?.openDeposits[0]?.transactionCID, "bafytx", "claim is durable before submit");
+  assert.deepEqual(savedBeforePost?.openDeposits[0]?.signedSubmit, signedSubmit, "exact signed deposit is durable before submit");
   assert.equal(savedBeforePost?.sent["Nexus/testnet"]?.[0]?.cid, "bafytx", "the exact attempt is status-trackable");
   assert.match(document.body.textContent ?? "", /Do not create this deposit again/i);
   assert.match(document.body.textContent ?? "", /bafytx/);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Lock funds & create order"), false);
+  button("Done").click();
+  await settle();
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Pending sales (1)").click();
+  button("Check payment").click();
+  await settle();
+  assert.equal(signCalls, 1, "a proof-backed active deposit is not reconstructed or resubmitted when transaction history is pruned");
+  assert.equal(stored.settings.openDeposits.length, 1, "a pruned transaction cannot discard a live deposit key");
+  button("Back").click();
   button("Done").click();
   await settle();
   (document.getElementById("net-badge") as HTMLButtonElement).click();
