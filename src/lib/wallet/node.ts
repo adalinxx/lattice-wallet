@@ -176,6 +176,7 @@ export async function activeDeposits(
   if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
   if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("child tip must match its parent-chain commitment");
   const result: ActiveDeposit[] = [];
+  const seen = new Set<string>();
   let after: string | undefined;
   for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
     const query = new URLSearchParams({ limit: "100" });
@@ -191,6 +192,8 @@ export async function activeDeposits(
       const amountDeposited = unsigned(row.amountDeposited, `deposits[${index}].amountDeposited`);
       if (row.key !== `${row.demander}/${amountDemanded}/${depositNonce}`) throw new TypeError(`deposits[${index}].key must match its fields`);
       if (claims.get(row.key) !== amountDeposited.toString()) throw new TypeError(`deposits[${index}] must have a valid state claim`);
+      if (seen.has(row.key)) throw new TypeError(`deposits response repeats ${row.key}`);
+      seen.add(row.key);
       result.push({ demander: row.demander, amountDemanded, depositNonce, amountDeposited });
     }
     if (body.next === null) return result;

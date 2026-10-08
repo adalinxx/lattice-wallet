@@ -22,6 +22,8 @@ export interface SentTransaction {
   from?: string;
   fee?: string;
   nonce?: string;
+  /** Exact signed bytes for safely resubmitting an uncertain attempt. */
+  signedSubmit?: SignedSubmit;
 }
 
 /** Claim-critical metadata for a deposit that has not yet been withdrawn.
@@ -82,7 +84,7 @@ export interface Settings {
   pendingDiscovery?: { chain: string; url: string; autoSelect: boolean };
   endpoints: Record<string, ChosenEndpoint>;
   sent: Record<string, SentTransaction[]>;
-  /** Never trim these. Remove one only after its withdrawal is confirmed. */
+  /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
   /** Never trim these. Remove one only after its child withdrawal confirms. */
   openPurchases: OpenPurchase[];
@@ -132,6 +134,10 @@ export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Set
     ...settings,
     openDeposits: [deposit, ...settings.openDeposits.filter((item) => item.transactionCID !== deposit.transactionCID)],
   };
+}
+
+export function completeOpenDeposit(settings: Settings, transactionCID: string): Settings {
+  return { ...settings, openDeposits: settings.openDeposits.filter((item) => item.transactionCID !== transactionCID) };
 }
 
 export function recordOpenPurchase(settings: Settings, purchase: OpenPurchase): Settings {

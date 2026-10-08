@@ -6,6 +6,8 @@ import { DEFAULT_SETTINGS, type Settings } from "../src/lib/wallet/settings.ts";
 import { cidV1DagCbor, encodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ensureOrigins } from "../src/popup/app.ts";
+import { activeDeposits } from "../src/lib/wallet/node.ts";
+import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 20; i++) await tick(); }
@@ -59,6 +61,19 @@ function testReceiptKey(directory: string, demander: string, amount: string, non
   return Buffer.from(sha256(new TextEncoder().encode(`lattice/receipt-state/v1\0${directory}/${demander}/${amount}/${nonce}`))).toString("hex");
 }
 
+test("deposit discovery rejects a proof-valid offer repeated by the listing", async () => {
+  const row = { key: "seller/50/42", demander: "seller", amountDemanded: "50", nonce: "42", amountDeposited: "300" };
+  const trie = testTrie(new Map([[row.key, 300n]]));
+  const proof = testProof("deposits", trie, [{ key: row.key, value: row.amountDeposited }]);
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], tipCID: proof.blockHash }));
+    if (url.pathname === "/api/deposits") return new Response(JSON.stringify({ deposits: [row, row], next: null, proof }));
+    return new Response("not found", { status: 404 });
+  };
+  await assert.rejects(activeDeposits("https://child.example", ["Nexus", "testnet"], fetch), /repeats seller\/50\/42/);
+});
+
 function orderURI(expiresAt: string): string {
   const intent = {
     version: 1, parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], asset: "LAT",
@@ -104,7 +119,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
     HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
   })) Object.defineProperty(globalThis, name, { configurable: true, value });
 
-  const address = "bafy" + "a".repeat(48);
+  const address = importPrivateKey("a1".repeat(32)).address;
   let signCalls = 0;
   const signedSubmit = {
     transactionCID: "bafytx", bodyCID: "bafybody",
@@ -200,7 +215,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   button("Send").click();
   await settle();
   assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a fee warning reveals its control");
-  (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = "bafybuyer";
+  (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = importPrivateKey("b0".repeat(32)).address;
   (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();

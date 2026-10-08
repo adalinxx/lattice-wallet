@@ -5,6 +5,7 @@ import type { WalletClient } from "../src/lib/wallet/client.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 import type { WalletState } from "../src/lib/wallet/types.ts";
 import { startWallet } from "../src/popup/app.ts";
+import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 24; i += 1) await tick(); }
@@ -35,8 +36,8 @@ function input(placeholder: string): HTMLInputElement {
   return found as HTMLInputElement;
 }
 
-const alice = "bafy" + "a".repeat(48);
-const bob = "bafy" + "b".repeat(48);
+const alice = importPrivateKey("a1".repeat(32)).address;
+const bob = importPrivateKey("b0".repeat(32)).address;
 const openState = (): WalletState => ({
   initialized: true, locked: false,
   accounts: [{ address: alice, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }],
@@ -64,6 +65,7 @@ const projection = (cid: string, fee: bigint) => ({
 function nodeFetch(options: {
   balance?: bigint; minimum?: bigint; pool?: Array<[string, bigint]>; poolCount?: number;
   acceptsSubmit?: boolean; failSpec?: boolean; failTransactions?: Set<string>;
+  failSubmit?: boolean;
   onSubmit?: () => void;
 } = {}) {
   const balance = options.balance ?? 100n;
@@ -87,6 +89,7 @@ function nodeFetch(options: {
     if (url.pathname === "/api/block/bafytip/children") return json({ children: [] });
     if (url.pathname === "/transactions" && init?.method === "POST") {
       options.onSubmit?.();
+      if (options.failSubmit) throw new TypeError("connection lost");
       return json({ transactionCID: "bafysent", mempoolCount: 1, mempoolBytes: 100 });
     }
     return json({ error: { message: "not found" } }, 404);
@@ -248,4 +251,32 @@ test("wallet UI e2e: partial estimates, custom-fee warnings, unavailable estimat
   button("Send").click();
   assert.match(document.body.textContent ?? "", /does not accept submits/);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Review"), false);
+});
+
+test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-signed", async () => {
+  installDOM();
+  let signCalls = 0;
+  const signedSubmit = { transactionCID: "bafyuncertain", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce: "3", chainPath: ["Nexus"],
+  } } } };
+  const wallet = walletFor(openState(), {
+    signTransfer: async (args) => { signCalls += 1; return { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; },
+  });
+  const store = memoryStore();
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch({ failSubmit: true }), requestOrigins: async () => true });
+  button("Send").click();
+  await settle();
+  input("recipient address (bafy…)").value = bob;
+  input("amount (units)").value = "10";
+  button("Review").click();
+  await settle();
+  button("Sign & send").click();
+  await settle();
+  assert.equal(signCalls, 1);
+  assert.equal(document.querySelector("h1")?.textContent, "Sent");
+  assert.match(document.body.textContent ?? "", /unknown to node/i);
+  assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, "bafyuncertain");
+  assert.deepEqual(store.value.settings.sent.Nexus?.[0]?.signedSubmit, signedSubmit);
+  assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Sign & send"), false);
 });

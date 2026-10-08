@@ -8,13 +8,14 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, estimateFeeMarket, confirmationEstimate, type ActiveDeposit, type FeeMarketEstimate, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, receiptWithdrawer, estimateFeeMarket, confirmationEstimate, type ActiveDeposit, type FeeMarketEstimate, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, recordOpenPurchase, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 import { scanner, scannerFileTexts } from "./scanner.ts";
+import { isAccountAddress } from "../lib/wallet/session.ts";
 
 export interface Platform {
   /** The signer: the extension's background worker, or the desktop app's in-page signer. */
@@ -695,11 +696,55 @@ function settingsScreen() {
     ...(settings.openPurchases.length
       ? [h("button", { class: "btn block", onclick: purchasesScreen }, `Pending purchases (${settings.openPurchases.length})`)]
       : []),
+    ...(settings.openDeposits.length
+      ? [h("button", { class: "btn block", onclick: depositsScreen }, `Pending sales (${settings.openDeposits.length})`)]
+      : []),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
     h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
     h("button", { class: "btn block", onclick: mainScreen }, "Done"),
   ));
+}
+
+function depositsScreen() {
+  const list = h("div", { class: "kv" });
+  for (const deposit of settings.openDeposits) {
+    const toast = h("span", { class: "muted" }, "Not checked");
+    const check = h("button", { class: "btn", onclick: async () => {
+      const parentName = deposit.parentChain.join("/");
+      const parentEndpoint = endpointFor(parentName);
+      if (!parentEndpoint) { toast.textContent = `Connect ${parentName} first.`; return; }
+      check.disabled = true;
+      toast.textContent = "Checking verified receipt…";
+      try {
+        const authorization = await authorizationFor(parentEndpoint.url);
+        const withdrawer = await receiptWithdrawer(parentEndpoint.url, deposit.parentChain, deposit.childChain, {
+          demander: deposit.demander,
+          depositNonce: BigInt(deposit.depositNonce),
+          amountDeposited: BigInt(deposit.amountDeposited),
+          amountDemanded: BigInt(deposit.amountDemanded),
+        }, platform.fetch, authorization);
+        if (withdrawer === null) {
+          toast.textContent = "Still available; no verified payment receipt yet.";
+          check.disabled = false;
+          return;
+        }
+        await update((s) => completeOpenDeposit(s, deposit.transactionCID));
+        toast.textContent = `Paid by ${short(withdrawer)}. Sale complete.`;
+        check.remove();
+      } catch (e) {
+        toast.textContent = describe(e);
+        check.disabled = false;
+      }
+    } }, "Check payment") as HTMLButtonElement;
+    list.append(h("div", { class: "stack compact" },
+      h("div", { class: "row" },
+        h("span", { class: "v" }, `${fmt(deposit.amountDeposited)} on ${deposit.childChain.join("/")}`),
+        h("span", { class: "muted" }, `for ${fmt(deposit.amountDemanded)} on ${deposit.parentChain.join("/")}`)),
+      h("div", { class: "row-actions" }, check, toast)));
+  }
+  render(h("div", { class: "stack" }, h("h1", {}, "Pending sales"), list,
+    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 
 function purchasesScreen() {
@@ -1188,7 +1233,7 @@ async function reviewSellOrder(order: SellOrder) {
     } catch {
       // Never return to a control that re-signs with a newly read account
       // nonce. Track this exact CID; resubmission must reuse its signed bytes.
-      sentScreen(cid, { uncertain: true, from: acct.address, nonce });
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" });
     }
   });
 }
@@ -1340,7 +1385,7 @@ async function sendFlow() {
   async function prepareReview() {
     err.textContent = "";
     const toAddr = to.value.trim();
-    if (!/^bafy[a-z2-7]+$/.test(toAddr)) { err.textContent = "Enter a valid recipient address."; return; }
+    if (!isAccountAddress(toAddr)) { err.textContent = "Enter a valid recipient address."; return; }
     if (toAddr === acct.address) { err.textContent = "That is this account."; return; }
     let amt: bigint, f: bigint;
     try { amt = BigInt(amount.value.trim()); if (amt <= 0n) throw 0; } catch { err.textContent = "Enter a whole, positive amount."; return; }
@@ -1391,36 +1436,39 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
   );
 
   async function confirm() {
+    const sendButton = [...document.querySelectorAll("button")].find((button) => button.textContent === "Sign & send") as HTMLButtonElement | undefined;
+    if (sendButton?.disabled) return;
+    if (sendButton) sendButton.disabled = true;
     toast.textContent = "signing…";
     const signed = await wallet.signTransfer({ from: acct.address, to, amount: amount.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: chainPath() });
-    if (!signed.ok) { toast.textContent = signed.error; return; }
+    if (!signed.ok) { toast.textContent = signed.error; if (sendButton) sendButton.disabled = false; return; }
     toast.textContent = "submitting…";
+    const cid = signed.signedSubmit.transactionCID;
+    const chain = settings.chain;
     try {
-      const cid = signed.signedSubmit.transactionCID;
-      const chain = settings.chain;
-      const record = () => update((s) => recordSent(s, chain, {
+      await update((s) => recordSent(s, chain, {
         cid, to, amount: amount.toString(), at: Date.now(),
-        from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
+        from: acct.address, fee: fee.toString(), nonce: nonce.toString(), signedSubmit: signed.signedSubmit,
       }));
-      try {
-        await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
-      } catch (e) {
-        // The node may hold it under the CID it reported: keep ours on record.
-        if (e instanceof CIDMismatchError) await record();
-        throw e;
-      }
-      await record();
+    } catch {
+      toast.textContent = "Could not save the signed transaction; nothing was submitted.";
+      if (sendButton) sendButton.disabled = false;
+      return;
+    }
+    try {
+      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
       sentScreen(cid);
     } catch (e) {
-      toast.textContent = describe(e) + (e instanceof CIDMismatchError ? " It may have been admitted: check Sent before resending." : "");
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce });
     }
   }
 }
 
-function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint }) {
+function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }) {
   const toast = h("div", { class: "toast" });
+  const subject = outcome?.kind === "deposit" ? "deposit" : "transaction";
   const status = h("p", { class: outcome ? "warn" : "muted" }, outcome
-    ? "Submission outcome unknown. Do not create this deposit again; checking this exact transaction…"
+    ? `Submission outcome unknown. Do not create this ${subject} again; checking this exact transaction…`
     : "Admitted to the node's pool (pending). See Sent for its block once mined.");
   render(
     h("div", { class: "stack" },
@@ -1436,8 +1484,8 @@ function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; no
   );
   if (outcome) {
     sentStatus(client(), txCID, { from: outcome.from, nonce: outcome.nonce })
-      .then((result) => { status.textContent = `Submission outcome: ${statusText(result)}. Do not create this deposit again.`; })
-      .catch((e) => { status.textContent = `${describe(e)} The signed deposit remains saved; do not create it again.`; });
+      .then((result) => { status.textContent = `Submission outcome: ${statusText(result)}. Do not create this ${subject} again.`; })
+      .catch((e) => { status.textContent = `${describe(e)} The signed ${subject} remains saved; do not create it again.`; });
   }
 }
 
@@ -1457,9 +1505,24 @@ async function historyScreen() {
   if (!sent.length) list.append(h("div", { class: "row" }, h("span", { class: "muted" }, "Nothing sent from this wallet yet.")));
   for (const t of sent) {
     const s = h("span", { class: "k" }, "…");
-    list.append(h("div", { class: "row" }, h("span", { class: "v mono" }, short(t.cid)), h("span", { class: "v" }, fmt(t.amount)), s));
+    const row = h("div", { class: "row" }, h("span", { class: "v mono" }, short(t.cid)), h("span", { class: "v" }, fmt(t.amount)), s);
+    list.append(row);
     const recorded = t.from && t.nonce ? { from: t.from, nonce: BigInt(t.nonce) } : undefined;
-    status(t.cid, recorded).then((text) => (s.textContent = text));
+    sentStatus(client(), t.cid, recorded).then((result) => {
+      s.textContent = statusText(result);
+      if (!t.signedSubmit || result.kind === "included" || result.kind === "replaced" || result.kind === "nonce spent") return;
+      const retry = h("button", { class: "btn", onclick: async () => {
+        retry.disabled = true;
+        try {
+          await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), t.signedSubmit!);
+          s.textContent = "Exact transaction resubmitted";
+        } catch (e) {
+          s.textContent = describe(e);
+          retry.disabled = false;
+        }
+      } }, "Resubmit exact") as HTMLButtonElement;
+      row.append(retry);
+    }).catch((e) => (s.textContent = describe(e)));
   }
 
   async function status(cid: string, recorded?: { from: string; nonce: bigint }): Promise<string> {

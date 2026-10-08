@@ -3,12 +3,22 @@
 // dependency-light and pure so it is unit-testable without the extension.
 
 import { deriveAccount, importPrivateKey, type Account } from "../crypto/accounts.ts";
-import { buildTransfer, signTransactionBody, signedTransactionCID, transactionPayload, type TransactionBody } from "@adalinxx/lattice-core";
+import { buildTransfer, parseCID, signTransactionBody, signedTransactionCID, transactionPayload, type TransactionBody } from "@adalinxx/lattice-core";
 import type { WalletData, AccountView, SignedSubmit } from "./types.ts";
 
 export interface LiveAccount extends Account {
   label: string;
   kind: "hd" | "imported";
+}
+
+/** Wallet addresses are canonical CIDv1 DAG-CBOR blocks hashed with SHA-256. */
+export function isAccountAddress(address: string): boolean {
+  try {
+    const parsed = parseCID(address);
+    return parsed.codec === 0x71 && parsed.multihashCode === 0x12 && parsed.digest.length === 32;
+  } catch {
+    return false;
+  }
 }
 
 /** Reconstruct every account (incl. private keys) from decrypted wallet data. */
@@ -45,6 +55,7 @@ export function signTransfer(
   acct: Account,
   args: { to: string; amount: bigint; fee: bigint; nonce: bigint; chainPath: string[] },
 ): SignedSubmit {
+  if (!isAccountAddress(args.to)) throw new Error("recipient must be a canonical Lattice account address");
   const body = buildTransfer({ from: acct.address, ...args });
   const { bodyCID, publicKey, signature } = signTransactionBody(body, acct.privateKey);
   const signatures = { [publicKey]: signature };

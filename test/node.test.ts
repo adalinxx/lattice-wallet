@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE } from "../src/lib/wallet/settings.ts";
 import { reader, submitter, submitChecked, CIDMismatchError, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof, estimateFeeMarket, confirmationEstimate } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
@@ -74,6 +74,8 @@ test("open deposits are self-contained, deduplicated and never trimmed with sent
   s = recordOpenDeposit(s, { ...deposit, createdAt: 2 });
   assert.equal(s.sent["Nexus/testnet"].length, 50);
   assert.deepEqual(s.openDeposits, [{ ...deposit, createdAt: 2 }]);
+  s = completeOpenDeposit(s, deposit.transactionCID);
+  assert.deepEqual(s.openDeposits, []);
 });
 
 test("fees: per-chain default, whole units, warned below the node's floor but never clamped", async () => {
