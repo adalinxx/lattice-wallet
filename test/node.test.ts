@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
-import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
+import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -76,7 +76,7 @@ test("open deposits are self-contained, deduplicated and never trimmed with sent
   for (let i = 0; i < 75; i++) s = recordSent(s, "Nexus/testnet", { cid: `send-${i}`, to: "t", amount: "1", at: i });
   s = recordOpenDeposit(s, { ...deposit, createdAt: 2 });
   assert.equal(s.sent["Nexus/testnet"].length, 50);
-  assert.deepEqual(s.openDeposits, [{ ...deposit, createdAt: 2 }]);
+  assert.deepEqual(s.openDeposits, [deposit], "a duplicate CID cannot overwrite its earlier recovery record");
   s = completeOpenDeposit(s, deposit.transactionCID);
   assert.deepEqual(s.openDeposits, []);
 });
@@ -107,6 +107,12 @@ test("withdrawal fee replacements retain every earlier transaction CID", () => {
   s = recordWithdrawalAttempt(s, "receipt", replacement);
   assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1", "withdraw-2"]);
   assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-2");
+  s = recordOpenPurchase(s, {
+    receiptCID: "receipt", receiptSubmit: receipt, withdrawer: "buyer", offers: [],
+    parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], createdAt: 2,
+  });
+  assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1", "withdraw-2"],
+    "retrying the same receipt cannot overwrite saved withdrawal attempts");
   s = forgetWithdrawalAttempt(s, "receipt", "withdraw-2");
   assert.deepEqual(s.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["withdraw-1"]);
   assert.equal(s.openPurchases[0]?.withdrawalCID, "withdraw-1");
@@ -180,6 +186,10 @@ test("submission posts the signer's payload to /transactions; refusals are typed
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(408)), false);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(500)), false);
   assert.equal(isDefiniteSubmissionRefusal(new TypeError("connection lost")), false);
+  assert.equal(shouldOfferFeeReplacement(new SubmissionError(400, "belowMinRelayFee")), true);
+  assert.equal(shouldOfferFeeReplacement(new SubmissionError(401)), false);
+  assert.equal(shouldOfferFeeReplacement(new SubmissionError(429, "rate limited")), false);
+  assert.equal(shouldOfferFeeReplacement(new SubmissionError(503, "shuttingDown")), false);
 });
 
 const projection = (extra: Record<string, unknown> = {}) => ({
@@ -224,6 +234,14 @@ test("status falls back to the nonce only for a node that does not report inclus
   assert.deepEqual(fallback, { kind: "nonce spent" });
   assert.match(statusText(fallback), /does not report inclusion/);
   await assert.rejects(sentStatus(client, "bafytx"), TypeError, "without a record there is nothing to fall back on");
+});
+
+test("a failed nonce lookup after transaction 404 remains unknown instead of blocking recovery", async () => {
+  const { fetch } = scripted((url) => {
+    if (url.pathname === "/api/state/account/bafyalice") return { status: 500, body: "unavailable" };
+  });
+  const client = reader("http://127.0.0.1:8080", ["Nexus"], fetch);
+  assert.deepEqual(await sentStatus(client, "bafymissing", { from: "bafyalice", nonce: 4n }), { kind: "unknown to node" });
 });
 
 const blockView = (hash: string, chain: string[]) => ({

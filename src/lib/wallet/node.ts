@@ -203,37 +203,6 @@ export async function activeDeposits(
   throw new TypeError("deposits response has too many pages");
 }
 
-/** Proof-verified values for specific deposit keys at a parent-committed tip.
- * The Lattice deposits route includes proof claims for scanned spent entries
- * even though it omits them from `deposits`; their consensus marker is 0.
- * Missing keys are unknown, never inferred absent from a discovery listing. */
-export async function depositValues(
-  url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
-  expectedTip?: string,
-): Promise<Map<string, bigint>> {
-  const wanted = new Set(keys);
-  const found = new Map<string, bigint>();
-  if (!wanted.size) return found;
-  const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
-  if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
-  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("deposit state must match the parent-committed child tip");
-  let after: string | undefined;
-  for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-    const query = new URLSearchParams({ limit: "100" });
-    if (after !== undefined) query.set("after", after);
-    const body = object(await nodeJSON(url, `/api/deposits?${query}`, chainPath, fetchImpl, authorization), "deposits response");
-    const claims = verifyStateProof(body.proof, "deposits", info.tipCID);
-    for (const key of wanted) {
-      const value = claims.get(key);
-      if (value !== undefined && value !== null) found.set(key, BigInt(value));
-    }
-    if (found.size === wanted.size || body.next === null) return found;
-    if (typeof body.next !== "string" || body.next === after) throw new TypeError("deposits response next must advance");
-    after = body.next;
-  }
-  throw new TypeError("deposits response has too many pages");
-}
-
 export async function receiptWithdrawer(
   url: string, parentChain: readonly string[], childChain: readonly string[], offer: ActiveDeposit,
   fetchImpl: Fetch = browserFetch, authorization?: string, expectedTip?: string,
@@ -308,6 +277,13 @@ export async function submitChecked(relay: TransactionSubmitter, signed: SignedS
  * can be generated after an upstream timeout, so its admission is uncertain. */
 export function isDefiniteSubmissionRefusal(error: unknown): boolean {
   return error instanceof SubmissionError && error.status >= 400 && error.status < 500 && error.status !== 408;
+}
+
+/** Only an explicit relay-floor refusal justifies offering a higher-fee
+ * replacement. Authentication, rate limits and availability need repair or
+ * a later exact retry, not a more expensive transaction. */
+export function shouldOfferFeeReplacement(error: unknown): boolean {
+  return error instanceof SubmissionError && error.reason === "belowMinRelayFee";
 }
 
 /** A refusal or failure, in words, keeping the node's own name for it. */
@@ -392,7 +368,11 @@ export async function sentStatus(
     nonce = tx.nonce;
   } catch (e) {
     if (e instanceof NodeError && e.status === 404) {
-      if (recorded !== undefined && (await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce spent" };
+      if (recorded !== undefined) {
+        try {
+          if ((await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce spent" };
+        } catch { /* A failed auxiliary read must not hide exact recovery. */ }
+      }
       return { kind: "unknown to node" };
     }
     if (!isWireMismatch(e) || recorded === undefined) throw e;
@@ -412,6 +392,3 @@ export async function sentStatus(
   // The mempool listing is bounded: absence from it is not proof of absence.
   return { kind: "pending or dropped" };
 }
-
-export const isFinalSentStatus = (status: SentStatus): boolean =>
-  status.kind === "included" || status.kind === "replaced" || status.kind === "nonce spent";

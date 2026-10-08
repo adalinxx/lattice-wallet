@@ -429,7 +429,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Back").click();
   (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
   await settle();
-  assert.equal(stored.settings.openPurchases.length, 0, "a proof of spent deposits completes and removes the purchase");
+  assert.equal(stored.settings.openPurchases.length, 1,
+    "a spent marker alone does not identify this buyer as the withdrawer, so recovery is retained");
 });
 
 test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {

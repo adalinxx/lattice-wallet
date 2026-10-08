@@ -103,7 +103,7 @@ export interface Settings {
   pendingSubmissions: PendingSubmission[];
   /** Never trim these. Remove one only after a verified parent receipt confirms the sale. */
   openDeposits: OpenDeposit[];
-  /** Never trim these. Remove only after a current child-state proof shows every claimed deposit spent. */
+  /** Never trim these. Remove only after verified state identifies this buyer's withdrawal, not merely a spent deposit. */
   openPurchases: OpenPurchase[];
   /** The fee a new send starts with, per chain (decimal string); editable on every send. */
   fees: Record<string, string>;
@@ -162,9 +162,10 @@ export function completePendingSubmission(settings: Settings, cid: string): Sett
 /** Save before submission: an ambiguous network failure may still mean the
  * node accepted the deposit. Deduplicate retries by the wallet-computed CID. */
 export function recordOpenDeposit(settings: Settings, deposit: OpenDeposit): Settings {
+  const existing = settings.openDeposits.find((item) => item.transactionCID === deposit.transactionCID);
   return {
     ...settings,
-    openDeposits: [deposit, ...settings.openDeposits.filter((item) => item.transactionCID !== deposit.transactionCID)],
+    openDeposits: [existing ?? deposit, ...settings.openDeposits.filter((item) => item.transactionCID !== deposit.transactionCID)],
   };
 }
 
@@ -173,9 +174,10 @@ export function completeOpenDeposit(settings: Settings, transactionCID: string):
 }
 
 export function recordOpenPurchase(settings: Settings, purchase: OpenPurchase): Settings {
+  const existing = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID);
   return {
     ...settings,
-    openPurchases: [purchase, ...settings.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID)],
+    openPurchases: [existing ?? purchase, ...settings.openPurchases.filter((item) => item.receiptCID !== purchase.receiptCID)],
   };
 }
 
