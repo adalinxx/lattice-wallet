@@ -2,7 +2,8 @@
 // keys, held only in worker memory) and the secret-free AccountView list. Kept
 // dependency-light and pure so it is unit-testable without the extension.
 
-import { deriveAccount, importPrivateKey, type Account } from "../crypto/accounts.ts";
+import { deriveAccountFromSeed, importPrivateKey, type Account } from "../crypto/accounts.ts";
+import { mnemonicToSeedSync } from "@scure/bip39";
 import { buildTransfer, parseCID, signTransactionBody, signedTransactionCID, transactionPayload, type TransactionBody } from "@adalinxx/lattice-core";
 import type { WalletData, AccountView, SignedSubmit } from "./types.ts";
 
@@ -23,11 +24,13 @@ export function isAccountAddress(address: string): boolean {
 
 /** Reconstruct every account (incl. private keys) from decrypted wallet data. */
 export function deriveAccounts(data: WalletData): LiveAccount[] {
+  if (data.hd.length + data.imported.length > 256) throw new Error("256-account limit reached");
   const out: LiveAccount[] = [];
   if (data.mnemonic) {
-    for (const { index, label } of data.hd) {
-      out.push({ ...deriveAccount(data.mnemonic, index), label, kind: "hd" });
-    }
+    const seed = mnemonicToSeedSync(data.mnemonic.trim());
+    try {
+      for (const { index, label } of data.hd) out.push({ ...deriveAccountFromSeed(seed, index), label, kind: "hd" });
+    } finally { seed.fill(0); }
   }
   data.imported.forEach(({ priv, label }, i) => {
     const acct = importPrivateKey(priv);
@@ -108,6 +111,8 @@ export function signReceipt(
   const int64Max = (1n << 63n) - 1n;
   if (!offers.length) throw new Error("at least one deposit is required");
   if (!directory || chainPath.length < 1) throw new Error("receipt requires a parent and child directory");
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(directory)) throw new Error("invalid child directory");
+  if (offers.some((offer) => !isAccountAddress(offer.demander))) throw new Error("invalid deposit demander address");
   if (fee < 0n) throw new Error("fee must not be negative");
   const demanded = offers.reduce((sum, offer) => sum + offer.amountDemanded, 0n);
   if (demanded + fee > int64Max) throw new Error("purchase plus fee is too large");

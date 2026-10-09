@@ -33,8 +33,8 @@ export function walletClient(send: Send) {
     exportSeedQR: (password: string, format: "standard" | "compact") =>
       call<{ svg: string }>({ type: "exportSeedQR", password, format }),
     /** Restore (no wallet yet), or merge into / replace the open wallet. */
-    importBackup: (backup: string, password: string, mode: "merge" | "replace") =>
-      call<WithState>({ type: "importBackup", backup, password, mode }),
+    importBackup: (backup: string, password: string, mode: "merge" | "replace", currentPassword?: string) =>
+      call<WithState>({ type: "importBackup", backup, password, mode, currentPassword }),
     /** Receiver: a one-time pairing offer (CBOR hex for `ur:lattice-pair`). */
     transferOffer: () => call<{ offer: string; expires: number }>({ type: "transferOffer" }),
     /** Sender: the backup sealed to a scanned offer (CBOR hex for `ur:lattice-transfer`) and the code to compare. */

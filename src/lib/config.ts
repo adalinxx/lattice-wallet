@@ -40,6 +40,7 @@ export function normalizeNodeURL(text: string): string | null {
   }
   // The CSP's connect-src names these three loopback hosts and no others.
   const { protocol, hostname } = new URL(url);
+  if (new URL(url).search || new URL(url).hash) return null;
   return protocol === "https:" || CSP_LOOPBACK.has(hostname) ? url : null;
 }
 
