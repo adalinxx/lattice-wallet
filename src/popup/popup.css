@@ -62,6 +62,30 @@ label.k { display: block; margin-bottom: var(--s-1); }
   place-items: center; padding: 0;
 }
 .action-icon { display: block; width: 16px; height: 16px; }
+.transaction-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--s-2); }
+.transaction-heading h1 { margin: 0; }
+.transaction-list { border: var(--rule); }
+.transaction-item + .transaction-item { border-top: var(--rule); }
+.transaction-item > summary { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3); cursor: pointer; list-style: none; }
+.transaction-item > summary::-webkit-details-marker { display: none; }
+.transaction-item > summary::after { content: "+"; flex: 0 0 auto; }
+.transaction-item[open] > summary::after { content: "−"; }
+.transaction-item > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.transaction-summary { flex: 1; min-width: 0; }
+.transaction-line { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-2); }
+.transaction-line + .transaction-line { margin-top: var(--s-1); }
+.transaction-title { font-size: var(--fs-14); }
+.transaction-amount { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; min-width: 0; text-align: right; }
+.transaction-context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transaction-status { text-align: right; max-width: 60%; overflow-wrap: anywhere; }
+.transaction-details { padding: 0 var(--s-3) var(--s-3); font-size: var(--fs-12); }
+.transaction-field { display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.transaction-details .toast:empty { display: none; }
+.transaction-details .row-actions { flex-wrap: wrap; align-items: center; }
+.transaction-details .row-actions .icon-action { flex: 0 0 32px; }
+.transaction-payload { margin: 0; padding: var(--s-3); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-12); max-height: 260px; overflow: auto; }
+.transaction-empty { border: var(--rule); padding: var(--s-4) var(--s-3); }
+.transaction-heading ~ .toast:empty { display: none; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
 .account-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }

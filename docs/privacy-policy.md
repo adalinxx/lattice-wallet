@@ -16,7 +16,7 @@ The wallet connects to nodes you select and to services used for chain discovery
 
 An authentication cookie is sent only to the node it belongs to when required for authorized requests. Recovery phrases, private keys, and the wallet password are not sent to nodes. Node operators have their own privacy practices.
 
-Network permission is requested for selected origins. The three known hosted Lattice origins can be approved together. Other discovered operators must be selected explicitly as custom nodes. Previous unrestricted HTTPS grants are revoked on upgrade. Connection settings provide “Remove unused node permissions”; saved nodes and hosted discovery origins remain granted. Grants can also be managed through Chrome's extension settings; removing the extension revokes them.
+The wallet declares required network access to exactly rpc.lattice.build, lattice-mainnet-read.fly.dev and lattice-mainnet-testnet.fly.dev over HTTPS. Connecting to these hosted nodes does not require a runtime permission prompt; Chrome may show permissions during installation or upgrade. Other operators require explicit custom-node selection and optional network permission. Previous unrestricted HTTPS grants are revoked on upgrade. Connection settings provide “Remove unused node permissions” for unused optional grants; saved nodes and required hosted origins are retained. Access can also be managed through Chrome's extension settings; removing the extension revokes it. Allowlisting network access does not authenticate an operator's chain data or remove purchase trust acknowledgement.
 
 ## Camera, clipboard, and backups
 

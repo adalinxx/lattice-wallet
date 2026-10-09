@@ -1,5 +1,5 @@
-// Chain paths and node URLs. The wallet ships NO node URL: the user supplies
-// their own node, or picks an endpoint discovered from a node they chose.
+// Chain paths and node URLs. Hosted defaults are replaceable; custom operators
+// require an explicit permission grant.
 
 import { normalizeNodeURL as sdkNormalizeNodeURL } from "@adalinxx/lattice-client";
 
@@ -13,6 +13,14 @@ export const LATTICE_TESTNET_RPC = "https://lattice-mainnet-testnet.fly.dev";
 /** Nexus read service used by the explorer and as the default bootstrap for
  * child-chain endpoint discovery. It is never used to submit transactions. */
 export const LATTICE_EXPLORER_RPC = "https://lattice-mainnet-read.fly.dev";
+
+/** Must match the manifest's exact required host permissions. No wildcard
+ * subdomains: a newly discovered operator still needs explicit permission. */
+export const HOSTED_NODE_ORIGINS = [
+  "https://rpc.lattice.build/*",
+  "https://lattice-mainnet-read.fly.dev/*",
+  "https://lattice-mainnet-testnet.fly.dev/*",
+] as const;
 
 /** "Nexus/Alpha" -> ["Nexus","Alpha"]; null unless Nexus-rooted with plain names. */
 export function parseChainPath(text: string): string[] | null {
