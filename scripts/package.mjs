@@ -1,0 +1,21 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync, existsSync, cpSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+
+execFileSync(process.execPath, ["build.mjs"], { stdio: "inherit" });
+const manifest = JSON.parse(readFileSync("dist/manifest.json", "utf8"));
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+if (manifest.version !== pkg.version || manifest.name !== "Lattice Wallet" || manifest.manifest_version !== 3) throw new Error("Release metadata mismatch");
+const references = [manifest.action.default_popup, manifest.background.service_worker, ...Object.values(manifest.icons), ...Object.values(manifest.action.default_icon)];
+for (const file of references) if (!existsSync(`dist/${file}`)) throw new Error(`Missing manifest asset: ${file}`);
+for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) if (existsSync(file)) cpSync(file, `dist/${file}`);
+mkdirSync("release", { recursive: true });
+const zip = resolve(`release/lattice-wallet-${manifest.version}.zip`);
+if (existsSync(zip)) unlinkSync(zip);
+execFileSync("zip", ["-X", "-qr", zip, "."], { cwd: "dist" });
+const entries = execFileSync("unzip", ["-Z1", zip], { encoding: "utf8" }).split("\n");
+if (!entries.includes("manifest.json") || entries.some((p) => p.endsWith(".map") || p.includes("node_modules/"))) throw new Error("Invalid release contents");
+const digest = createHash("sha256").update(readFileSync(zip)).digest("hex");
+writeFileSync(`${zip}.sha256`, `${digest}  lattice-wallet-${manifest.version}.zip\n`);
+console.log(`${zip}\nSHA-256 ${digest}`);

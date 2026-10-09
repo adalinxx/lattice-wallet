@@ -1,5 +1,7 @@
 # Lattice Wallet
 
+Release materials: [release procedure](docs/release.md), [privacy policy](docs/privacy-policy.md), [store listing](docs/store-listing.md), and [verification evidence](docs/release-verification.md). Report vulnerabilities through [SECURITY.md](SECURITY.md).
+
 A **non-custodial** wallet for the [Lattice](https://github.com/adalinxx)
 network, including its **Nexus** root chain and child chains, built as
 a **Manifest V3 browser extension**. Keys are generated and used **entirely on
