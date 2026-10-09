@@ -6,6 +6,8 @@ import { DEFAULT_SETTINGS, type Settings } from "../src/lib/wallet/settings.ts";
 import { cidV1DagCbor, encodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ensureOrigins } from "../src/popup/app.ts";
+import { activeDeposits, depositValues } from "../src/lib/wallet/node.ts";
+import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 20; i++) await tick(); }
@@ -44,13 +46,13 @@ function testTrie(values: ReadonlyMap<string, bigint | string>) {
   return { rootCID, entries: [...entries].map(([cid, bytes]) => ({ cid, bytes: b64(bytes) })) };
 }
 
-function testProof(dictionary: "deposits" | "receipts", trie: ReturnType<typeof testTrie>, claims: Array<{ key: string; value: string | null }>) {
+function testProof(dictionary: "deposits" | "receipts", trie: ReturnType<typeof testTrie>, claims: Array<{ key: string; value: string | null }>, height = 1n) {
   const rootCID = trie.rootCID;
   const stateBytes = encodeDagCbor({ accountState: { rawCID: rootCID }, generalState: { rawCID: rootCID }, depositState: { rawCID: rootCID }, receiptState: { rawCID: rootCID } });
   const postStateCID = cidV1DagCbor(stateBytes);
-  const blockBytes = encodeDagCbor({ height: 1n, postState: { rawCID: postStateCID } });
+  const blockBytes = encodeDagCbor({ height, postState: { rawCID: postStateCID } });
   const blockCID = cidV1DagCbor(blockBytes);
-  return { blockHash: blockCID, blockHeight: "1", block: { cid: blockCID, data: b64(blockBytes) }, stateRoot: postStateCID,
+  return { blockHash: blockCID, blockHeight: height.toString(), block: { cid: blockCID, data: b64(blockBytes) }, stateRoot: postStateCID,
     dictionary, dictionaryRoot: rootCID, claims,
     witness: [...trie.entries.map(({ cid, bytes }) => ({ cid, data: bytes })), { cid: postStateCID, data: b64(stateBytes) }] };
 }
@@ -58,6 +60,41 @@ function testProof(dictionary: "deposits" | "receipts", trie: ReturnType<typeof 
 function testReceiptKey(directory: string, demander: string, amount: string, nonce: string) {
   return Buffer.from(sha256(new TextEncoder().encode(`lattice/receipt-state/v1\0${directory}/${demander}/${amount}/${nonce}`))).toString("hex");
 }
+
+test("deposit discovery rejects a proof-valid offer repeated by the listing", async () => {
+  const row = { key: "seller/50/42", demander: "seller", amountDemanded: "50", nonce: "42", amountDeposited: "300" };
+  const trie = testTrie(new Map([[row.key, 300n]]));
+  const proof = testProof("deposits", trie, [{ key: row.key, value: row.amountDeposited }]);
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], tipCID: proof.blockHash }));
+    if (url.pathname === "/api/deposits") return new Response(JSON.stringify({ deposits: [row, row], next: null, proof }));
+    return new Response("not found", { status: 404 });
+  };
+  await assert.rejects(activeDeposits("https://child.example", ["Nexus", "testnet"], fetch), /repeats seller\/50\/42/);
+});
+
+test("targeted deposit state verifies requested keys without scanning discovery pages", async () => {
+  const key = "seller/50/42";
+  const missing = "seller/50/43";
+  const trie = testTrie(new Map([[key, 0n]]));
+  const proof = testProof("deposits", trie, [{ key, value: "0" }, { key: missing, value: null }]);
+  let targeted = 0, listings = 0;
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === "/api/deposit-state") {
+      targeted += 1;
+      const requested = url.searchParams.get("key")!;
+      return new Response(JSON.stringify({ key: requested, value: requested === key ? "0" : null, proof }));
+    }
+    if (url.pathname === "/api/deposits") listings += 1;
+    return new Response("not found", { status: 404 });
+  };
+  assert.deepEqual(await depositValues("https://child.example", ["Nexus", "testnet"], [key, missing], fetch, undefined, proof.blockHash),
+    new Map([[key, 0n], [missing, null]]));
+  assert.equal(targeted, 2);
+  assert.equal(listings, 0);
+});
 
 function orderURI(expiresAt: string): string {
   const intent = {
@@ -104,7 +141,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
     HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
   })) Object.defineProperty(globalThis, name, { configurable: true, value });
 
-  const address = "bafy" + "a".repeat(48);
+  const address = importPrivateKey("a1".repeat(32)).address;
   let signCalls = 0;
   const signedSubmit = {
     transactionCID: "bafytx", bodyCID: "bafybody",
@@ -129,9 +166,27 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
     get: async () => stored,
     set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
   };
+  const savedDepositProof = () => {
+    const deposit = stored.settings.openDeposits[0];
+    if (!deposit) return undefined;
+    const key = `${deposit.demander}/${deposit.amountDemanded}/${deposit.depositNonce}`;
+    const trie = testTrie(new Map([[key, BigInt(deposit.amountDeposited)]]));
+    return { row: { key, demander: deposit.demander, amountDemanded: deposit.amountDemanded,
+      nonce: deposit.depositNonce, amountDeposited: deposit.amountDeposited },
+    proof: testProof("deposits", trie, [{ key, value: deposit.amountDeposited }]) };
+  };
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input);
-    if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], minRelayFee: "3", acceptsSubmit: true }));
+    if (url.pathname === "/api/chain/info") {
+      const saved = savedDepositProof();
+      return new Response(JSON.stringify({ chain: url.searchParams.get("chainPath")?.split("/") ?? ["Nexus", "testnet"],
+        minRelayFee: "3", acceptsSubmit: true, ...(saved ? { tipCID: saved.proof.blockHash } : {}) }));
+    }
+    if (url.pathname === "/api/deposits") {
+      const saved = savedDepositProof();
+      assert.ok(saved);
+      return new Response(JSON.stringify({ deposits: [saved.row], next: null, proof: saved.proof }));
+    }
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "7" }));
     if (url.pathname === "/api/block/latest") return new Response(JSON.stringify({ height: "8", hash: "bafytip", timestamp: "1", transactionCount: 0 }));
     if (url.pathname === "/api/block/bafytip/children") {
@@ -179,7 +234,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
   const earlyMenu = document.querySelector(".chain-menu") as HTMLElement;
-  assert.match(earlyMenu.textContent ?? "", /payments.*Open/);
+  assert.match(earlyMenu.textContent ?? "", /payments.*›/);
   assert.match(earlyMenu.querySelector(".chain-path")?.textContent ?? "", /^Nexus\/testnet$/);
   assert.doesNotMatch(earlyMenu.textContent ?? "", /Parent|Current/);
   (document.getElementById("net-badge") as HTMLButtonElement).click();
@@ -199,8 +254,9 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   button("Send").click();
   await settle();
-  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a fee warning reveals its control");
-  (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = "bafybuyer";
+  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "1", "an asynchronous node response never overwrites the user's fee field");
+  assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a below-floor fee opens the warning without clamping the value");
+  (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = importPrivateKey("b0".repeat(32)).address;
   (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
@@ -232,10 +288,22 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.equal(signCalls, 1);
   assert.equal(postCalls, 1);
   assert.equal(savedBeforePost?.openDeposits[0]?.transactionCID, "bafytx", "claim is durable before submit");
+  assert.deepEqual(savedBeforePost?.openDeposits[0]?.signedSubmit, signedSubmit, "exact signed deposit is durable before submit");
   assert.equal(savedBeforePost?.sent["Nexus/testnet"]?.[0]?.cid, "bafytx", "the exact attempt is status-trackable");
   assert.match(document.body.textContent ?? "", /Do not create this deposit again/i);
   assert.match(document.body.textContent ?? "", /bafytx/);
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Lock funds & create order"), false);
+  button("Done").click();
+  await settle();
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Pending sales (1)").click();
+  button("Check payment").click();
+  await settle();
+  assert.equal(signCalls, 1, "a proof-backed active deposit is not reconstructed or resubmitted when transaction history is pruned");
+  assert.equal(stored.settings.openDeposits.length, 1, "a pruned transaction cannot discard a live deposit key");
+  button("Resubmit exact deposit");
+  assert.equal(stored.settings.openDeposits.length, 1, "exact transaction recovery does not depend on a discovery listing");
+  button("Back").click();
   button("Done").click();
   await settle();
   (document.getElementById("net-badge") as HTMLButtonElement).click();
@@ -256,6 +324,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
 test("a market buy discovers deposits, pays the parent receipt, and withdraws on the child", async () => {
   const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => true });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -272,7 +341,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       signers: [address], nonce: "1", chainPath,
     } } },
   });
-  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, receiptMined = false;
+  let receiptSigns = 0, withdrawalSigns = 0, posts = 0, depositReads = 0, receiptMined = false, withdrawalMined = false;
+  let parentTipHeight = 1n, parentLatestReads = 0;
   let signedOffers: Array<{ demander: string }> = [];
   const depositRows = [
     { demander: expensiveSeller, amountDemanded: "100", nonce: "43", amountDeposited: "100" },
@@ -281,13 +351,15 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   ].map((row) => ({ ...row, key: `${row.demander}/${row.amountDemanded}/${row.nonce}` }));
   const depositTrie = testTrie(new Map(depositRows.map((row) => [row.key, BigInt(row.amountDeposited)])));
   const depositProof = testProof("deposits", depositTrie, depositRows.map((row) => ({ key: row.key, value: row.amountDeposited })));
-  const receiptState = () => {
+  const spentDepositTrie = testTrie(new Map(depositRows.map((row) => [row.key, 0n])));
+  const spentDepositProof = testProof("deposits", spentDepositTrie, depositRows.map((row) => ({ key: row.key, value: "0" })));
+  const receiptState = (height = parentTipHeight) => {
     const rows = depositRows.filter((row) => receiptMined || row.demander === claimedSeller);
     const values = new Map(rows.map((row) => [testReceiptKey("testnet", row.demander, row.amountDemanded, row.nonce), address]));
     const trie = testTrie(values);
     return { trie, proof: testProof("receipts", trie, rows.map((row) => ({
       key: testReceiptKey("testnet", row.demander, row.amountDemanded, row.nonce), value: address,
-    }))) };
+    })), height) };
   };
   const wallet = {
     getState: async () => ({ ok: true, state: {
@@ -311,32 +383,43 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   const store = { get: async () => stored, set: async (items: Record<string, unknown>) => { stored = items as typeof stored; } };
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input);
-    if (url.pathname === "/api/deposits") return new Response(JSON.stringify({
-      deposits: depositRows, next: null, proof: depositProof,
-    }));
+    if (url.pathname === "/api/deposits") {
+      depositReads += 1;
+      return new Response(JSON.stringify(withdrawalMined
+        ? { deposits: [], next: null, proof: spentDepositProof }
+        : { deposits: depositRows, next: null, proof: depositProof }));
+    }
     if (url.pathname === "/api/receipt-state") {
       const claimed = url.searchParams.get("demander") === claimedSeller;
       const state = receiptState();
       const key = testReceiptKey("testnet", url.searchParams.get("demander")!, url.searchParams.get("amount")!, url.searchParams.get("nonce")!);
       const exists = receiptMined || claimed;
-      const proof = exists ? state.proof : testProof("receipts", state.trie, [...state.proof.claims, { key, value: null }]);
+      const proof = exists ? state.proof : testProof("receipts", state.trie, [...state.proof.claims, { key, value: null }], parentTipHeight);
       return new Response(JSON.stringify({ exists, withdrawer: exists ? address : null, key, proof }));
     }
     if (url.pathname === "/api/chain/info") {
       const parent = url.hostname === "parent.example";
       return new Response(JSON.stringify({ chain: url.searchParams.get("chainPath")?.split("/"), minRelayFee: "1", acceptsSubmit: true,
-        tipCID: parent ? receiptState().proof.blockHash : depositProof.blockHash, height: "1" }));
+        tipCID: parent ? receiptState().proof.blockHash : (withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash), height: "1" }));
     }
     if (url.pathname === "/api/block/latest" && url.hostname === "parent.example") {
-      return new Response(JSON.stringify({ height: "1", hash: receiptState().proof.blockHash, timestamp: "1", transactionCount: 0 }));
+      const state = receiptState();
+      const response = new Response(JSON.stringify({ height: parentTipHeight.toString(), hash: state.proof.blockHash, timestamp: "1", transactionCount: 0 }));
+      parentLatestReads += 1;
+      if (parentLatestReads === 1) parentTipHeight = 2n;
+      return response;
     }
     if (url.pathname.startsWith("/api/block/") && url.pathname.endsWith("/children") && url.hostname === "parent.example") {
-      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: depositProof.blockHash }] }));
+      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash }] }));
     }
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "1" }));
     if (url.pathname === "/transactions" && init?.method === "POST") {
       posts += 1;
-      if (posts === 1) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
+      if (posts === 1) return new Response(JSON.stringify({ error: { message: "belowMinRelayFee" } }), { status: 400 });
+      if (posts === 2) throw new TypeError("connection dropped after submit");
+      if (posts === 3) return new Response(JSON.stringify({ error: { message: "duplicate" } }), { status: 400 });
+      if (posts === 4) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
+      withdrawalMined = true;
       return new Response(JSON.stringify({ transactionCID: "bafywithdraw" }));
     }
     return new Response("not found", { status: 404 });
@@ -360,17 +443,59 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.ok(document.querySelector("h1"), document.body.textContent ?? "");
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Review purchase", document.body.textContent ?? "");
+  assert.ok(depositReads > 0, "buy discovery reads the proof-bearing deposits endpoint");
+  assert.ok(parentLatestReads >= 4, "a proof failure caused by a moving parent tip is retried inside one stable-tip read");
   button("Pay & reserve tokens").click();
   await settle();
   assert.equal(receiptSigns, 1);
   assert.deepEqual(signedOffers.map((offer) => offer.demander), [seller, expensiveSeller], "unclaimed offers are signed from best to worst price");
   assert.equal(stored.settings.openPurchases.length, 1);
   assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
+  assert.match(document.body.textContent ?? "", /Receipt refused:.*belowMinRelayFee.*Nothing was paid.*dismiss this record/i,
+    "a definite receipt refusal remains visible after navigation");
+  assert.equal(receiptMined, false);
+  button("Dismiss saved recovery").click();
+  await settle();
+  assert.equal(stored.settings.openPurchases.length, 0, "an irreversible purchase record is deleted only by explicit dismissal");
+  button("Back").click();
+  button("Open cross-chain order").click();
+  const retryPaste = document.querySelector("textarea") as HTMLTextAreaElement;
+  retryPaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
+  button("Use pasted text").click();
+  await settle();
+  button("Pay & reserve tokens").click();
+  await settle();
+  assert.equal(receiptSigns, 2);
+  assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
+  assert.equal(stored.settings.openPurchases.length, 1, "an ambiguous first attempt remains recoverable");
+  button("Back").click();
+  button("Back").click();
+  button("Open cross-chain order").click();
+  const duplicatePaste = document.querySelector("textarea") as HTMLTextAreaElement;
+  duplicatePaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
+  button("Use pasted text").click();
+  await settle();
+  button("Pay & reserve tokens").click();
+  await settle();
+  assert.equal(receiptSigns, 3);
+  assert.match(document.body.textContent ?? "", /Retry rejected:.*duplicate.*earlier attempt may still confirm.*keep this record/i);
+  assert.doesNotMatch(document.body.textContent ?? "", /Nothing was paid/);
+  assert.equal(stored.settings.openPurchases.length, 1, "a refused duplicate cannot erase the ambiguous first attempt");
+  button("Check & withdraw tokens").click();
+  await settle();
+  assert.match(document.body.textContent ?? "", /exact saved transaction was resubmitted/i);
+  assert.equal(receiptMined, true);
   button("Check & withdraw tokens").click();
   await settle();
   assert.equal(withdrawalSigns, 1);
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
-  assert.equal(posts, 2);
+  assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
+  assert.equal(posts, 5);
+  button("Back").click();
+  (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
+  await settle();
+  assert.equal(stored.settings.openPurchases.length, 1,
+    "a spent marker alone does not identify this buyer as the withdrawer, so recovery is retained");
 });
 
 test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {

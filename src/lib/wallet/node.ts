@@ -37,6 +37,17 @@ export interface ActiveDeposit {
   amountDeposited: bigint;
 }
 
+export class ChildTipMismatchError extends TypeError {
+  readonly expectedTip: string;
+  readonly actualTip: string;
+  constructor(expectedTip: string, actualTip: string) {
+    super("child tip must match its parent-chain commitment");
+    this.name = "ChildTipMismatchError";
+    this.expectedTip = expectedTip;
+    this.actualTip = actualTip;
+  }
+}
+
 function unsigned(value: unknown, name: string, hexadecimal = false): bigint {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value !== "string" || !(hexadecimal ? /^[0-9a-f]+$/i : /^(0|[1-9][0-9]*)$/).test(value)) {
@@ -174,8 +185,9 @@ export async function activeDeposits(
 ): Promise<ActiveDeposit[]> {
   const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
   if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
-  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("child tip must match its parent-chain commitment");
+  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new ChildTipMismatchError(expectedTip, info.tipCID);
   const result: ActiveDeposit[] = [];
+  const seen = new Set<string>();
   let after: string | undefined;
   for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
     const query = new URLSearchParams({ limit: "100" });
@@ -191,6 +203,8 @@ export async function activeDeposits(
       const amountDeposited = unsigned(row.amountDeposited, `deposits[${index}].amountDeposited`);
       if (row.key !== `${row.demander}/${amountDemanded}/${depositNonce}`) throw new TypeError(`deposits[${index}].key must match its fields`);
       if (claims.get(row.key) !== amountDeposited.toString()) throw new TypeError(`deposits[${index}] must have a valid state claim`);
+      if (seen.has(row.key)) throw new TypeError(`deposits response repeats ${row.key}`);
+      seen.add(row.key);
       result.push({ demander: row.demander, amountDemanded, depositNonce, amountDeposited });
     }
     if (body.next === null) return result;
@@ -200,13 +214,40 @@ export async function activeDeposits(
   throw new TypeError("deposits response has too many pages");
 }
 
+/** Read exact deposit keys without scanning discovery pages. Nodes that do
+ * not implement the targeted route simply cannot trigger automatic cleanup. */
+export async function depositValues(
+  url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+  expectedTip?: string,
+): Promise<Map<string, bigint | null>> {
+  let tipCID = expectedTip;
+  if (tipCID === undefined) {
+    const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
+    if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+    tipCID = info.tipCID;
+  }
+  const values = new Map<string, bigint | null>();
+  await Promise.all([...new Set(keys)].map(async (key) => {
+    const query = new URLSearchParams({ key });
+    const body = object(await nodeJSON(url, `/api/deposit-state?${query}`, chainPath, fetchImpl, authorization), "deposit state response");
+    if (body.key !== key || (typeof body.value !== "string" && body.value !== null)) throw new TypeError("deposit state response must match its requested key");
+    const claims = verifyStateProof(body.proof, "deposits", tipCID);
+    if (claims.get(key) !== body.value) throw new TypeError("deposit state response must have a valid state claim");
+    values.set(key, typeof body.value === "string" ? unsigned(body.value, "deposit value") : null);
+  }));
+  return values;
+}
+
 export async function receiptWithdrawer(
   url: string, parentChain: readonly string[], childChain: readonly string[], offer: ActiveDeposit,
   fetchImpl: Fetch = browserFetch, authorization?: string, expectedTip?: string,
 ): Promise<string | null> {
-  const info = await reader(url, [...parentChain], fetchImpl, authorization).chainInfo();
-  if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
-  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("receipt state must match the current parent tip");
+  let tipCID = expectedTip;
+  if (tipCID === undefined) {
+    const info = await reader(url, [...parentChain], fetchImpl, authorization).chainInfo();
+    if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+    tipCID = info.tipCID;
+  }
   const path = new URL("/api/receipt-state", `${url}/`);
   path.searchParams.set("demander", offer.demander);
   path.searchParams.set("amount", offer.amountDemanded.toString());
@@ -215,7 +256,7 @@ export async function receiptWithdrawer(
   const response = await fetchImpl(path, { headers: authorization ? { authorization } : undefined });
   if (!response.ok) throw new NodeError(response.status, await response.text());
   const value = object(await response.json(), "receipt response");
-  const claims = verifyStateProof(value.proof, "receipts", info.tipCID);
+  const claims = verifyStateProof(value.proof, "receipts", tipCID);
   const proof = object(value.proof, "receipt proof");
   const directory = childChain.at(-1);
   if (directory === undefined || typeof proof.dictionaryRoot !== "string") throw new TypeError("receipt proof must match the anchored state");
@@ -270,6 +311,24 @@ export async function submitChecked(relay: TransactionSubmitter, signed: SignedS
   return signed.transactionCID;
 }
 
+/** A 4xx response means the node explicitly refused the transaction. A 408
+ * can be generated after an upstream timeout, so its admission is uncertain. */
+export function isDefiniteSubmissionRefusal(error: unknown): boolean {
+  return error instanceof SubmissionError && error.status >= 400 && error.status < 500 && error.status !== 408;
+}
+
+/** Only an explicit fee-floor refusal justifies offering a higher-fee
+ * replacement. Authentication, rate limits and availability need repair or
+ * a later exact retry, not a more expensive transaction. */
+export function shouldOfferFeeReplacement(error: unknown): boolean {
+  return error instanceof SubmissionError && (error.reason === "belowMinRelayFee" || error.reason === "feeTooLow");
+}
+
+export function isTransientSubmissionRefusal(error: unknown): boolean {
+  return error instanceof SubmissionError && (error.status === 401 || error.status === 403 || error.status === 429
+    || error.reason === "full" || error.reason === "shuttingDown");
+}
+
 /** A refusal or failure, in words, keeping the node's own name for it. */
 export function describe(e: unknown): string {
   if (e instanceof CIDMismatchError) return "unexpected answer from node: " + e.message;
@@ -314,7 +373,7 @@ export function feeWarning(fee: bigint, minRelayFee: bigint | undefined): string
 export type SentStatus =
   | { kind: "included"; height: bigint; hash: string }
   | { kind: "pending" }
-  | { kind: "nonce spent" }
+  | { kind: "nonce advanced" }
   | { kind: "replaced" }
   | { kind: "pending or dropped" }
   | { kind: "unknown to node" };
@@ -323,7 +382,7 @@ export function statusText(s: SentStatus): string {
   switch (s.kind) {
     case "included": return `included in block ${s.height}`;
     case "pending": return "pending";
-    case "nonce spent": return "nonce spent (this node does not report inclusion)";
+    case "nonce advanced": return "unknown; the account nonce has advanced";
     case "replaced": return "not included; its nonce was spent by another transaction";
     case "pending or dropped": return "pending or dropped";
     case "unknown to node": return "unknown to node";
@@ -341,6 +400,7 @@ export async function sentStatus(
   client: NodeClient,
   cid: string,
   recorded?: { from: string; nonce: bigint },
+  knownMempool?: readonly string[] | (() => Promise<readonly string[]>),
 ): Promise<SentStatus> {
   let blockHeight: bigint | undefined, blockHash: string | undefined;
   let signer = recorded?.from, nonce = recorded?.nonce;
@@ -351,14 +411,23 @@ export async function sentStatus(
     signer = tx.signers[0];
     nonce = tx.nonce;
   } catch (e) {
-    if (e instanceof NodeError && e.status === 404) return { kind: "unknown to node" };
+    if (e instanceof NodeError && e.status === 404) {
+      if (recorded !== undefined) {
+        try {
+          if ((await client.account(recorded.from)).nonce > recorded.nonce) return { kind: "nonce advanced" };
+        } catch { /* A failed auxiliary read must not hide exact recovery. */ }
+      }
+      return { kind: "unknown to node" };
+    }
     if (!isWireMismatch(e) || recorded === undefined) throw e;
     reportsInclusion = false;
   }
   if (blockHeight !== undefined && blockHash !== undefined) return { kind: "included", height: blockHeight, hash: blockHash };
-  if ((await client.mempool()).transactions.includes(cid)) return { kind: "pending" };
+  const mempool = typeof knownMempool === "function" ? await knownMempool()
+    : knownMempool ?? (await client.mempool()).transactions;
+  if (mempool.includes(cid)) return { kind: "pending" };
   if (signer !== undefined && nonce !== undefined && (await client.account(signer)).nonce > nonce) {
-    if (!reportsInclusion) return { kind: "nonce spent" };
+    if (!reportsInclusion) return { kind: "nonce advanced" };
     // It may have been mined between the first read and this one.
     const again = await client.transaction(cid);
     if (again.blockHeight !== undefined && again.blockHash !== undefined) {

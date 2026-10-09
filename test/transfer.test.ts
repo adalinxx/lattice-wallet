@@ -54,6 +54,7 @@ test("the builder refuses what the node would", () => {
   assert.throws(() => signTransfer(sender, { ...base, fee: -1n }));
   assert.throws(() => signTransfer(sender, { ...base, to: sender.address }));
   assert.throws(() => signTransfer(sender, { ...base, amount: 1n << 63n }));
+  assert.throws(() => signTransfer(sender, { ...base, to: "bafyabc" }), /canonical Lattice account address/);
 });
 
 test("the signed transaction's CID is the one a lattice-node reported for it", () => {
