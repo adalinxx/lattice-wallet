@@ -30,6 +30,8 @@ The first command starts isolated nodes, mines disposable funds, and checks auth
 
 ## Public release gates
 
+Follow [store-signed upgrade and funded trade acceptance](release-live-testing.md) for the real-browser steps and opt-in read-only trade verification. A skipped live test does not satisfy either gate.
+
 - Merge branding and release preparation; package a reviewed commit from main.
 - Run unit/UI/conformance tests, isolated submission tests, and deployed read/discovery smoke.
 - Drive fresh-install, upgrade with existing recovery records, backup/restore, and funded cross-chain receipt/withdrawal flows in actual Chrome. Include node failures and uncertain submissions. Record the exact browser, node and wallet versions.
@@ -41,6 +43,8 @@ The first command starts isolated nodes, mines disposable funds, and checks auth
 Approval is tied to the tested commit and checksum. Any code change invalidates that approval until the relevant checks rerun. Do not tag or announce a public release while a gate is unresolved. Increment manifest and package versions together before subsequent uploads.
 
 For an unpacked extension, rebuilding files is not a reload. Use Reload on its chrome://extensions card, then reopen the wallet. A browser restart alone can leave cached service-worker code in this test setup even when the new manifest/popup is visible. Check behavior, not only the displayed name/version. This development check is not evidence for a store-signed upgrade; test that separately before public release.
+
+The hosted-node allowlist adds three exact required host permissions. Chrome may require a one-time upgrade acknowledgement; do not promise a prompt-free installation/update. Verify hosted Nexus and testnet connections after restarting Chrome and the computer, without another runtime host prompt. Custom host permissions must remain optional. Missing browser permission, a stopped local node and a changed operator cookie are distinct failures; record the exact message and endpoint before diagnosing them.
 
 ## Incident handling
 

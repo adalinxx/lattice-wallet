@@ -4,7 +4,8 @@
 
 import { startWallet } from "./app.ts";
 import { walletClient } from "../lib/wallet/client.ts";
-import { originPattern } from "../lib/config.ts";
+import { HOSTED_NODE_ORIGINS, originPattern } from "../lib/config.ts";
+import { NodePermissionError } from "../lib/wallet/node.ts";
 
 // The popup opens backup flows in a tab of this same page: a tab may hold the
 // camera, pick files and print; a popup closes on each of those.
@@ -12,8 +13,8 @@ const view = new URLSearchParams(location.search).get("view");
 const fullPage = view === "backup" || view === "restore" || view === "wallet";
 if (fullPage) document.body.classList.add("page");
 
-// Remove the old all-HTTPS grant on upgrade. Known hosted endpoints are now
-// requested together; arbitrary declarations never get network reach silently.
+// Remove the old optional all-HTTPS grant on upgrade. The three exact hosted
+// origins are required manifest permissions; arbitrary declarations remain optional.
 if (await chrome.permissions.contains({ origins: ["https://*/*"] })) {
   await chrome.permissions.remove({ origins: ["https://*/*"] });
 }
@@ -24,12 +25,17 @@ startWallet({
   hasOrigins: (origins) => chrome.permissions.contains({ origins }),
   releaseUnusedOrigins: async (keep) => {
     const granted = await chrome.permissions.getAll();
-    const unused = (granted.origins ?? []).filter((origin) => !keep.includes(origin));
+    const unused = (granted.origins ?? []).filter((origin) => !keep.includes(origin)
+      && !HOSTED_NODE_ORIGINS.some((required) => required === origin));
     if (unused.length && !await chrome.permissions.remove({ origins: unused })) throw new Error("Could not remove node permissions.");
   },
   fetch: async (url, init) => {
-    if (!await chrome.permissions.contains({ origins: [originPattern(String(url))] })) {
-      throw new Error("Choose this operator explicitly under Custom node to grant access.");
+    const origin = originPattern(String(url));
+    if (!await chrome.permissions.contains({ origins: [origin] })) {
+      const hosted = HOSTED_NODE_ORIGINS.some((required) => required === origin);
+      throw new NodePermissionError(hosted
+        ? "Chrome has blocked access to this hosted node. Reload the updated extension and check its site-access permissions."
+        : "Node permission is missing. Choose this operator under Custom node to grant access.");
     }
     return fetch(url, init);
   },

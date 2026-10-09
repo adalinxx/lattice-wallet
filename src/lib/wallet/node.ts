@@ -330,8 +330,14 @@ export function isTransientSubmissionRefusal(error: unknown): boolean {
     || error.reason === "full" || error.reason === "shuttingDown");
 }
 
+/** A browser permission failure, not an endpoint outage. */
+export class NodePermissionError extends Error {
+  constructor(message: string) { super(message); this.name = "NodePermissionError"; }
+}
+
 /** A refusal or failure, in words, keeping the node's own name for it. */
 export function describe(e: unknown): string {
+  if (e instanceof NodePermissionError) return e.message;
   if (e instanceof CIDMismatchError) return "unexpected answer from node: " + e.message;
   if ((e instanceof SubmissionError || e instanceof NodeError) && (e.status === 401 || e.status === 403)) return authRefusal(e.status);
   if (e instanceof SubmissionError) {

@@ -234,13 +234,13 @@ mode → **Load unpacked** → select `dist/`.
 
 ## Security posture
 
-Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Public-node buys are disabled pending independent consensus anchoring; explicitly paired/own-node mode relies on your node's honesty. State witnesses alone do not prove a canonical tip.
+Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Public-node buys require explicit trust acknowledgement for the displayed operators on each purchase review. Paired/own-node mode also relies on your node's honesty. State witnesses alone do not prove a canonical tip.
 
 - Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
   remote code. `connect-src` is `https:` plus loopback `http:` (your own
-  node); the wallet holds no host permission until you choose a node, and then
-  asks for that host only. Hosted discovery requests the three known Lattice
-  origins together; other operators require explicit Custom node selection.
+  node). The three exact hosted Lattice node origins are declared as required
+  host permissions, avoiding connection-time prompts for those nodes. Other
+  operators require explicit Custom node selection and optional permission.
   Old all-HTTPS grants are revoked on upgrade. DNS rebinding of public host
   names cannot be excluded by a browser-only client; discovery sends no cookies.
 - Lockfile-pinned deps; the SDK pinned by commit (submodule). With

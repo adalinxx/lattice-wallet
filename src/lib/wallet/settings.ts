@@ -29,6 +29,8 @@ export interface SentTransaction {
 /** An ordinary transfer whose final chain outcome is not known yet. This is
  * recovery state, not display history, so it must never be trimmed. */
 export interface PendingSubmission extends SentTransaction {
+  /** Same-nonce fee replacement; original bytes stay in recovery separately. */
+  replacesCID?: string;
   from: string;
   fee: string;
   nonce: string;

@@ -34,7 +34,9 @@ alarms: Automatically lock the signing session after the configured inactivity i
 
 Address copying uses the Clipboard API inside a user gesture, without a clipboard permission.
 
-Optional HTTPS hosts: Connect to user-selected nodes and operator-declared endpoints discovered through parent chains. Lattice permits arbitrary node operators, so the final endpoint cannot be fixed at build time. Access is requested through Chrome permissions. The extension does not inject scripts into websites or read their browsing content.
+Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev and lattice-mainnet-testnet.fly.dev provide hosted submission, explorer reads and testnet access without connection-time prompts. These are exact hosts, not wildcard subdomains.
+
+Optional HTTPS hosts: Connect to user-selected custom operators, including endpoints discovered through parent chains outside the fixed hosted allowlist. Access is requested through Chrome permissions. The extension does not inject scripts into websites or read their browsing content.
 
 Optional loopback HTTP hosts: Connect to a node running locally on the user's device. Authentication and explicit node pairing are required where the node demands them.
 
@@ -47,7 +49,7 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 ## Reviewer instructions
 
 1. Open the extension and create a disposable wallet. Use a unique test password and save the generated test phrase privately.
-2. Choose Use lattice.build or a custom node. Accept the optional host permission once requested. Confirm the displayed chain.
+2. Choose Use lattice.build: no runtime host prompt is expected for the three required hosted origins. For a custom node, accept its optional permission when requested. Confirm the displayed chain. Chrome may require acknowledgement of new required permissions during an upgrade.
 3. Copy the address; verify the full address is visible and clipboard copying works.
 4. Open the chain dropdown, select a direct child, and use the arrow to return to its parent.
 5. Open Send. Invalid addresses and non-positive amounts are refused before signing. Review displays sender, recipient, amount and fee.
