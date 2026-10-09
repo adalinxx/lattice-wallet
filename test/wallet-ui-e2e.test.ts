@@ -96,6 +96,7 @@ test("wallet UI e2e: onboarding validation, secret handoff, lock, and keyboard u
   });
   const store = memoryStore();
   await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  assert.equal(document.querySelector(".wordmark")?.textContent, "LATTICE");
 
   button("Create wallet").click();
   input("password (min 8)").value = "short";
@@ -119,6 +120,7 @@ test("wallet UI e2e: onboarding validation, secret handoff, lock, and keyboard u
   (document.getElementById("settings-button") as HTMLButtonElement).click();
   button("Lock wallet").click();
   await settle();
+  assert.equal(document.querySelector(".wordmark")?.textContent, "WALLET");
   assert.equal(document.querySelector("h1")?.textContent, "Unlock");
   const password = input("password");
   password.value = "wrong";

@@ -1,9 +1,9 @@
 {
-  "name": "nexus-wallet",
+  "name": "lattice-wallet",
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Nexus Wallet — non-custodial MV3 browser extension for the Lattice network",
+  "description": "Lattice Wallet — non-custodial MV3 browser extension for Lattice chains",
   "license": "MIT",
   "scripts": {
     "prepare": "npm run sdk",

@@ -1,4 +1,4 @@
-// Nexus Wallet UI, shared by the extension popup and the desktop app. Talks
+// Lattice Wallet UI, shared by the extension popup and the desktop app. Talks
 // only to the signer (key material never enters this module) and to the node
 // the user chose for reads/submit. There is no default node. Styled with the
 // Lattice design system. The host supplies a Platform: signer, settings
@@ -512,7 +512,7 @@ function route() {
 function welcome() {
   render(
     h("div", { class: "stack" },
-      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "NEXUS"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
+      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "LATTICE"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
       h("button", { class: "block", onclick: createFlow }, "Create wallet"),
       h("button", { class: "btn block", onclick: restoreChoice }, "Restore or import"),
     ),

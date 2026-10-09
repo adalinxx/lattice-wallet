@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Nexus Wallet",
+  "name": "Lattice Wallet",
   "version": "0.3.0",
-  "description": "Non-custodial wallet for Lattice chains (Nexus and its child chains). Keys never leave your device; you choose the node.",
+  "description": "Non-custodial wallet for Lattice chains. Keys never leave your device; you choose the node.",
   "action": {
-    "default_title": "Nexus Wallet",
+    "default_title": "Lattice Wallet",
     "default_popup": "popup/index.html",
     "default_icon": {
       "48": "assets/lattice-mark-48.png",

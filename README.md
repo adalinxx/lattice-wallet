@@ -1,7 +1,7 @@
-# Nexus Wallet
+# Lattice Wallet
 
-A **non-custodial** wallet for **Nexus** — the root chain of the
-[Lattice](https://github.com/adalinxx) network — and its child chains, built as
+A **non-custodial** wallet for the [Lattice](https://github.com/adalinxx)
+network, including its **Nexus** root chain and child chains, built as
 a **Manifest V3 browser extension**. Keys are generated and used **entirely on
 your device**; the extension talks directly to a node **you choose** and signs
 locally.
