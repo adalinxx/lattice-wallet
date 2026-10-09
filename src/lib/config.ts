@@ -54,6 +54,11 @@ export function normalizeNodeURL(text: string): string | null {
 
 const CSP_LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
+/** A node on this computer. Any other node is someone else's word about the chain. */
+export function isLoopbackNodeURL(nodeURL: string): boolean {
+  try { return CSP_LOOPBACK.has(new URL(nodeURL).hostname); } catch { return false; }
+}
+
 /** The host-permission match pattern for a node URL (match patterns carry no port). */
 export function originPattern(nodeURL: string): string {
   const url = new URL(nodeURL);

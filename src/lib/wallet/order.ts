@@ -1,3 +1,5 @@
+import { isAccountAddress } from "./session.ts";
+
 const MAX_HANDOFF_LENGTH = 16_384;
 const UINT64_MAX = (1n << 64n) - 1n;
 
@@ -16,11 +18,20 @@ export interface SellOrder extends OrderBase {
   readonly amountDemanded: string;
 }
 
+/** One sell deposit, named by the exact terms consensus keys it with. */
+export interface SelectedDeposit {
+  readonly demander: string;
+  readonly amountDemanded: string;
+  readonly amountDeposited: string;
+  readonly depositNonce: string;
+}
+
+/** Buy exactly these deposits, each whole. The list is the requester's claim:
+ * the wallet proves every one, and that it is unpaid, before it signs. */
 export interface BuyOrder extends OrderBase {
   readonly side: "buy_child";
-  readonly orderType: "market";
-  readonly maxAmountDemanded?: string;
-  readonly desiredAmountDeposited?: string;
+  readonly orderType: "take";
+  readonly deposits: readonly SelectedDeposit[];
 }
 
 export type OrderRequest = SellOrder | BuyOrder;
@@ -85,11 +96,31 @@ export function decodeOrderRequest(input: string, now = Date.now()): OrderReques
   if (value.side === "sell_child" && value.orderType === "limit") {
     return { ...base, side: value.side, orderType: value.orderType, amountDeposited: amount(value.amountDeposited, "Child amount"), amountDemanded: amount(value.amountDemanded, "Parent amount") };
   }
+  if (value.side === "buy_child" && value.orderType === "take") {
+    if (!Array.isArray(value.deposits) || value.deposits.length === 0) throw new Error("A buy request must name the sell orders to buy");
+    const seen = new Set<string>();
+    const deposits = value.deposits.map((entry, index) => {
+      const name = `Sell order ${index + 1}`;
+      const deposit = record(entry);
+      if (typeof deposit.demander !== "string" || !isAccountAddress(deposit.demander)) throw new Error(`${name} has an invalid seller address`);
+      if (typeof deposit.depositNonce !== "string" || !/^(0|[1-9]\d*)$/.test(deposit.depositNonce) || BigInt(deposit.depositNonce) > UINT64_MAX) {
+        throw new Error(`${name} has an invalid nonce`);
+      }
+      const selected = {
+        demander: deposit.demander,
+        amountDemanded: amount(deposit.amountDemanded, `${name} parent amount`),
+        amountDeposited: amount(deposit.amountDeposited, `${name} child amount`),
+        depositNonce: deposit.depositNonce,
+      };
+      const key = `${selected.demander}/${selected.amountDemanded}/${selected.depositNonce}`;
+      if (seen.has(key)) throw new Error("The request names a sell order twice");
+      seen.add(key);
+      return selected;
+    });
+    return { ...base, side: value.side, orderType: value.orderType, deposits };
+  }
   if (value.side === "buy_child" && value.orderType === "market") {
-    const maxAmountDemanded = value.maxAmountDemanded === undefined ? undefined : amount(value.maxAmountDemanded, "Maximum parent amount");
-    const desiredAmountDeposited = value.desiredAmountDeposited === undefined ? undefined : amount(value.desiredAmountDeposited, "Desired child amount");
-    if ((maxAmountDemanded === undefined) === (desiredAmountDeposited === undefined)) throw new Error("A buy request must specify exactly one amount");
-    return { ...base, side: value.side, orderType: value.orderType, ...(maxAmountDemanded ? { maxAmountDemanded } : { desiredAmountDeposited }) };
+    throw new Error("Buying by amount is no longer supported. Choose the sell orders to buy and create a new request.");
   }
   throw new Error("The order side or type is unsupported");
 }
