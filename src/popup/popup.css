@@ -57,6 +57,11 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .balance-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); }
 .balance-label { display: block; font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .text-action { border: 0; padding: 0; font-size: var(--fs-12); text-decoration: underline; text-underline-offset: 2px; }
+.icon-action {
+  display: inline-grid; flex: 0 0 32px; width: 32px; height: 32px;
+  place-items: center; padding: 0;
+}
+.action-icon { display: block; width: 16px; height: 16px; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
 .account-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }

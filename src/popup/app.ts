@@ -75,6 +75,32 @@ export const h = (tag: string, attrs: Record<string, unknown> = {}, ...kids: (No
   for (const kid of kids) if (kid != null) n.append(kid as Node | string);
   return n;
 };
+type ActionIcon = "copy" | "refresh";
+/** Familiar Lucide action geometry, redrawn at Lattice's hairline weight. */
+function actionIcon(name: ActionIcon): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  for (const [key, value] of Object.entries({
+    class: "action-icon", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round",
+    "aria-hidden": "true", focusable: "false",
+  })) svg.setAttribute(key, value);
+  const shape = (tag: "path" | "rect", attributes: Record<string, string>) => {
+    const node = document.createElementNS(ns, tag);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+    svg.append(node);
+  };
+  if (name === "refresh") {
+    shape("path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" });
+    shape("path", { d: "M21 3v5h-5" });
+    shape("path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" });
+    shape("path", { d: "M8 16H3v5" });
+  } else {
+    shape("rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" });
+    shape("path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" });
+  }
+  return svg;
+}
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
 // Exact: amounts are UInt64, never rounded through a double.
 const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
@@ -819,7 +845,10 @@ async function mainScreen() {
       h("div", { class: "balance-card" },
         h("div", { class: "balance-heading" },
           h("span", { class: "balance-label" }, "Balance"),
-          h("button", { class: "text-action", onclick: () => loadBalance() }, "Refresh"),
+          h("button", {
+            class: "btn icon-action", type: "button", title: "Refresh balance", "aria-label": "Refresh balance",
+            onclick: () => loadBalance(),
+          }, actionIcon("refresh")),
         ),
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
@@ -827,14 +856,17 @@ async function mainScreen() {
             h("span", {}, acct.label),
             h("span", { class: "mono account-address" }, acct.address),
           ),
-          h("button", { class: "text-action", onclick: async () => {
-            try {
-              await navigator.clipboard.writeText(acct.address);
-              toast.textContent = "Account address copied.";
-            } catch {
-              toast.textContent = "Could not copy the account address.";
-            }
-          } }, "Copy address"),
+          h("button", {
+            class: "btn icon-action", type: "button", title: "Copy account address", "aria-label": "Copy account address",
+            onclick: async () => {
+              try {
+                await navigator.clipboard.writeText(acct.address);
+                toast.textContent = "Account address copied.";
+              } catch {
+                toast.textContent = "Could not copy the account address.";
+              }
+            },
+          }, actionIcon("copy")),
         ),
       ),
       h("div", { class: "primary-actions" },

@@ -19,7 +19,7 @@ function installDOM() {
 }
 
 function button(text: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text);
+  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text);
   assert.ok(found, `button ${text} exists; page was: ${document.body.textContent}`);
   return found as HTMLButtonElement;
 }
