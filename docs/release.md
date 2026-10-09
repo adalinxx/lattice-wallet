@@ -40,6 +40,8 @@ The first command starts isolated nodes, mines disposable funds, and checks auth
 
 Approval is tied to the tested commit and checksum. Any code change invalidates that approval until the relevant checks rerun. Do not tag or announce a public release while a gate is unresolved. Increment manifest and package versions together before subsequent uploads.
 
+For an unpacked extension, rebuilding files is not a reload. Use Reload on its chrome://extensions card, then reopen the wallet. A browser restart alone can leave cached service-worker code in this test setup even when the new manifest/popup is visible. Check behavior, not only the displayed name/version. This development check is not evidence for a store-signed upgrade; test that separately before public release.
+
 ## Incident handling
 
 For a signing or recovery vulnerability, preserve evidence and avoid instructing users to erase records. Assess whether to halt distribution or issue a fixed version. Communicate affected versions and concrete recovery actions without exposing user secrets. A removed extension does not reverse blockchain transactions.
