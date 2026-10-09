@@ -113,7 +113,7 @@ function buyOrderURI(expiresAt: string): string {
 }
 
 function button(text: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text);
+  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text);
   assert.ok(found, `button ${text} exists`);
   return found as HTMLButtonElement;
 }
@@ -205,12 +205,16 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   const { startWallet } = await import("../src/popup/app.ts");
   await startWallet({ wallet, store, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true });
 
-  for (const label of ["Refresh", "Copy address", "Send", "Receive"]) button(label);
+  for (const label of ["Refresh balance", "Copy account address", "Send", "Receive"]) button(label);
+  assert.equal(button("Refresh balance").textContent, "", "refresh is an icon-only action");
+  assert.ok(button("Refresh balance").querySelector("svg.action-icon"));
+  assert.equal(button("Copy account address").textContent, "", "copy is an icon-only action");
+  assert.ok(button("Copy account address").querySelector("svg.action-icon"));
   for (const hidden of ["Scan cross-chain order", "Open cross-chain order", "Transactions", "Settings", "Node", "Fee", "Backup", "Lock"]) {
     assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
   }
   assert.match(document.body.textContent ?? "", new RegExp(address), "the home screen displays the full account address");
-  button("Copy address").click();
+  button("Copy account address").click();
   await settle();
   assert.equal(copied, address, "copies the full address rather than its shortened display");
   assert.match(document.body.textContent ?? "", /Account address copied/);
