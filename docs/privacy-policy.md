@@ -6,7 +6,7 @@ Lattice Wallet is a non-custodial browser extension maintained by the Lattice pr
 
 ## Data on your device
 
-The wallet creates or imports recovery phrases and private keys and encrypts its vault before storing it in your browser profile. Node authentication cookies are also kept in the encrypted vault. Your password is used locally to unlock the vault; it is not sent to nodes or the publisher. Keys remain available in memory while the signer is unlocked. Locking ends that signing session.
+The wallet creates or imports recovery phrases and private keys and encrypts its vault before storing it in your browser profile. Node authentication cookies are also kept in the encrypted vault. Your password is used locally to unlock the vault; it is not sent to nodes or the publisher. The unlocked session retains a non-extractable encryption key, not your password. Keys remain available in memory while the signer is unlocked. Locking ends that signing session and wipes mutable secret buffers; JavaScript cannot guarantee erasure of strings or runtime copies.
 
 Addresses, account labels, chain and node choices, fees, transaction history, deposit keys, purchase records, and signed transaction recovery payloads are stored locally outside the encrypted vault. These records contain financial and account information. Signed transactions can be rebroadcast by someone who obtains them; they do not contain private keys. Anyone with access to your browser profile may be able to read this unencrypted metadata.
 
@@ -15,6 +15,8 @@ Addresses, account labels, chain and node choices, fees, transaction history, de
 The wallet connects to nodes you select and to services used for chain discovery. Requests may disclose your IP address, selected chain, queried account addresses, and requested transaction or state identifiers to those operators. When you approve a transaction, the wallet sends its signed transaction to the selected submission endpoint. Transactions admitted to a public blockchain may become public and cannot be erased by uninstalling the wallet.
 
 An authentication cookie is sent only to the node it belongs to when required for authorized requests. Recovery phrases, private keys, and the wallet password are not sent to nodes. Node operators have their own privacy practices.
+
+Network permission is requested for selected origins. The three known hosted Lattice origins can be approved together. Other discovered operators must be selected explicitly as custom nodes. Previous unrestricted HTTPS grants are revoked on upgrade. Connection settings provide “Remove unused node permissions”; saved nodes and hosted discovery origins remain granted. Grants can also be managed through Chrome's extension settings; removing the extension revokes them.
 
 ## Camera, clipboard, and backups
 

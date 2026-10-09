@@ -32,7 +32,7 @@ storage: Store the encrypted signing vault and local account, chain, node, histo
 
 alarms: Automatically lock the signing session after the configured inactivity interval.
 
-clipboardWrite: Copy account addresses when the user selects Copy address.
+Address copying uses the Clipboard API inside a user gesture, without a clipboard permission.
 
 Optional HTTPS hosts: Connect to user-selected nodes and operator-declared endpoints discovered through parent chains. Lattice permits arbitrary node operators, so the final endpoint cannot be fixed at build time. Access is requested through Chrome permissions. The extension does not inject scripts into websites or read their browsing content.
 

@@ -11,10 +11,13 @@ npm run typecheck
 npm test
 npm run conformance
 npm audit --omit=dev
+npm audit --omit=dev --prefix vendor/lattice-sdk
 npm run package
 ```
 
 The package script builds, checks manifest references and creates a ZIP with the manifest at its root plus a SHA-256 checksum in release/. It copies LICENSE and third-party notices into the package. This is repeatable packaging; byte-for-byte reproducibility and a hermetic build have not been established. Chrome signs store-distributed extensions.
+
+Audit both dependency trees: the SDK resolves its own pinned signing dependencies. Do not infer the shipped signer version from the wallet lockfile alone. The SDK and wallet currently use different pinned hash-library versions; each is covered by its own audit and the wallet's conformance gate. Build a release only from its reviewed/tagged commit using Node 24, and retain the SDK revision and artifact checksum.
 
 Run the optional tests explicitly; skipped tests are not release evidence:
 
