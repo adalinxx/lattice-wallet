@@ -93,6 +93,7 @@ export function validWalletData(raw: unknown): WalletData {
   const mnemonic = r.mnemonic ?? null;
   if (mnemonic !== null && (typeof mnemonic !== "string" || !isValidMnemonic(mnemonic))) throw bad();
   if (!Array.isArray(r.hd) || !Array.isArray(r.imported)) throw bad();
+  if (r.hd.length + r.imported.length > 256) throw new Error("Backup exceeds the 256-account limit");
   const hd = r.hd.map((e) => {
     const { index, label } = (e ?? {}) as Record<string, unknown>;
     if (!Number.isInteger(index) || (index as number) < 0 || (index as number) >= 2 ** 31 || !isLabel(label)) throw bad();
@@ -135,11 +136,13 @@ export function mergeWalletData(current: WalletData, incoming: WalletData): Wall
   const hd = [...current.hd];
   for (const e of incoming.hd) if (!hd.some((x) => x.index === e.index)) hd.push(e);
   hd.sort((a, b) => a.index - b.index);
+  if (hd.length > 256) throw new Error("256-account limit reached");
   const have = new Set(deriveAccounts({ ...current, mnemonic, hd, imported: [] }).map((a) => a.address));
   const imported: WalletData["imported"] = [];
   for (const e of [...current.imported, ...incoming.imported]) {
     const address = importPrivateKey(e.priv).address;
     if (!have.has(address)) { imported.push(e); have.add(address); }
+    if (hd.length + imported.length > 256) throw new Error("256-account limit reached");
   }
   const cookies = { ...(incoming.nodeCookies ?? {}), ...(current.nodeCookies ?? {}) };
   const merged: WalletData = { mnemonic, hd, imported, active: current.active };

@@ -10,7 +10,7 @@ import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, forgetWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
@@ -26,6 +26,8 @@ export interface Platform {
   requestOrigins(origins: string[]): Promise<boolean>;
   /** Whether these origins were already granted, used to resume after Chrome closes a permission prompt. */
   hasOrigins?(origins: string[]): Promise<boolean>;
+  /** Explicitly revoke grants not needed by saved node choices. */
+  releaseUnusedOrigins?(keep: string[]): Promise<void>;
   /**
    * The host's own node (its loopback operator URL), when it runs one: every
    * chain then reads and submits through it, and no endpoint is chosen. A
@@ -107,7 +109,9 @@ const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
 const depositKey = (offer: { demander: string; amountDemanded: string | bigint; depositNonce: string | bigint }) =>
   `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
 const view = () => document.getElementById("view")!;
+let renderVersion = 0;
 export const render = (node: El) => {
+  renderVersion += 1;
   closeChainMenu();
   view().replaceChildren(node);
 };
@@ -126,7 +130,11 @@ const endpointFor = (chain: string): ChosenEndpoint | undefined =>
   platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[chain];
 // The chosen node's cookie header when the user paired it (its operator port requires one).
 let nodeAuth: string | undefined;
-const client = () => reader(endpoint()!.url, chainPath(), platform.fetch, nodeAuth);
+let nodeAuthURL: string | undefined;
+const client = () => {
+  const chosen = endpoint()!;
+  return reader(chosen.url, chainPath(), platform.fetch, nodeAuthURL === chosen.url ? nodeAuth : undefined);
+};
 async function authorizationFor(url: string): Promise<string | undefined> {
   if (platform.ownNode) return undefined; // the host attaches its own node's cookie
   const r = await wallet.nodeAuthorization(url);
@@ -300,7 +308,7 @@ function reconcileRecovery(): Promise<RecoveryStatuses> {
 }
 
 async function dismissRecovery(label: string, remove: (current: Settings) => Settings): Promise<boolean> {
-  if (!window.confirm(`Dismiss ${label}? The wallet will delete its saved recovery data. This cannot be undone.`)) return false;
+  if (!window.confirm(`Dismiss ${label}? The wallet will delete its saved recovery data. This does not cancel the signed transaction: it may still confirm. This cannot be undone.`)) return false;
   await update(remove);
   return true;
 }
@@ -318,6 +326,12 @@ const dismissPurchase = (current: Settings, receiptCID: string): Settings => ({
 export async function ensureOrigins(host: Pick<Platform, "hasOrigins" | "requestOrigins">, origins: string[]): Promise<boolean> {
   if (host.hasOrigins && await host.hasOrigins(origins).catch(() => false)) return true;
   return host.requestOrigins(origins).catch(() => false);
+}
+
+/** Only the selected bootstrap and the two hosted chains get automatic reach.
+ * Other discovered operators require an explicit custom-node choice. */
+export function discoveryOrigins(bootstrap: string): string[] {
+  return [...new Set([bootstrap, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC].map(originPattern))];
 }
 
 function syncBadge() {
@@ -351,7 +365,7 @@ async function switchToChain(chain: string, status: El) {
       ...s, chain, pendingAutomaticChain: chain,
       chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
     }));
-    const granted = await ensureOrigins(platform, [originPattern(bootstrap), "https://*/*"]);
+    const granted = await ensureOrigins(platform, discoveryOrigins(bootstrap));
     if (granted) {
       if (await finishAutomaticChain(chain, status)) { route(); return; }
     }
@@ -400,11 +414,9 @@ async function requestEndpoint(
     if (!paired.ok) { status.textContent = "Cookie: " + paired.error; return false; }
   }
   await update((s) => ({ ...s, pendingEndpoint: pending }));
-  // Choosing the hosted Nexus bootstrap opts into automatic HTTPS discovery.
-  // Ask for that reach once here, so its hosted child chains do not trigger a
-  // second Chrome permission prompt on first use.
+  // Grant the known hosted endpoints together, not every HTTPS origin.
   const origins = pending.chain === ROOT_CHAIN && pending.url === LATTICE_BUILD_RPC
-    && pending.nodeMode === "automatic" ? ["https://*/*"] : [originPattern(pending.url)];
+    && pending.nodeMode === "automatic" ? discoveryOrigins(pending.url) : [originPattern(pending.url)];
   const granted = await ensureOrigins(platform, origins);
   if (granted) return finishPendingEndpoint(status);
   if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
@@ -468,7 +480,7 @@ export async function refresh() {
   }
   if (settings.pendingAutomaticChain === settings.chain && !endpoint() && platform.hasOrigins) {
     const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
-    const origins = [originPattern(bootstrap), "https://*/*"];
+    const origins = discoveryOrigins(bootstrap);
     if (await platform.hasOrigins(origins).catch(() => false)) {
       const status = h("div");
       if (await finishAutomaticChain(settings.chain, status)) { route(); return; }
@@ -533,7 +545,8 @@ function passwordFields(): { node: El; get: () => string | null } {
   const p1 = h("input", { type: "password", placeholder: "password (min 8)" }) as HTMLInputElement;
   const p2 = h("input", { type: "password", placeholder: "confirm password" }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
-  const node = h("div", { class: "stack" }, p1, p2, err);
+  const strength = h("p", { class: "muted" }, "Use a long, unique passphrase, such as four randomly chosen words. Anyone with an exported backup can guess its password offline.");
+  const node = h("div", { class: "stack" }, p1, p2, strength, err);
   return {
     node,
     get() {
@@ -723,10 +736,9 @@ function endpointScreen() {
     const n = normalizeNodeURL(resumeURL ?? start.value);
     if (!n) { err.textContent = "Enter the starting node's URL."; return; }
     if (!permissionGranted) {
-      // Discovery may reach any declared host. Persist first because Chrome can
-      // close the popup while it asks for this broad reach.
+      // Persist first because Chrome can close the popup on a permission prompt.
       await update((s) => ({ ...s, pendingDiscovery: { chain: s.chain, url: n, autoSelect } }));
-      const granted = await ensureOrigins(platform, [originPattern(n), "https://*/*"]);
+      const granted = await ensureOrigins(platform, discoveryOrigins(n));
       if (!granted) {
         await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
         err.textContent = "Permission not granted.";
@@ -774,7 +786,7 @@ function endpointScreen() {
 
   const pendingDiscovery = settings.pendingDiscovery;
   if (pendingDiscovery?.chain === settings.chain && platform.hasOrigins) {
-    const origins = [originPattern(pendingDiscovery.url), "https://*/*"];
+    const origins = discoveryOrigins(pendingDiscovery.url);
     void platform.hasOrigins(origins).then(async (granted) => {
       if (granted) await discoverFrom(pendingDiscovery.autoSelect, true, pendingDiscovery.url);
       else await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
@@ -821,12 +833,17 @@ async function chainScreen() {
 // ---------------- main ----------------
 
 async function mainScreen() {
+  const openingVersion = renderVersion;
   void reconcileRecovery();
   const acct = activeAccount();
   if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
   const nodeV = endpoint()!;
+  const homePath = [...chainPath()];
   nodeAuth = await authorizationFor(nodeV.url);
+  nodeAuthURL = nodeV.url;
+  if (openingVersion !== renderVersion) return; // navigation happened while authentication was read
+  const homeReads = reader(nodeV.url, homePath, platform.fetch, nodeAuth);
   const toast = h("div", { class: "toast" });
 
   const accountPicker = h("select", { class: "picker account-picker", onchange: async (e: Event) => {
@@ -881,7 +898,7 @@ async function mainScreen() {
   async function loadBalance() {
     balanceV.textContent = "…";
     try {
-      const { balance } = await client().account(acct!.address);
+      const { balance } = await homeReads.account(acct!.address);
       balanceV.textContent = balance.toLocaleString();
     } catch (e) { balanceV.textContent = describe(e); }
   }
@@ -1116,8 +1133,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
             toast.textContent = "Fee replacement submitted. Reopen this purchase to check confirmation.";
             replacementFee.remove(); replace.remove();
           } else if (submitted.kind === "refused") {
-            await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, replacementCID), purchase.receiptCID, replacementCID));
-            toast.textContent = `Replacement rejected: ${describe(submitted.error)} The preceding attempt remains current.`;
+            toast.textContent = `Replacement rejected: ${describe(submitted.error)} Both signed attempts remain saved; either may still confirm.`;
             replacementFee.remove(); replace.remove();
             const reviewPrevious = h("button", { class: "btn block", onclick: () => {
               const current = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID);
@@ -1245,10 +1261,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
       });
       if (!signed.ok) throw new Error(signed.error);
       const withdrawalCID = signed.signedSubmit.transactionCID;
-      let attemptAlreadySaved = false;
       await update((s) => {
-        attemptAlreadySaved = s.openPurchases.some((item) => item.receiptCID === purchase.receiptCID
-          && purchaseWithdrawalAttempts(item).some((attempt) => attempt.transactionCID === withdrawalCID));
         return recordWithdrawalAttempt(recordSent(s, childName, {
             cid: withdrawalCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
             from: purchase.withdrawer, fee: fee.toString(), nonce: account.nonce.toString(),
@@ -1259,19 +1272,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
       try {
         await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
       } catch (e) {
-        if (isDefiniteSubmissionRefusal(e)) {
-          if (!attemptAlreadySaved) {
-            try {
-              await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, withdrawalCID), purchase.receiptCID, withdrawalCID));
-            } catch { /* Refusal remains definite. */ }
-            toast.textContent = describe(e);
-            withdraw.disabled = false; feeInput.disabled = false;
-          } else {
-            toast.textContent = `Retry rejected: ${describe(e)} The earlier withdrawal attempt remains saved.`;
-          }
-          return;
-        }
-        toast.textContent = "Withdrawal outcome unknown. Check this saved purchase before taking another action.";
+        toast.textContent = `Withdrawal confirmation unknown: ${describe(e)} The signed attempt remains saved. Check this purchase before taking another action.`;
         return;
       }
       toast.textContent = "Withdrawal submitted. Reopen this purchase to check confirmation.";
@@ -1283,9 +1284,10 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
 }
 
 function connectionScreen() {
+  const status = h("div", { class: "toast" });
   render(h("div", { class: "stack" },
     h("h1", {}, "Connection"),
-    h("p", { class: "muted" }, "Automatic uses the explorer directory to find a verified node for each chain. Choose custom only when you operate or trust a specific node."),
+    h("p", { class: "muted" }, "Automatic uses the explorer directory to find a node serving each chain. These are operator declarations, not independently verified consensus. Choose custom when you operate or trust a specific node."),
     h("button", { class: settings.nodeMode === "automatic" ? "block" : "btn block", onclick: async () => {
       await update((s) => ({ ...s, nodeMode: "automatic" }));
       route();
@@ -1294,6 +1296,17 @@ function connectionScreen() {
       await update((s) => ({ ...s, nodeMode: "custom" }));
       endpointScreen();
     } }, "Use a custom node"),
+    ...(platform.releaseUnusedOrigins ? [h("button", { class: "btn block", onclick: async () => {
+      try {
+        const current = await loadSettings(store);
+        const keep = discoveryOrigins(current.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC);
+        keep.push(...Object.values(current.endpoints).map((node) => originPattern(node.url)));
+        for (const url of [current.pendingEndpoint?.url, current.pendingDiscovery?.url]) if (url) keep.push(originPattern(url));
+        await platform.releaseUnusedOrigins!(keep);
+        status.textContent = "Unused node permissions removed. Saved nodes and hosted discovery remain available.";
+      } catch (error) { status.textContent = describe(error); }
+    } }, "Remove unused node permissions")] : []),
+    status,
     h("button", { class: "btn block", onclick: settingsScreen }, "Back"),
   ));
 }
@@ -1338,22 +1351,26 @@ const wireOffer = (offer: ActiveDeposit) => ({
   depositNonce: offer.depositNonce.toString(),
 });
 
-function chooseBuyOffers(order: BuyOrder, offers: ActiveDeposit[]): ActiveDeposit[] {
+export function chooseBuyOffers(order: BuyOrder, offers: ActiveDeposit[]): ActiveDeposit[] {
   const sorted = [...offers].sort((a, b) => {
     const left = a.amountDemanded * b.amountDeposited;
     const right = b.amountDemanded * a.amountDeposited;
     return left < right ? -1 : left > right ? 1 : 0;
   });
+  const best = sorted[0];
+  if (!best) return [];
+  const protectedOffers = sorted.filter((offer) => offer.amountDemanded * best.amountDeposited * 100n
+    <= best.amountDemanded * offer.amountDeposited * 105n);
   const chosen: ActiveDeposit[] = [];
   if (order.maxAmountDemanded) {
     let remaining = BigInt(order.maxAmountDemanded);
-    for (const offer of sorted) {
+    for (const offer of protectedOffers) {
       if (offer.amountDemanded <= remaining) { chosen.push(offer); remaining -= offer.amountDemanded; }
     }
   } else {
     const desired = BigInt(order.desiredAmountDeposited!);
     let received = 0n;
-    for (const offer of sorted) {
+    for (const offer of protectedOffers) {
       chosen.push(offer); received += offer.amountDeposited;
       if (received >= desired) break;
     }
@@ -1379,6 +1396,10 @@ async function reviewBuyOrder(order: BuyOrder) {
   let childAuth: string | undefined, parentAuth: string | undefined;
   try { [childAuth, parentAuth] = await Promise.all([authorizationFor(childEndpoint.url), authorizationFor(parentEndpoint.url)]); }
   catch (e) { toast.textContent = describe(e); return; }
+  if (!platform.ownNode && (!parentAuth || !childAuth)) {
+    toast.textContent = "Purchases require paired nodes you operate. Public endpoints cannot yet establish an independently verified consensus tip. Pair both nodes before buying.";
+    return;
+  }
   let offers: ActiveDeposit[], minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
   const unclaimedOffers = async (listed: ActiveDeposit[], parentTip: string) => {
     let eligible = [...listed];
@@ -1442,10 +1463,12 @@ async function reviewBuyOrder(order: BuyOrder) {
   render(h("div", { class: "stack" },
     h("h1", {}, "Review purchase"),
     h("p", { class: "warn" }, "Payment on the parent chain is irreversible. After it confirms, complete the child-chain withdrawal from Settings."),
+    h("p", { class: "muted" }, "Price protection: only orders within 5% of the best eligible price are selected. Your budget may be partly unused. These exact offers are checked again before signing."),
     h("div", { class: "kv" },
       h("div", { class: "row" }, h("span", { class: "k" }, "You pay"), h("span", { class: "v" }, `${fmt(totalPay)} on ${parentName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "You receive"), h("span", { class: "v" }, `${fmt(totalReceive)} on ${childName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Sell orders"), h("span", { class: "v" }, offers.length.toString())),
+      ...offers.map((offer) => h("div", { class: "row" }, h("span", { class: "k" }, short(offer.demander)), h("span", { class: "v" }, `${fmt(offer.amountDemanded)} parent / ${fmt(offer.amountDeposited)} child`))),
       h("div", { class: "row" }, h("span", { class: "k" }, "Child withdrawal fee"), h("span", { class: "v" }, `at least ${fmt(childMinRelayFee)}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
     ),
@@ -1481,9 +1504,7 @@ async function reviewBuyOrder(order: BuyOrder) {
         receiptCID: signed.signedSubmit.transactionCID, receiptSubmit: signed.signedSubmit, withdrawer: acct.address,
         offers: offers.map(wireOffer), parentChain: [...order.parentChain], childChain: [...order.childChain], createdAt: Date.now(),
       };
-      let purchaseAlreadySaved = false;
       await update((s) => {
-        purchaseAlreadySaved = s.openPurchases.some((item) => item.receiptCID === purchase.receiptCID);
         return recordSent(recordOpenPurchase(s, purchase), parentName, {
           cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
           from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
@@ -1495,13 +1516,7 @@ async function reviewBuyOrder(order: BuyOrder) {
       try {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
       } catch (e) {
-        if (isDefiniteSubmissionRefusal(e)) {
-          purchaseScreen(storedPurchase, purchaseAlreadySaved
-            ? `Retry rejected: ${describe(e)} The earlier attempt may still confirm; keep this record.`
-            : `Receipt refused: ${describe(e)} Nothing was paid; dismiss this record to try again with different terms.`);
-        } else {
-          purchaseScreen(storedPurchase);
-        }
+        purchaseScreen(storedPurchase, `Receipt confirmation unknown: ${describe(e)} The payment may still confirm; keep this record and check its status before creating another purchase.`);
         return;
       }
       purchaseScreen(storedPurchase);
@@ -1580,6 +1595,10 @@ function randomNonce(): bigint {
 
 async function reviewSellOrder(order: SellOrder) {
   const acct = activeAccount()!;
+  const chain = order.childChain.join("/");
+  const chosen = { ...endpointFor(chain)! };
+  const authorization = await authorizationFor(chosen.url);
+  const reads = reader(chosen.url, [...order.childChain], platform.fetch, authorization);
   const deposited = BigInt(order.amountDeposited);
   const demanded = BigInt(order.amountDemanded);
   const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
@@ -1589,7 +1608,7 @@ async function reviewSellOrder(order: SellOrder) {
   ));
   let minRelayFee: bigint | undefined;
   try {
-    const info = await client().chainInfo();
+    const info = await reads.chainInfo();
     minRelayFee = info.minRelayFee;
   } catch (e) { toast.textContent = describe(e); return; }
   const depositNonce = randomNonce();
@@ -1626,7 +1645,7 @@ async function reviewSellOrder(order: SellOrder) {
     feeInput.disabled = true;
     let nonce: bigint, balance: bigint;
     try {
-      const account = await client().account(acct.address);
+      const account = await reads.account(acct.address);
       nonce = account.nonce; balance = account.balance;
     } catch (e) {
       toast.textContent = describe(e); lockButton.disabled = false; feeInput.disabled = false; return;
@@ -1642,13 +1661,10 @@ async function reviewSellOrder(order: SellOrder) {
     });
     if (!signed.ok) { toast.textContent = signed.error; lockButton.disabled = false; feeInput.disabled = false; return; }
     const cid = signed.signedSubmit.transactionCID;
-    const chain = settings.chain;
-    let depositAlreadySaved = false;
     try {
       // Persist the exact signed attempt before touching the network. A timeout
       // can mean the node accepted it even though no response arrived.
       await update((s) => {
-        depositAlreadySaved = s.openDeposits.some((item) => item.transactionCID === cid);
         return recordSent(recordOpenDeposit(s, {
           transactionCID: cid, demander: acct.address,
           depositNonce: depositNonce.toString(), amountDeposited: order.amountDeposited,
@@ -1667,22 +1683,12 @@ async function reviewSellOrder(order: SellOrder) {
     }
     toast.textContent = "submitting…";
     try {
-      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
+      await submitChecked(submitter(chosen.url, platform.fetch, authorization), signed.signedSubmit);
       sentScreen(cid);
     } catch (e) {
-      if (isDefiniteSubmissionRefusal(e)) {
-        if (!depositAlreadySaved) {
-          try { await update((s) => forgetSent(completeOpenDeposit(s, cid), chain, cid)); } catch { /* Refusal remains definite. */ }
-          toast.textContent = describe(e);
-          lockButton.disabled = false; feeInput.disabled = false;
-        } else {
-          toast.textContent = `Retry rejected: ${describe(e)} The earlier ambiguous deposit remains saved.`;
-        }
-        return;
-      }
       // Never return to a control that re-signs with a newly read account
       // nonce. Track this exact CID; resubmission must reuse its signed bytes.
-      sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" });
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" }, reads);
     }
   });
 }
@@ -1749,6 +1755,7 @@ function keyFilePicker(target: HTMLTextAreaElement): El[] {
 
 async function sendFlow() {
   const acct = activeAccount()!;
+  const sendContext = { chain: settings.chain, path: [...chainPath()], chosen: { ...endpoint()! }, acct };
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
@@ -1771,7 +1778,7 @@ async function sendFlow() {
     if (warning) feeAdvanced.open = true;
   };
   fee.addEventListener("input", checkFee);
-  client().chainInfo().then((info) => {
+  void authorizationFor(sendContext.chosen.url).then((auth) => reader(sendContext.chosen.url, sendContext.path, platform.fetch, auth).chainInfo()).then((info) => {
     minRelayFee = info.minRelayFee;
     checkFee();
   }).catch(() => {});
@@ -1794,23 +1801,26 @@ async function sendFlow() {
     if (!isAccountAddress(toAddr)) { err.textContent = "Enter a valid recipient address."; return; }
     if (toAddr === acct.address) { err.textContent = "That is this account."; return; }
     let amt: bigint, f: bigint;
-    try { amt = BigInt(amount.value.trim()); if (amt <= 0n) throw 0; } catch { err.textContent = "Enter a whole, positive amount."; return; }
+    try { if (!/^[1-9][0-9]*$/.test(amount.value.trim())) throw 0; amt = BigInt(amount.value.trim()); } catch { err.textContent = "Enter a whole, positive amount."; return; }
     const parsedFee = parseFee(fee.value);
     if (parsedFee === null) { err.textContent = "Enter a whole fee of 0 or more."; return; }
     f = parsedFee;
     err.textContent = "reading account…";
     let nonce: bigint, balance: bigint;
     try {
-      const [a, info] = await Promise.all([client().account(acct.address), client().chainInfo()]);
+      const reads = reader(sendContext.chosen.url, sendContext.path, platform.fetch, await authorizationFor(sendContext.chosen.url));
+      const [a, info] = await Promise.all([reads.account(acct.address), reads.chainInfo()]);
       nonce = a.nonce; balance = a.balance; minRelayFee = info.minRelayFee;
     } catch (e) { err.textContent = describe(e); return; }
     if (amt + f > balance) { err.textContent = `Insufficient balance (have ${fmt(balance.toString())}, need ${fmt((amt + f).toString())}).`; return; }
-    reviewScreen(toAddr, amt, f, nonce, minRelayFee);
+    reviewScreen(toAddr, amt, f, nonce, minRelayFee, sendContext);
   }
 }
 
-function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, minRelayFee: bigint | undefined) {
-  const acct = activeAccount()!;
+function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, minRelayFee: bigint | undefined,
+  context: { chain: string; path: string[]; chosen: ChosenEndpoint; acct: NonNullable<ReturnType<typeof activeAccount>> }) {
+  const { acct, chain, path, chosen } = context;
+  let acknowledgedPending: string | undefined;
   const toast = h("div", { class: "toast" });
   const warning = feeWarning(fee, minRelayFee);
   const sendButton = h("button", { class: "block", onclick: confirm }, "Sign & send") as HTMLButtonElement;
@@ -1825,14 +1835,14 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, fmt(amount.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, fmt(fee.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, fmt((amount + fee).toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, settings.chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
       ),
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
         h("div", { class: "kv advanced-content" },
-          h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
           ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
-          h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),
+          h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(chosen.url))),
         ),
       ),
       ...(warning ? [h("p", { class: "warn" }, warning)] : []),
@@ -1847,16 +1857,26 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
     sendButton.disabled = true;
     toast.textContent = "signing…";
     let signed;
+    let authorization: string | undefined;
     try {
-      signed = await wallet.signTransfer({ from: acct.address, to, amount: amount.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: chainPath() });
+      const latest = await loadSettings(store);
+      const unresolved = latest.pendingSubmissions.filter((item) => item.chain === chain && item.from === acct.address);
+      const fingerprint = unresolved.map((item) => item.cid).sort().join(",");
+      if (unresolved.length && acknowledgedPending !== fingerprint) {
+        acknowledgedPending = fingerprint;
+        toast.textContent = "This account has saved transactions that may still confirm. Check Pending transactions before paying again. Sending another payment may pay twice or compete for the same nonce.";
+        sendButton.textContent = "Send another payment";
+        sendButton.disabled = false;
+        return;
+      }
+      authorization = await authorizationFor(chosen.url);
+      signed = await wallet.signTransfer({ from: acct.address, to, amount: amount.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: path });
     } catch (e) {
       toast.textContent = describe(e); sendButton.disabled = false; return;
     }
     if (!signed.ok) { toast.textContent = signed.error; sendButton.disabled = false; return; }
     toast.textContent = "submitting…";
     const cid = signed.signedSubmit.transactionCID;
-    const chain = settings.chain;
-    let transferAlreadySaved = false;
     try {
       const pending = {
         cid, to, amount: amount.toString(), at: Date.now(),
@@ -1864,7 +1884,6 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         chain,
       };
       await update((s) => {
-        transferAlreadySaved = s.pendingSubmissions.some((item) => item.cid === cid);
         return recordPendingSubmission(recordSent(s, chain, {
           cid, to, amount: amount.toString(), at: pending.at,
           from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
@@ -1877,20 +1896,10 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       return;
     }
     try {
-      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
+      await submitChecked(submitter(chosen.url, platform.fetch, authorization), signed.signedSubmit);
       sentScreen(cid);
     } catch (e) {
-      if (isDefiniteSubmissionRefusal(e)) {
-        if (!transferAlreadySaved) {
-          try { await update((s) => completePendingSubmission(forgetSent(s, chain, cid), cid)); } catch { /* The refusal remains definite. */ }
-          toast.textContent = describe(e);
-          sendButton.disabled = false;
-        } else {
-          toast.textContent = `Retry rejected: ${describe(e)} The earlier ambiguous transaction remains saved.`;
-        }
-        return;
-      }
-      sentScreen(cid, { uncertain: true, from: acct.address, nonce });
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce }, reader(chosen.url, path, platform.fetch, authorization));
     }
   }
 }
@@ -1942,12 +1951,12 @@ function pendingSubmissionsScreen() {
     h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 
-function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }) {
+function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }, reads = client()) {
   const toast = h("div", { class: "toast" });
   const subject = outcome?.kind === "deposit" ? "deposit" : "transaction";
   const status = h("p", { class: outcome ? "warn" : "muted" }, outcome
     ? `Submission outcome unknown. Do not create this ${subject} again; checking this exact transaction…`
-    : "Admitted to the node's pool (pending). See Sent for its block once mined.");
+    : "Admitted to the node's pool (pending). Check Pending transactions or Pending sales in Settings for confirmation.");
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
@@ -1961,7 +1970,7 @@ function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; no
     ),
   );
   if (outcome) {
-    sentStatus(client(), txCID, { from: outcome.from, nonce: outcome.nonce })
+    sentStatus(reads, txCID, { from: outcome.from, nonce: outcome.nonce })
       .then(async (result) => {
         status.textContent = `Submission outcome: ${statusText(result)}. Do not create this ${subject} again.`;
         if (subject === "transaction" && result.kind === "included") status.textContent += " Signed recovery retained against reorgs.";
@@ -2050,6 +2059,10 @@ function feeScreen() {
 // ---------------- chain switch + boot ----------------
 
 export function startWallet(host: Platform) {
+  invalidateRecoveryStatus();
+  lastRecoveryStatuses = new Map();
+  nodeAuth = undefined;
+  nodeAuthURL = undefined;
   platform = host;
   wallet = host.wallet;
   store = host.store;
