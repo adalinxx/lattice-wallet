@@ -176,7 +176,7 @@ async function nodeJSON(
 ): Promise<unknown> {
   const target = new URL(`${url.replace(/\/$/, "")}${path}`);
   target.searchParams.set("chainPath", chainPath.join("/"));
-  return getJSON(fetchImpl, target, 8_000, 4 * 1024 * 1024, undefined, authorization);
+  return getJSON(target, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization });
 }
 
 /** Active, unwithdrawn child deposits advertised as sell offers. */
@@ -254,7 +254,7 @@ export async function receiptWithdrawer(
   path.searchParams.set("amount", offer.amountDemanded.toString());
   path.searchParams.set("nonce", offer.depositNonce.toString());
   path.searchParams.set("chainPath", childChain.join("/"));
-  const value = object(await getJSON(fetchImpl, path, 8_000, 4 * 1024 * 1024, undefined, authorization), "receipt response");
+  const value = object(await getJSON(path, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization }), "receipt response");
   const claims = verifyStateProof(value.proof, "receipts", tipCID);
   const proof = object(value.proof, "receipt proof");
   const directory = childChain.at(-1);
