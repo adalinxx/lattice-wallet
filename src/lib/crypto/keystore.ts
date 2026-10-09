@@ -1,6 +1,7 @@
 // Encrypted vault: AES-256-GCM over a key derived from the user's password.
 // KDF is Argon2id (hash-wasm, memory-hard) with a zero-dependency PBKDF2-SHA256
-// (600k) fallback if wasm is unavailable. A fresh 12-byte IV per encryption.
+// (600k) legacy reader. New encryption fails closed if wasm is unavailable.
+// A fresh 12-byte IV per encryption.
 // The vault header records which KDF/params were used so decrypt can reproduce
 // the key. Plaintext is an arbitrary JSON-serializable object (the wallet data).
 
@@ -18,7 +19,7 @@ export interface Vault {
   pbkdf2?: { iterations: number };
 }
 
-const ARGON = { m: 19456, t: 2, p: 1 }; // 19 MiB, OWASP 2025 baseline
+const ARGON = { m: 65536, t: 3, p: 1 };
 const PBKDF2_ITERS = 600_000;
 
 const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
@@ -55,22 +56,29 @@ async function aesKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", bs(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-/** Derive the AES key for a fresh vault, preferring Argon2id, falling back to PBKDF2. */
+/** New vaults always use Argon2id; legacy PBKDF2 vaults remain readable. */
 async function deriveForNew(password: string, salt: Uint8Array): Promise<{ kdf: Kdf; key: CryptoKey }> {
-  try {
-    return { kdf: "argon2id", key: await aesKey(await deriveArgon2id(password, salt)) };
-  } catch {
-    return { kdf: "pbkdf2", key: await aesKey(await derivePbkdf2(password, salt)) };
-  }
+  const raw = await deriveArgon2id(password, salt);
+  try { return { kdf: "argon2id", key: await aesKey(raw) }; } finally { raw.fill(0); }
 }
 
-async function deriveForVault(password: string, vault: Vault): Promise<CryptoKey> {
+export async function deriveForVault(password: string, vault: Vault): Promise<CryptoKey> {
+  if (vault.v !== 1 || !["argon2id", "pbkdf2"].includes(vault.kdf)) throw new Error("Unsupported vault format");
   const salt = unb64(vault.salt);
+  if (salt.length !== 16 || unb64(vault.iv).length !== 12) throw new Error("Invalid vault header");
+  if (vault.kdf === "argon2id") {
+    const p = vault.argon ?? ARGON;
+    if (!Number.isInteger(p.m) || p.m < 8 * p.p || p.m > 65536 || !Number.isInteger(p.t) || p.t < 1 || p.t > 4
+      || !Number.isInteger(p.p) || p.p !== 1) throw new Error("Unsupported vault KDF parameters");
+  } else {
+    const n = vault.pbkdf2?.iterations ?? PBKDF2_ITERS;
+    if (!Number.isInteger(n) || n < 100000 || n > 2000000) throw new Error("Unsupported vault KDF parameters");
+  }
   const raw =
     vault.kdf === "argon2id"
       ? await deriveArgon2id(password, salt, vault.argon ?? ARGON)
       : await derivePbkdf2(password, salt, vault.pbkdf2?.iterations ?? PBKDF2_ITERS);
-  return aesKey(raw);
+  try { return await aesKey(raw); } finally { raw.fill(0); }
 }
 
 export async function encryptVault(password: string, data: unknown): Promise<Vault> {
@@ -86,7 +94,16 @@ export async function encryptVault(password: string, data: unknown): Promise<Vau
 
 /** Decrypt a vault. Throws on a wrong password (GCM auth failure). */
 export async function decryptVault<T = unknown>(password: string, vault: Vault): Promise<T> {
+  if (vault.v !== 1) throw new Error("Unsupported vault version");
   const key = await deriveForVault(password, vault);
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bs(unb64(vault.iv)) }, key, bs(unb64(vault.ct)));
   return JSON.parse(dec.decode(pt)) as T;
+}
+
+/** Persist an unlocked vault without retaining its password. The derived key
+ * is non-extractable; every write gets a fresh AEAD nonce. */
+export async function encryptWithVaultKey(key: CryptoKey, header: Vault, data: unknown): Promise<Vault> {
+  const iv = randomBytes(12);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: bs(iv) }, key, bs(enc.encode(JSON.stringify(data)))));
+  return { ...header, iv: b64(iv), ct: b64(ct) };
 }

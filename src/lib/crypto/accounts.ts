@@ -41,6 +41,10 @@ export function isValidMnemonic(mnemonic: string): boolean {
 /** Derive account N from a mnemonic (optional BIP39 passphrase). */
 export function deriveAccount(mnemonic: string, account: number, passphrase = ""): Account {
   const seed = mnemonicToSeedSync(mnemonic.trim(), passphrase);
+  try { return deriveAccountFromSeed(seed, account); } finally { seed.fill(0); }
+}
+
+export function deriveAccountFromSeed(seed: Uint8Array, account: number): Account {
   return accountFromPrivate(derivePrivateKey(seed, path(account)), account);
 }
 

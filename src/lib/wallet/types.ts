@@ -63,7 +63,7 @@ export type Request =
   // ---- backup & transfer (every export re-checks the password) ----
   | { type: "exportBackup"; password: string; includeNodeCookies?: boolean }
   | { type: "exportSeedQR"; password: string; format: "standard" | "compact" }
-  | { type: "importBackup"; backup: string; password: string; mode: "merge" | "replace" }
+  | { type: "importBackup"; backup: string; password: string; mode: "merge" | "replace"; currentPassword?: string }
   | { type: "transferOffer" }
   | { type: "transferSend"; offer: string; password: string }
   | { type: "transferOpen"; envelope: string }

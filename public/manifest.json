@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lattice Wallet",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Non-custodial wallet for Lattice chains. Keys never leave your device; you choose the node.",
   "action": {
     "default_title": "Lattice Wallet",
@@ -21,8 +21,7 @@
   },
   "permissions": [
     "storage",
-    "alarms",
-    "clipboardWrite"
+    "alarms"
   ],
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src https: http://127.0.0.1:* http://localhost:* http://[::1]:*; object-src 'none'; base-uri 'none'"

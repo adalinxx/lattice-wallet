@@ -4,7 +4,7 @@
 // private keys never leave it. `touchAutoLock` re-arms the host's idle timer
 // on every key-touching event; the host calls `lock()` when it fires.
 
-import { encryptVault, decryptVault, type Vault } from "../crypto/keystore.ts";
+import { encryptVault, decryptVault, deriveForVault, encryptWithVaultKey, type Vault } from "../crypto/keystore.ts";
 import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
@@ -26,22 +26,43 @@ export interface VaultStorage {
 export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = () => {}) {
   // In-memory unlocked session (lost on auto-lock or worker teardown).
   interface Session {
-    password: string;
+    key: CryptoKey;
+    header: Vault;
     data: WalletData;
     accounts: LiveAccount[];
   }
   let session: Session | null = null;
   // The receiver's one-time transfer session (its X25519 secret never leaves here).
   let pairing: { offer: Offer; secret: Uint8Array } | null = null;
+  let failedReauth = 0;
+  let requests: Promise<unknown> = Promise.resolve();
+  let generation = 0;
+  function lock() {
+    generation += 1;
+    session?.accounts.forEach((account) => account.privateKey.fill(0));
+    pairing?.secret.fill(0);
+    pairing = null;
+    session = null;
+  }
 
   // ---- persistence ----
   const loadVault = () => vaults.load();
   async function persistData() {
     if (!session) return;
-    await vaults.save(await encryptVault(session.password, session.data));
+    const current = session;
+    const encrypted = await encryptWithVaultKey(current.key, current.header, current.data);
+    if (session !== current) throw new Error("Wallet locked during operation");
+    try { await vaults.save(encrypted); } catch (error) { lock(); throw error; }
   }
-  function openSession(password: string, data: WalletData) {
-    session = { password, data, accounts: deriveAccounts(data) };
+  async function openSession(password: string, data: WalletData, header?: Vault) {
+    const before = generation;
+    const vault = header ?? await encryptVault(password, data);
+    const key = await deriveForVault(password, vault);
+    if (before !== generation) throw new Error("Wallet locked during operation");
+    const accounts = deriveAccounts(data);
+    session?.accounts.forEach((account) => account.privateKey.fill(0));
+    session = { key, header: vault, data, accounts };
+    failedReauth = 0;
     touchAutoLock();
   }
 
@@ -59,10 +80,21 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
     return session?.accounts.find((a) => a.address === address);
   }
   /** Exports re-check the password even while unlocked. */
-  function reauth(password: unknown): Response | null {
+  async function reauth(password: unknown): Promise<Response | null> {
     if (!session) return { ok: false, error: "Locked" };
-    if (typeof password !== "string" || password !== session.password) return { ok: false, error: "Wrong password" };
-    return null;
+    const current = session;
+    try {
+      const vault = await loadVault();
+      if (!vault || typeof password !== "string") throw new Error("Wrong password");
+      await decryptVault(password, vault);
+      if (session !== current) return { ok: false, error: "Locked" };
+      failedReauth = 0;
+      return null;
+    } catch {
+      failedReauth += 1;
+      if (failedReauth >= 5) lock();
+      return { ok: false, error: failedReauth >= 5 ? "Too many failed attempts. Wallet locked." : "Wrong password" };
+    }
   }
   const hex = (s: unknown): Uint8Array => {
     if (typeof s !== "string" || !/^([0-9a-f]{2})+$/.test(s) || s.length > 2_000_000) throw new Error("Malformed data");
@@ -71,6 +103,15 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
 
   // ---- handlers ----
   async function handle(msg: Request): Promise<Response> {
+    if (msg.type === "signTransfer" || msg.type === "signDeposit" || msg.type === "signReceipt" || msg.type === "signWithdrawal") {
+      if (!Array.isArray(msg.chainPath) || msg.chainPath.some((part) => typeof part !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(part))) {
+        return { ok: false, error: "Invalid chain path" };
+      }
+      const numeric = msg.type === "signTransfer" ? [msg.amount, msg.fee, msg.nonce]
+        : msg.type === "signDeposit" ? [msg.amountDeposited, msg.amountDemanded, msg.depositNonce, msg.fee, msg.nonce]
+        : [msg.fee, msg.nonce, ...msg.offers.flatMap((offer) => [offer.amountDemanded, offer.amountDeposited, offer.depositNonce])];
+      if (numeric.some((value) => typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value))) return { ok: false, error: "Amounts and nonces must be decimal integers" };
+    }
     switch (msg.type) {
       case "getState":
         return { ok: true, state: await stateView() } as Response;
@@ -92,7 +133,7 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         } else {
           return { ok: false, error: "Provide a recovery phrase or a private key" };
         }
-        session = { password: msg.password, data, accounts: deriveAccounts(data) };
+        await openSession(msg.password, data);
         await persistData();
         touchAutoLock();
         return { ok: true, state: await stateView() } as Response;
@@ -103,7 +144,7 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if (!vault) return { ok: false, error: "No wallet to unlock" };
         try {
           const data = await decryptVault<WalletData>(msg.password, vault);
-          openSession(msg.password, data);
+          await openSession(msg.password, data, vault);
           return { ok: true, state: await stateView() } as Response;
         } catch {
           return { ok: false, error: "Wrong password" };
@@ -111,18 +152,17 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
       }
 
       case "lock":
-        session = null;
-        pairing = null;
+        lock();
         return { ok: true, state: await stateView() } as Response;
 
       case "reset":
-        session = null;
-        pairing = null;
+        lock();
         await vaults.remove();
         return { ok: true, state: await stateView() } as Response;
 
       case "addAccount": {
         if (!session?.data.mnemonic) return { ok: false, error: "Locked or no recovery phrase" };
+        if (session.accounts.length >= 256) return { ok: false, error: "256-account limit reached" };
         const { index, label } = nextHdLabel(session.data);
         session.data.hd.push({ index, label: msg.label?.trim() || label });
         session.accounts = deriveAccounts(session.data);
@@ -133,6 +173,7 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
 
       case "importKey": {
         if (!session) return { ok: false, error: "Locked" };
+        if (session.accounts.length >= 256) return { ok: false, error: "256-account limit reached" };
         let acct;
         try {
           acct = importPrivateKey(msg.privHex.trim());
@@ -180,14 +221,14 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
       }
 
       case "exportBackup": {
-        const denied = reauth(msg.password);
+        const denied = await reauth(msg.password);
         if (denied) return denied;
-        const backup = await encryptBackup(session!.password, backupContents(session!.data, msg.includeNodeCookies === true));
+        const backup = await encryptBackup(msg.password, backupContents(session!.data, msg.includeNodeCookies === true));
         return { ok: true, backup: bytesToHex(backup) } as Response;
       }
 
       case "exportSeedQR": {
-        const denied = reauth(msg.password);
+        const denied = await reauth(msg.password);
         if (denied) return denied;
         if (!session!.data.mnemonic) return { ok: false, error: "This wallet has no recovery phrase" };
         try {
@@ -203,6 +244,10 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
       case "importBackup": {
         const vault = await loadVault();
         if (vault && !session) return { ok: false, error: "Unlock first" };
+        if (vault && msg.mode === "replace") {
+          const denied = await reauth(msg.currentPassword);
+          if (denied) return denied;
+        }
         let incoming: WalletData;
         try {
           incoming = await decryptBackup(String(msg.password), hex(msg.backup));
@@ -213,7 +258,7 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if ((await loadVault()) ? !session || !vault : vault) return { ok: false, error: "The wallet changed; try again" };
         if (!vault) {
           // A restore: the backup's password becomes this wallet's.
-          openSession(String(msg.password), incoming);
+          await openSession(String(msg.password), incoming);
         } else {
           let data: WalletData;
           try {
@@ -221,7 +266,9 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
           } catch (e) {
             return { ok: false, error: (e as Error).message };
           }
-          openSession(session!.password, data);
+          session!.accounts.forEach((account) => account.privateKey.fill(0));
+          session!.data = data;
+          session!.accounts = deriveAccounts(data);
         }
         await persistData();
         return { ok: true, state: await stateView() } as Response;
@@ -233,11 +280,11 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
       }
 
       case "transferSend": {
-        const denied = reauth(msg.password);
+        const denied = await reauth(msg.password);
         if (denied) return denied;
         try {
           const offer = decodeOffer(hex(msg.offer));
-          const backup = await encryptBackup(session!.password, backupContents(session!.data, false));
+          const backup = await encryptBackup(msg.password, backupContents(session!.data, false));
           const { envelope, sas } = await seal(offer, backup);
           return { ok: true, envelope: bytesToHex(encodeEnvelope(envelope)), sas } as Response;
         } catch (e) {
@@ -327,7 +374,14 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
     }
   }
 
-  return { handle, lock: () => { session = null; } };
+  return {
+    handle: (msg: Request): Promise<Response> => {
+      const run = requests.then(() => handle(msg));
+      requests = run.catch(() => {});
+      return run;
+    },
+    lock,
+  };
 }
 
 export type Signer = ReturnType<typeof createSigner>;

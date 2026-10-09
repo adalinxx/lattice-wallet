@@ -205,9 +205,10 @@ function unlockBackup(cbor: Uint8Array, intro?: El) {
   const initialized = host.state().initialized;
   const pw = passwordInput(initialized ? "the backup's password" : "the backup's password (it becomes this wallet's)");
   const err = h("div", { class: "toast" });
+  const currentPassword = passwordInput("current wallet password");
   const run = async (mode: "merge" | "replace") => {
     err.textContent = "decrypting…";
-    const r = await host.wallet.importBackup(bytesToHex(cbor), pw.value, mode);
+    const r = await host.wallet.importBackup(bytesToHex(cbor), pw.value, mode, currentPassword.value);
     if (!r.ok) { err.textContent = r.error; return; }
     pw.value = "";
     host.done(r.state);
@@ -215,6 +216,7 @@ function unlockBackup(cbor: Uint8Array, intro?: El) {
   const replace = () => render(h("div", { class: "stack" },
     h("h1", {}, "Replace this wallet?"),
     h("p", { class: "warn" }, "Every account on this device that is not in the backup is removed from it. Make sure you have their recovery phrase or keys."),
+    currentPassword,
     err,
     h("button", { class: "block", onclick: () => run("replace") }, "Replace"),
     h("button", { class: "btn block", onclick: () => unlockBackup(cbor, intro) }, "Back"),

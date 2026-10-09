@@ -7,6 +7,7 @@ import {
   NodeClient,
   NodeError,
   OPERATOR_DECLARED,
+  getJSON,
   type Fetch,
   type ResolvedEndpoint,
 } from "@adalinxx/lattice-client";
@@ -16,6 +17,7 @@ import { verifyVolume, type VolumeEntry } from "@adalinxx/lattice-volumes";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ROOT_CHAIN } from "../config.ts";
 import type { SignedSubmit } from "./types.ts";
+import { isAccountAddress } from "./session.ts";
 
 // A browser's fetch must be called unbound from any other object (the SDK
 // stores it as a field): always hand the SDK this wrapper.
@@ -172,11 +174,9 @@ function receiptStorageKey(directory: string, demander: string, amountDemanded: 
 async function nodeJSON(
   url: string, path: string, chainPath: readonly string[], fetchImpl: Fetch, authorization?: string,
 ): Promise<unknown> {
-  const target = new URL(path, `${url}/`);
+  const target = new URL(`${url.replace(/\/$/, "")}${path}`);
   target.searchParams.set("chainPath", chainPath.join("/"));
-  const response = await fetchImpl(target, { headers: authorization ? { authorization } : undefined });
-  if (!response.ok) throw new NodeError(response.status, await response.text());
-  return response.json();
+  return getJSON(target, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization });
 }
 
 /** Active, unwithdrawn child deposits advertised as sell offers. */
@@ -198,6 +198,7 @@ export async function activeDeposits(
     for (const [index, entry] of body.deposits.entries()) {
       const row = object(entry, `deposits[${index}]`);
       if (typeof row.key !== "string" || typeof row.demander !== "string") throw new TypeError(`deposits[${index}] must contain key and demander`);
+      if (!isAccountAddress(row.demander)) throw new TypeError(`deposits[${index}].demander must be an account address`);
       const amountDemanded = unsigned(row.amountDemanded, `deposits[${index}].amountDemanded`);
       const depositNonce = unsigned(row.nonce, `deposits[${index}].nonce`);
       const amountDeposited = unsigned(row.amountDeposited, `deposits[${index}].amountDeposited`);
@@ -248,14 +249,12 @@ export async function receiptWithdrawer(
     if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
     tipCID = info.tipCID;
   }
-  const path = new URL("/api/receipt-state", `${url}/`);
+  const path = new URL(`${url.replace(/\/$/, "")}/api/receipt-state`);
   path.searchParams.set("demander", offer.demander);
   path.searchParams.set("amount", offer.amountDemanded.toString());
   path.searchParams.set("nonce", offer.depositNonce.toString());
   path.searchParams.set("chainPath", childChain.join("/"));
-  const response = await fetchImpl(path, { headers: authorization ? { authorization } : undefined });
-  if (!response.ok) throw new NodeError(response.status, await response.text());
-  const value = object(await response.json(), "receipt response");
+  const value = object(await getJSON(path, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization }), "receipt response");
   const claims = verifyStateProof(value.proof, "receipts", tipCID);
   const proof = object(value.proof, "receipt proof");
   const directory = childChain.at(-1);
@@ -311,10 +310,12 @@ export async function submitChecked(relay: TransactionSubmitter, signed: SignedS
   return signed.transactionCID;
 }
 
-/** A 4xx response means the node explicitly refused the transaction. A 408
- * can be generated after an upstream timeout, so its admission is uncertain. */
+/** Recognized node refusals describe this delivery, never prove an earlier
+ * delivery was not admitted. Proxy/auth/rate-limit responses are uncertain. */
 export function isDefiniteSubmissionRefusal(error: unknown): boolean {
-  return error instanceof SubmissionError && error.status >= 400 && error.status < 500 && error.status !== 408;
+  return error instanceof SubmissionError && error.status >= 400 && error.status < 500
+    && error.status !== 401 && error.status !== 403 && error.status !== 408 && error.status !== 429
+    && ["belowMinRelayFee", "feeTooLow", "invalidState", "invalidSignature", "invalidTransaction"].includes(error.reason ?? "");
 }
 
 /** Only an explicit fee-floor refusal justifies offering a higher-fee
