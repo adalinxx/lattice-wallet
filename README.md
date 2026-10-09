@@ -1,5 +1,7 @@
 # Nexus Wallet
 
+See [network binding and replay](docs/network-binding.md) before reusing keys on separate networks.
+
 A **non-custodial** wallet for **Nexus** — the root chain of the
 [Lattice](https://github.com/adalinxx) network — and its child chains, built as
 a **Manifest V3 browser extension**. Keys are generated and used **entirely on
@@ -73,9 +75,11 @@ is display history only and cannot delete recovery material. Settings exposes
 pending transactions for status checks and immediate exact-byte resubmission.
 At six confirmations, active recovery moves into a confirmed
 archive instead of being destroyed; every recovery record also has an explicit,
-confirmed **Dismiss** action for cases no endpoint can settle. A definite
-refusal of the first submission is removed so the user can correct it; a
-refused rebroadcast is retained because it cannot disprove earlier admission.
+confirmed **Dismiss** action for cases no endpoint can settle. Every submission
+error retains the signed record: even a refusal can follow admission by an
+upstream node. Check or resubmit the exact transaction before creating another
+payment. The wallet requires an explicit acknowledgement when the account has
+unresolved transfers.
 
 ### Cross-chain deposits
 
@@ -158,7 +162,7 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
 **Functional.** End to end:
 
 - Conformance-gated crypto core; HD + raw-key derivation.
-- **Encrypted keystore** — Argon2id + AES-256-GCM (PBKDF2-600k fallback),
+- **Encrypted keystore** — Argon2id (64 MiB, 3 passes) + AES-256-GCM; legacy PBKDF2 vaults remain readable, but new encryption never silently falls back,
   persisted in `chrome.storage.local`; wrong password fails closed.
 - **Background service-worker signer** — the sole holder of keys; the popup
   exchanges messages and never receives key material. Idle auto-lock.
@@ -228,10 +232,15 @@ mode → **Load unpacked** → select `dist/`.
 
 ## Security posture
 
+Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Public-node buys are disabled pending independent consensus anchoring; explicitly paired/own-node mode relies on your node's honesty. State witnesses alone do not prove a canonical tip.
+
 - Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
   remote code. `connect-src` is `https:` plus loopback `http:` (your own
   node); the wallet holds no host permission until you choose a node, and then
-  asks for that host only (discovery asks once for `https://*/*`).
+  asks for that host only. Hosted discovery requests the three known Lattice
+  origins together; other operators require explicit Custom node selection.
+  Old all-HTTPS grants are revoked on upgrade. DNS rebinding of public host
+  names cannot be excluded by a browser-only client; discovery sends no cookies.
 - Lockfile-pinned deps; the SDK pinned by commit (submodule). With
   `npm ci --ignore-scripts`, run `npm run sdk` to build it.
 - Signer isolated in the background worker; popup never receives raw keys (target
