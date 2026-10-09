@@ -208,7 +208,8 @@ export async function activeDeposits(
       seen.add(row.key);
       result.push({ demander: row.demander, amountDemanded, depositNonce, amountDeposited });
     }
-    if (body.next === null) return result;
+    // The last page says so with null, or by leaving the cursor out.
+    if (body.next === null || body.next === undefined) return result;
     if (typeof body.next !== "string" || body.next === after) throw new TypeError("deposits response next must advance");
     after = body.next;
   }
@@ -316,6 +317,11 @@ export function isDefiniteSubmissionRefusal(error: unknown): boolean {
   return error instanceof SubmissionError && error.status >= 400 && error.status < 500
     && error.status !== 401 && error.status !== 403 && error.status !== 408 && error.status !== 429
     && ["belowMinRelayFee", "feeTooLow", "invalidState", "invalidSignature", "invalidTransaction"].includes(error.reason ?? "");
+}
+
+/** The node named the transaction itself as too big for it to take. */
+export function isTooLargeRefusal(error: unknown): boolean {
+  return error instanceof SubmissionError && (error.reason === "tooLarge" || error.reason === "requestTooLarge");
 }
 
 /** Only an explicit fee-floor refusal justifies offering a higher-fee

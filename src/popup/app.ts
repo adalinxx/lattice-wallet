@@ -8,8 +8,8 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
@@ -1348,42 +1348,14 @@ const wireOffer = (offer: ActiveDeposit) => ({
   depositNonce: offer.depositNonce.toString(),
 });
 
-export function chooseBuyOffers(order: BuyOrder, offers: ActiveDeposit[]): ActiveDeposit[] {
-  const sorted = [...offers].sort((a, b) => {
-    const left = a.amountDemanded * b.amountDeposited;
-    const right = b.amountDemanded * a.amountDeposited;
-    return left < right ? -1 : left > right ? 1 : 0;
-  });
-  const best = sorted[0];
-  if (!best) return [];
-  const protectedOffers = sorted.filter((offer) => offer.amountDemanded * best.amountDeposited * 100n
-    <= best.amountDemanded * offer.amountDeposited * 105n);
-  const chosen: ActiveDeposit[] = [];
-  if (order.maxAmountDemanded) {
-    let remaining = BigInt(order.maxAmountDemanded);
-    for (const offer of protectedOffers) {
-      if (offer.amountDemanded <= remaining) { chosen.push(offer); remaining -= offer.amountDemanded; }
-    }
-  } else {
-    const desired = BigInt(order.desiredAmountDeposited!);
-    let received = 0n;
-    for (const offer of protectedOffers) {
-      chosen.push(offer); received += offer.amountDeposited;
-      if (received >= desired) break;
-    }
-    if (received < desired) return [];
-  }
-  return chosen;
-}
-
 async function reviewBuyOrder(order: BuyOrder) {
   const acct = activeAccount()!;
   const parentName = order.parentChain.join("/");
   const childName = order.childChain.join("/");
   const childEndpoint = endpointFor(childName);
   const parentEndpoint = endpointFor(parentName);
-  const toast = h("div", { class: "toast" }, "Finding available sell orders…");
-  render(h("div", { class: "stack" }, h("h1", {}, "Find sell orders"), toast,
+  const toast = h("div", { class: "toast" }, "Checking the selected sell orders…");
+  render(h("div", { class: "stack" }, h("h1", {}, "Check sell orders"), toast,
     h("button", { class: "btn block", onclick: orderFlow }, "Cancel")));
   if (!childEndpoint || !parentEndpoint) { toast.textContent = `Connect both ${parentName} and ${childName} before buying.`; return; }
   if (!parentEndpoint.acceptsSubmit || !childEndpoint.acceptsSubmit) {
@@ -1393,57 +1365,51 @@ async function reviewBuyOrder(order: BuyOrder) {
   let childAuth: string | undefined, parentAuth: string | undefined;
   try { [childAuth, parentAuth] = await Promise.all([authorizationFor(childEndpoint.url), authorizationFor(parentEndpoint.url)]); }
   catch (e) { toast.textContent = describe(e); return; }
-  const publicNodePurchase = !platform.ownNode && (!parentAuth || !childAuth);
-  let offers: ActiveDeposit[], minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
-  const unclaimedOffers = async (listed: ActiveDeposit[], parentTip: string) => {
-    let eligible = [...listed];
-    const verified = new Set<string>();
-    const identity = depositKey;
-    while (true) {
-      const selected = chooseBuyOffers(order, eligible);
-      if (!selected.length) return selected;
-      const unchecked = selected.find((offer) => !verified.has(identity(offer)));
-      if (!unchecked) return selected;
-      if (await receiptWithdrawer(parentEndpoint.url, order.parentChain, order.childChain, unchecked, platform.fetch, parentAuth, parentTip) === null) {
-        verified.add(identity(unchecked));
-      } else {
-        const claimed = identity(unchecked);
-        eligible = eligible.filter((offer) => identity(offer) !== claimed);
+  // Any node that is not on this computer is its operator's word about the
+  // chain, whether or not a cookie is stored for it.
+  const publicNodePurchase = !platform.ownNode && (!isLoopbackNodeURL(parentEndpoint.url) || !isLoopbackNodeURL(childEndpoint.url));
+  // The request names the deposits; nothing about them is taken from it on
+  // trust. Each must be proven in the child state the parent tip commits,
+  // with exactly the stated amount, and have no receipt on the parent.
+  const offers: ActiveDeposit[] = order.deposits.map((deposit) => ({
+    demander: deposit.demander, amountDemanded: BigInt(deposit.amountDemanded),
+    amountDeposited: BigInt(deposit.amountDeposited), depositNonce: BigInt(deposit.depositNonce),
+  }));
+  let minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
+  const verifySelected = () => withStableTip(parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
+    const tips = await adjacentTips(parentEndpoint, order.parentChain, order.childChain, parentAuth, parentTip);
+    let listed: ActiveDeposit[];
+    try {
+      listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
+    } catch (error) {
+      if (error instanceof ChildTipMismatchError) {
+        throw new Error("The child node is not at the block currently committed by its parent. Wait for the chains to synchronize, then try again.");
       }
+      throw error;
     }
+    const locked = new Map(listed.map((deposit) => [depositKey(deposit), deposit.amountDeposited]));
+    const owners = await Promise.all(offers.map((offer) => receiptWithdrawer(
+      parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, parentTip,
+    )));
+    return offers.map((offer, index) => locked.get(depositKey(offer)) !== offer.amountDeposited ? "is no longer locked with these terms"
+      : owners[index] !== null ? "was already bought" : null);
+  });
+  const unavailable = (problems: readonly (string | null)[]): string | null => {
+    const failed = problems.flatMap((problem, index) => problem === null ? [] : [`${fmt(offers[index]!.amountDeposited)} from ${short(offers[index]!.demander)} ${problem}`]);
+    return failed.length ? `${failed.length} of ${offers.length} selected sell orders cannot be bought: ${failed.join("; ")}. Nothing was paid. Select again on the Buy page.` : null;
   };
-  const stableDeposits = (receiptOffers: readonly ActiveDeposit[] = [], filterUnclaimed = false) => withStableTip(
-    parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
-      const tips = await adjacentTips(parentEndpoint, order.parentChain, order.childChain, parentAuth, parentTip);
-      let listed: ActiveDeposit[];
-      try {
-        listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
-      } catch (error) {
-        if (error instanceof ChildTipMismatchError) {
-          throw new Error("The child node is not at the block currently committed by its parent. Wait for the chains to synchronize, then try again.");
-        }
-        throw error;
-      }
-      const owners = await Promise.all(receiptOffers.map((offer) => receiptWithdrawer(
-        parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, parentTip,
-      )));
-      const available = filterUnclaimed ? await unclaimedOffers(listed, parentTip) : undefined;
-      return { tips, listed, owners, available };
-    },
-  );
   try {
-    const { available } = await stableDeposits([], true);
-    offers = available ?? [];
+    const refusal = unavailable(await verifySelected());
+    if (refusal) { toast.textContent = refusal; return; }
     [minRelayFee, childMinRelayFee] = await Promise.all([
       reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth).chainInfo().then((info) => info.minRelayFee),
       reader(childEndpoint.url, [...order.childChain], platform.fetch, childAuth).chainInfo().then((info) => info.minRelayFee),
     ]);
-  } catch (e) { toast.textContent = "Could not read active sell orders: " + describe(e); return; }
-  if (!offers.length) { toast.textContent = "No active sell orders satisfy this purchase amount."; return; }
+  } catch (e) { toast.textContent = "Could not check the selected sell orders: " + (e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e)); return; }
   const totalPay = offers.reduce((sum, offer) => sum + offer.amountDemanded, 0n);
   const totalReceive = offers.reduce((sum, offer) => sum + offer.amountDeposited, 0n);
   if (childMinRelayFee === undefined || totalReceive <= childMinRelayFee) {
-    toast.textContent = "These sell orders cannot safely cover the child-chain withdrawal fee.";
+    toast.textContent = "These sell orders cannot cover the fee of the child-chain withdrawal transaction.";
     return;
   }
   const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, parentName) }) as HTMLInputElement;
@@ -1469,13 +1435,13 @@ async function reviewBuyOrder(order: BuyOrder) {
         h("label", {}, trustAcknowledgement, " I trust these node operators for this purchase."),
       ),
     ] : []),
-    h("p", { class: "muted" }, "Price protection: only orders within 5% of the best eligible price are selected. Your budget may be partly unused. These exact offers are checked again before signing."),
+    h("p", { class: "muted" }, "These are the sell orders named in the request, each bought whole. The wallet proved each one in the child state its node serves and found no payment for it; it checks again before signing."),
     h("div", { class: "kv" },
       h("div", { class: "row" }, h("span", { class: "k" }, "You pay"), h("span", { class: "v" }, `${fmt(totalPay)} on ${parentName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "You receive"), h("span", { class: "v" }, `${fmt(totalReceive)} on ${childName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Sell orders"), h("span", { class: "v" }, offers.length.toString())),
       ...offers.map((offer) => h("div", { class: "row" }, h("span", { class: "k" }, short(offer.demander)), h("span", { class: "v" }, `${fmt(offer.amountDemanded)} parent / ${fmt(offer.amountDeposited)} child`))),
-      h("div", { class: "row" }, h("span", { class: "k" }, "Child withdrawal fee"), h("span", { class: "v" }, `at least ${fmt(childMinRelayFee)}`)),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Child node minimum fee"), h("span", { class: "v" }, `${fmt(childMinRelayFee)}, paid from what you receive`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
     ),
     h("label", { class: "k" }, "Parent-chain fee"), feeInput, feeNote, toast, buyButton,
@@ -1491,18 +1457,10 @@ async function reviewBuyOrder(order: BuyOrder) {
     const fee = parseFee(feeInput.value);
     if (fee === null) { toast.textContent = "Enter a whole fee of 0 or more."; return; }
     purchaseSubmitting = true;
-    buyButton.disabled = true; feeInput.disabled = true; trustAcknowledgement.disabled = true; toast.textContent = "Rechecking sell orders…";
+    buyButton.disabled = true; feeInput.disabled = true; trustAcknowledgement.disabled = true; toast.textContent = "Rechecking the selected sell orders…";
     try {
-      const { listed: currentDeposits, owners } = await stableDeposits(offers);
-      for (const [index, offer] of offers.entries()) {
-        const stillLocked = currentDeposits.some((current) => current.demander === offer.demander
-          && current.depositNonce === offer.depositNonce && current.amountDemanded === offer.amountDemanded
-          && current.amountDeposited === offer.amountDeposited);
-        if (!stillLocked) throw new Error("A selected sell order is no longer locked. Create a fresh request.");
-        if (owners[index] !== null) {
-          throw new Error("A selected sell order was already purchased. Create a fresh request.");
-        }
-      }
+      const refusal = unavailable(await verifySelected());
+      if (refusal) throw new Error(refusal);
       const parent = reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth);
       const account = await parent.account(acct.address);
       if (totalPay + fee > account.balance) throw new Error(`Insufficient parent balance (have ${fmt(account.balance)}, need ${fmt(totalPay + fee)}).`);
@@ -1528,7 +1486,9 @@ async function reviewBuyOrder(order: BuyOrder) {
       try {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
       } catch (e) {
-        purchaseScreen(storedPurchase, `Receipt confirmation unknown: ${describe(e)} The payment may still confirm; keep this record and check its status before creating another purchase.`);
+        purchaseScreen(storedPurchase, isTooLargeRefusal(e)
+          ? `Too many sell orders for one transaction: ${describe(e)} Nothing was paid through this node. Select fewer on the Buy page. The signed request is kept here; dismiss it once you have bought again.`
+          : `Receipt confirmation unknown: ${describe(e)} The payment may still confirm; keep this record and check its status before creating another purchase.`);
         return;
       }
       purchaseScreen(storedPurchase);
