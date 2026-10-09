@@ -221,7 +221,9 @@ test("submission posts the signer's payload to /transactions; refusals are typed
   assert.match(describe(new NodeError(401)), /needs its cookie/);
   assert.match(describe(new NodeError(403)), /rpcAllowedOrigins/);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(400, "belowMinRelayFee")), true);
-  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(429, "rate limited")), true);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(429, "rate limited")), false);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(403)), false);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(400, "unknown reason")), false);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(408)), false);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(500)), false);
   assert.equal(isDefiniteSubmissionRefusal(new TypeError("connection lost")), false);
