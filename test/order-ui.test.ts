@@ -46,13 +46,13 @@ function testTrie(values: ReadonlyMap<string, bigint | string>) {
   return { rootCID, entries: [...entries].map(([cid, bytes]) => ({ cid, bytes: b64(bytes) })) };
 }
 
-function testProof(dictionary: "deposits" | "receipts", trie: ReturnType<typeof testTrie>, claims: Array<{ key: string; value: string | null }>) {
+function testProof(dictionary: "deposits" | "receipts", trie: ReturnType<typeof testTrie>, claims: Array<{ key: string; value: string | null }>, height = 1n) {
   const rootCID = trie.rootCID;
   const stateBytes = encodeDagCbor({ accountState: { rawCID: rootCID }, generalState: { rawCID: rootCID }, depositState: { rawCID: rootCID }, receiptState: { rawCID: rootCID } });
   const postStateCID = cidV1DagCbor(stateBytes);
-  const blockBytes = encodeDagCbor({ height: 1n, postState: { rawCID: postStateCID } });
+  const blockBytes = encodeDagCbor({ height, postState: { rawCID: postStateCID } });
   const blockCID = cidV1DagCbor(blockBytes);
-  return { blockHash: blockCID, blockHeight: "1", block: { cid: blockCID, data: b64(blockBytes) }, stateRoot: postStateCID,
+  return { blockHash: blockCID, blockHeight: height.toString(), block: { cid: blockCID, data: b64(blockBytes) }, stateRoot: postStateCID,
     dictionary, dictionaryRoot: rootCID, claims,
     witness: [...trie.entries.map(({ cid, bytes }) => ({ cid, data: bytes })), { cid: postStateCID, data: b64(stateBytes) }] };
 }
@@ -342,6 +342,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     } } },
   });
   let receiptSigns = 0, withdrawalSigns = 0, posts = 0, depositReads = 0, receiptMined = false, withdrawalMined = false;
+  let parentTipHeight = 1n, parentLatestReads = 0;
   let signedOffers: Array<{ demander: string }> = [];
   const depositRows = [
     { demander: expensiveSeller, amountDemanded: "100", nonce: "43", amountDeposited: "100" },
@@ -352,13 +353,13 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   const depositProof = testProof("deposits", depositTrie, depositRows.map((row) => ({ key: row.key, value: row.amountDeposited })));
   const spentDepositTrie = testTrie(new Map(depositRows.map((row) => [row.key, 0n])));
   const spentDepositProof = testProof("deposits", spentDepositTrie, depositRows.map((row) => ({ key: row.key, value: "0" })));
-  const receiptState = () => {
+  const receiptState = (height = parentTipHeight) => {
     const rows = depositRows.filter((row) => receiptMined || row.demander === claimedSeller);
     const values = new Map(rows.map((row) => [testReceiptKey("testnet", row.demander, row.amountDemanded, row.nonce), address]));
     const trie = testTrie(values);
     return { trie, proof: testProof("receipts", trie, rows.map((row) => ({
       key: testReceiptKey("testnet", row.demander, row.amountDemanded, row.nonce), value: address,
-    }))) };
+    })), height) };
   };
   const wallet = {
     getState: async () => ({ ok: true, state: {
@@ -393,7 +394,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       const state = receiptState();
       const key = testReceiptKey("testnet", url.searchParams.get("demander")!, url.searchParams.get("amount")!, url.searchParams.get("nonce")!);
       const exists = receiptMined || claimed;
-      const proof = exists ? state.proof : testProof("receipts", state.trie, [...state.proof.claims, { key, value: null }]);
+      const proof = exists ? state.proof : testProof("receipts", state.trie, [...state.proof.claims, { key, value: null }], parentTipHeight);
       return new Response(JSON.stringify({ exists, withdrawer: exists ? address : null, key, proof }));
     }
     if (url.pathname === "/api/chain/info") {
@@ -402,7 +403,11 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
         tipCID: parent ? receiptState().proof.blockHash : (withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash), height: "1" }));
     }
     if (url.pathname === "/api/block/latest" && url.hostname === "parent.example") {
-      return new Response(JSON.stringify({ height: "1", hash: receiptState().proof.blockHash, timestamp: "1", transactionCount: 0 }));
+      const state = receiptState();
+      const response = new Response(JSON.stringify({ height: parentTipHeight.toString(), hash: state.proof.blockHash, timestamp: "1", transactionCount: 0 }));
+      parentLatestReads += 1;
+      if (parentLatestReads === 1) parentTipHeight = 2n;
+      return response;
     }
     if (url.pathname.startsWith("/api/block/") && url.pathname.endsWith("/children") && url.hostname === "parent.example") {
       return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash }] }));
@@ -411,7 +416,9 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     if (url.pathname === "/transactions" && init?.method === "POST") {
       posts += 1;
       if (posts === 1) return new Response(JSON.stringify({ error: { message: "belowMinRelayFee" } }), { status: 400 });
-      if (posts === 2) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
+      if (posts === 2) throw new TypeError("connection dropped after submit");
+      if (posts === 3) return new Response(JSON.stringify({ error: { message: "duplicate" } }), { status: 400 });
+      if (posts === 4) { receiptMined = true; return new Response(JSON.stringify({ transactionCID: "bafyreceipt" })); }
       withdrawalMined = true;
       return new Response(JSON.stringify({ transactionCID: "bafywithdraw" }));
     }
@@ -437,6 +444,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Review purchase", document.body.textContent ?? "");
   assert.ok(depositReads > 0, "buy discovery reads the proof-bearing deposits endpoint");
+  assert.ok(parentLatestReads >= 4, "a proof failure caused by a moving parent tip is retried inside one stable-tip read");
   button("Pay & reserve tokens").click();
   await settle();
   assert.equal(receiptSigns, 1);
@@ -459,12 +467,30 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   await settle();
   assert.equal(receiptSigns, 2);
   assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
+  assert.equal(stored.settings.openPurchases.length, 1, "an ambiguous first attempt remains recoverable");
+  button("Back").click();
+  button("Back").click();
+  button("Open cross-chain order").click();
+  const duplicatePaste = document.querySelector("textarea") as HTMLTextAreaElement;
+  duplicatePaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
+  button("Use pasted text").click();
+  await settle();
+  button("Pay & reserve tokens").click();
+  await settle();
+  assert.equal(receiptSigns, 3);
+  assert.match(document.body.textContent ?? "", /Retry rejected:.*duplicate.*earlier attempt may still confirm.*keep this record/i);
+  assert.doesNotMatch(document.body.textContent ?? "", /Nothing was paid/);
+  assert.equal(stored.settings.openPurchases.length, 1, "a refused duplicate cannot erase the ambiguous first attempt");
+  button("Check & withdraw tokens").click();
+  await settle();
+  assert.match(document.body.textContent ?? "", /exact saved transaction was resubmitted/i);
+  assert.equal(receiptMined, true);
   button("Check & withdraw tokens").click();
   await settle();
   assert.equal(withdrawalSigns, 1);
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
   assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
-  assert.equal(posts, 3);
+  assert.equal(posts, 5);
   button("Back").click();
   (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
   await settle();

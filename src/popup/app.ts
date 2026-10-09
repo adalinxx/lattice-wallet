@@ -8,7 +8,7 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, forgetWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
@@ -153,21 +153,18 @@ async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonl
 
 async function withStableTip<T>(chosen: ChosenEndpoint, chain: readonly string[], authorization: string | undefined, read: (tip: string) => Promise<T>): Promise<T> {
   const client = reader(chosen.url, [...chain], platform.fetch, authorization);
-  let moved = false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const before = await client.latestBlock();
     try {
       const result = await read(before.hash);
       const after = await client.latestBlock();
       if (before.hash === after.hash) return result;
-      moved = true;
     } catch (error) {
       const after = await client.latestBlock();
       if (before.hash === after.hash) throw error;
-      moved = true;
     }
   }
-  throw new Error(moved ? "The chain kept advancing while verified state was read." : "Could not read a stable chain tip.");
+  throw new Error("The chain kept advancing while verified state was read.");
 }
 
 async function stableReceiptOwners(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], offers: readonly ActiveDeposit[], parentAuth?: string) {
@@ -1375,7 +1372,7 @@ async function reviewBuyOrder(order: BuyOrder) {
       try {
         listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
       } catch (error) {
-        if (error instanceof TypeError && error.message === "child tip must match its parent-chain commitment") {
+        if (error instanceof ChildTipMismatchError) {
           throw new Error("The child node is not at the block currently committed by its parent. Wait for the chains to synchronize, then try again.");
         }
         throw error;
@@ -1452,10 +1449,14 @@ async function reviewBuyOrder(order: BuyOrder) {
         receiptCID: signed.signedSubmit.transactionCID, receiptSubmit: signed.signedSubmit, withdrawer: acct.address,
         offers: offers.map(wireOffer), parentChain: [...order.parentChain], childChain: [...order.childChain], createdAt: Date.now(),
       };
-      await update((s) => recordSent(recordOpenPurchase(s, purchase), parentName, {
-        cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
-        from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
-      }));
+      let purchaseAlreadySaved = false;
+      await update((s) => {
+        purchaseAlreadySaved = s.openPurchases.some((item) => item.receiptCID === purchase.receiptCID);
+        return recordSent(recordOpenPurchase(s, purchase), parentName, {
+          cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
+          from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
+        });
+      });
       invalidateRecoveryStatus(purchase.receiptCID);
       const storedPurchase = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID) ?? purchase;
       toast.textContent = "submitting parent receipt…";
@@ -1463,7 +1464,9 @@ async function reviewBuyOrder(order: BuyOrder) {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
       } catch (e) {
         if (isDefiniteSubmissionRefusal(e)) {
-          purchaseScreen(storedPurchase, `Receipt refused: ${describe(e)} Nothing was paid; dismiss this record to try again with different terms.`);
+          purchaseScreen(storedPurchase, purchaseAlreadySaved
+            ? `Retry rejected: ${describe(e)} The earlier attempt may still confirm; keep this record.`
+            : `Receipt refused: ${describe(e)} Nothing was paid; dismiss this record to try again with different terms.`);
         } else {
           purchaseScreen(storedPurchase);
         }
@@ -1903,7 +1906,7 @@ function pendingSubmissionsScreen() {
       } }, "Dismiss")));
   }
   render(h("div", { class: "stack" }, h("h1", {}, "Pending transactions"), list,
-    h("p", { class: "muted" }, "The wallet keeps exact signed transactions here until the chain reports a final outcome."),
+    h("p", { class: "muted" }, "The wallet keeps exact signed transactions through confirmation and archives them until you explicitly dismiss them."),
     h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 

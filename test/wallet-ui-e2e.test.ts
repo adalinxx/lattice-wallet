@@ -285,3 +285,42 @@ test("wallet UI e2e: a definite refusal is removed from recovery history and can
   assert.deepEqual(store.value.settings.sent.Nexus ?? [], []);
   assert.deepEqual(store.value.settings.pendingSubmissions ?? [], []);
 });
+
+test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
+  installDOM();
+  let lockRequests = 0;
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (_name: string, _options: LockOptions, task: () => Promise<unknown>) => {
+      lockRequests += 1;
+      return task();
+    },
+  } });
+  const store = memoryStore();
+  await startWallet({ wallet: walletFor(openState()), store: store.api, ownNode: "http://127.0.0.1:8080",
+    fetch: nodeFetch(), requestOrigins: async () => true });
+
+  const signedSubmit = { transactionCID: "bafyfromotherpage", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce: "9", chainPath: ["Nexus"],
+  } } } };
+  await store.api.set({ settings: {
+    ...store.value.settings,
+    pendingSubmissions: [{
+      cid: signedSubmit.transactionCID, to: bob, amount: "7", at: Date.now(), from: alice,
+      fee: "1", nonce: "9", signedSubmit, chain: "Nexus",
+    }],
+  } });
+
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Default fee").click();
+  const fee = document.querySelector('input[inputmode="numeric"]') as HTMLInputElement;
+  fee.value = "7";
+  button("Save").click();
+  await settle();
+
+  assert.ok(lockRequests > 0, "the write uses the cross-page lock");
+  assert.equal(store.value.settings.fees.Nexus, "7");
+  assert.equal(store.value.settings.pendingSubmissions[0]?.cid, signedSubmit.transactionCID);
+  assert.deepEqual(store.value.settings.pendingSubmissions[0]?.signedSubmit, signedSubmit,
+    "a stale page cannot overwrite signed recovery data saved by another page");
+});

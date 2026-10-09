@@ -37,6 +37,17 @@ export interface ActiveDeposit {
   amountDeposited: bigint;
 }
 
+export class ChildTipMismatchError extends TypeError {
+  readonly expectedTip: string;
+  readonly actualTip: string;
+  constructor(expectedTip: string, actualTip: string) {
+    super("child tip must match its parent-chain commitment");
+    this.name = "ChildTipMismatchError";
+    this.expectedTip = expectedTip;
+    this.actualTip = actualTip;
+  }
+}
+
 function unsigned(value: unknown, name: string, hexadecimal = false): bigint {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value !== "string" || !(hexadecimal ? /^[0-9a-f]+$/i : /^(0|[1-9][0-9]*)$/).test(value)) {
@@ -174,7 +185,7 @@ export async function activeDeposits(
 ): Promise<ActiveDeposit[]> {
   const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
   if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
-  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new TypeError("child tip must match its parent-chain commitment");
+  if (expectedTip !== undefined && info.tipCID !== expectedTip) throw new ChildTipMismatchError(expectedTip, info.tipCID);
   const result: ActiveDeposit[] = [];
   const seen = new Set<string>();
   let after: string | undefined;
@@ -306,7 +317,7 @@ export function isDefiniteSubmissionRefusal(error: unknown): boolean {
   return error instanceof SubmissionError && error.status >= 400 && error.status < 500 && error.status !== 408;
 }
 
-/** Only an explicit relay-floor refusal justifies offering a higher-fee
+/** Only an explicit fee-floor refusal justifies offering a higher-fee
  * replacement. Authentication, rate limits and availability need repair or
  * a later exact retry, not a more expensive transaction. */
 export function shouldOfferFeeReplacement(error: unknown): boolean {

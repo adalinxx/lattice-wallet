@@ -95,8 +95,8 @@ Until then, an uncertain network response can be recovered by resubmitting the
 identical transaction rather than signing a second payment or claim. Deposit recovery checks
 targeted proof-backed state instead of scanning discovery pages, because a node may prune
 the original transaction while its locked deposit remains active. A refusal to
-rebroadcast never deletes that deposit key. Only an explicit `belowMinRelayFee`
-refusal offers a higher-fee replacement with the same account nonce and claim,
+rebroadcast never deletes that deposit key. Only an explicit fee-floor refusal
+(`belowMinRelayFee` or `feeTooLow`) offers a higher-fee replacement with the same account nonce and claim,
 without forgetting earlier transaction CIDs. This local metadata is not
 reconstructed by restoring a recovery phrase; seed-only recovery still needs
 chain scanning.
