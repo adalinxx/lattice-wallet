@@ -46,10 +46,10 @@ An AI-assisted review of the 0.3.0 commit and package was carried out during pre
 
 That automated review was not an independent review, and no certification is claimed. The release owner subsequently stated on October 10 that he reviewed the wallet himself and does not require an independent reviewer; owner review is the chosen sign-off.
 
-## Outstanding public-release gates
+## Public-release status (updated by owner report)
 
 - Independent-review requirement waived by the release owner on October 10 in favor of his own review; no independent audit is claimed.
-- Paying for and withdrawing a purchase on the deployed network. The purchase review has been reached there; payment and withdrawal have never been executed.
+- The release owner reports that he already completed a live purchase test. Withdrawal back to the buyer wallet is awaiting his clarification. This owner report supersedes the earlier preparation statement that payment had never been executed. No transaction evidence was supplied for automated verification.
 - Published policy links, the publisher account and final store declarations.
 
 No user funds or keys were used for any check above.
@@ -99,11 +99,11 @@ Do not infer account readiness or certify declarations from the listing draft.
    He explicitly waived independent review on October 10. Record the final
    commit, SDK revision and ZIP covered by publication approval; do not describe
    his review or automated checks as an independent audit.
-3. The release owner supplies and executes the approved disposable deployed trade, budgets
-   and signing steps in release-live-testing.md. Before payment, leave an eligible
-   unpaid testnet offer available and run the new read-only purchase-review test.
-   Then complete Chrome payment/restart/withdrawal and balance accounting, wait
-   for six confirmations, and run the read-only acceptance test with private evidence.
+3. Reconcile the release owner’s completed live purchase with his pending withdrawal
+   clarification and any existing private evidence. Do not repeat payment because
+   the regression currently lacks an offer. If available, run the read-only
+   acceptance test against the existing transaction CIDs. The owner handoff covers
+   only missing acceptance observations or a separately authorized future test.
 4. The release owner opens the Web Store dashboard and completes publisher registration,
    verified contact/2FA, any fees or terms, and jurisdiction/data declarations.
    Recheck final policy wording and permission explanations against the manifest.
@@ -129,3 +129,10 @@ disposable offer was identified. Endpoint selection agrees with documented defau
 operator intent and the historical reason for the empty listing remain unknown.
 See [the compact owner handoff](release-owner-handoff.md) for prerequisites,
 manual signing steps, evidence and the precise browser-permission observations.
+
+The release owner subsequently reported “I already did a live purchase test”. This is recorded
+as owner-reported completion, separately from automated reproduction. Withdrawal
+clarification is pending. A filename search of the original release/docs directories
+found no separate trade/purchase/withdrawal evidence artifact; this does not establish
+that none exists elsewhere. No wallet storage or secret-bearing files were inspected.
+The empty current listing does not establish that no prior live test occurred.

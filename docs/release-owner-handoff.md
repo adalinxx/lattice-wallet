@@ -1,5 +1,10 @@
 # The release owner's funded acceptance handoff
 
+Current status: the release owner reports a completed live purchase test. Await his clarification
+on withdrawal back to the buyer wallet. Reconcile existing evidence first; do not
+repeat payment because the new automated regression has no current offer. The steps
+below are a reference for missing observations or a separately authorized future test.
+
 Use a dedicated Chrome profile, the reviewed 0.3.1 ZIP and disposable accounts.
 Keep recovery phrases/passwords in your own private custody. Do not paste them
 into chat, shell commands, environment variables or evidence files.
