@@ -111,3 +111,21 @@ Do not infer account readiness or certify declarations from the listing draft.
    reviewed ZIP and request review with deferred publication.
 5. Publish only after all gates and owner declarations are complete. Do not tag
    or announce while blocked. Store-signed upgrade is a second-release gate.
+
+### Follow-up diff review and CI
+
+GitHub CI run 38077628609 passed on exact head
+`8246db856a28ca39604de9d48d2d21e4510de2c5`; its Linux ZIP has the same SHA-256
+as the local macOS ZIP above. Subsequent diff review found the funded acceptance
+verifier still required the child tip to equal the parent commitment. The verifier
+now checks that the parent-committed block is on the child's current chain by
+height, matching the wallet's behavior, with a regression for a fork/missing child.
+This changes test code only and does not establish that funded acceptance passed.
+
+Both `rpc.lattice.build` and `lattice-mainnet-read.fly.dev` report Nexus height
+4962 and discover the same `lattice-mainnet-testnet.fly.dev` endpoint. At child
+height 12214 that endpoint listed zero deposits in both checks. No existing
+disposable offer was identified. Endpoint selection agrees with documented defaults;
+operator intent and the historical reason for the empty listing remain unknown.
+See [the compact owner handoff](release-owner-handoff.md) for prerequisites,
+manual signing steps, evidence and the precise browser-permission observations.
