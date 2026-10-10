@@ -386,6 +386,15 @@ function closeChainMenu() {
 
 async function switchToChain(chain: string, status: El) {
   if (chain === settings.chain) { document.querySelector(".chain-menu")?.remove(); return; }
+  // A host with its own node reads a chain only once that node hosts it.
+  if (platform.chains && chain !== ROOT_CHAIN) {
+    try {
+      if (!(await platform.chains.list()).includes(chain)) {
+        status.textContent = `Adding ${chain} to your node…`;
+        await platform.chains.add(chain);
+      }
+    } catch (e) { status.textContent = (e as Error).message; return; }
+  }
   if (settings.nodeMode === "automatic" && !platform.ownNode && !settings.endpoints[chain] && chain !== ROOT_CHAIN) {
     status.textContent = `Finding a node for ${chain}…`;
     const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
@@ -466,25 +475,35 @@ async function toggleChainMenu() {
     items, status,
   );
   const shown = new Set<string>();
-  const add = (chain: string, label: string) => {
+  const add = (chain: string, label: string, hosted = true) => {
     if (!chain || shown.has(chain)) return;
     shown.add(chain);
     items.append(h("button", {
       class: chain === settings.chain ? "chain-menu-item current" : "chain-menu-item",
       ...(chain === settings.chain ? { "aria-current": "page", disabled: "true" } : {}),
       onclick: () => switchToChain(chain, status),
-    }, h("span", { class: "chain-name", title: chain }, label), h("span", { "aria-hidden": "true" }, "›")));
+    }, h("span", { class: "chain-name", title: chain }, label),
+      hosted ? h("span", { "aria-hidden": "true" }, "›")
+        : h("span", { class: "chain-note", title: "Your node does not host this chain yet. Choosing it adds it; a running node restarts." }, "add to node ›")));
   };
   const current = settings.chain;
-  for (const saved of settings.chains) {
-    if (saved.split("/").slice(0, -1).join("/") === current) add(saved, saved.slice(current.length + 1));
+  const childOf = (chain: string) => chain.split("/").slice(0, -1).join("/") === current;
+  // A host with its own node lists its hosted chains itself, below.
+  for (const saved of platform.chains ? [] : settings.chains) {
+    if (childOf(saved)) add(saved, saved.slice(current.length + 1));
   }
   document.body.append(menu);
   status.textContent = "Loading…";
   try {
+    const hosted = await platform.chains?.list();
+    for (const chain of hosted ?? []) {
+      if (childOf(chain)) add(chain, chain.slice(current.length + 1));
+    }
     const latest = await client().latestBlock();
     for (const child of await client().children(latest.hash)) {
-      if (child.directory && !child.directory.includes("/")) add(`${current}/${child.directory}`, child.directory);
+      if (!child.directory || child.directory.includes("/")) continue;
+      const chain = `${current}/${child.directory}`;
+      add(chain, child.directory, !hosted || hosted.includes(chain));
     }
     status.textContent = shown.size ? "" : "No child chains.";
   } catch { status.textContent = shown.size ? "" : "Could not load child chains."; }

@@ -103,6 +103,7 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .chain-menu-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: var(--s-2); border: 0; border-bottom: var(--rule); text-align: left; text-transform: none; }
 .chain-menu-item:last-child { border-bottom: 0; }
 .chain-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chain-note { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-12); }
 .chain-menu > .toast:not(:empty) { margin: var(--s-2) var(--s-3); }
 .chain-menu > .toast:empty { display: none; }
 
