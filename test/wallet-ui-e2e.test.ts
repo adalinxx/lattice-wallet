@@ -422,6 +422,106 @@ test("wallet UI e2e: a refusal retains recovery bytes and cannot invite another 
   assert.deepEqual(store.value.settings.pendingSubmissions?.[0]?.signedSubmit, signedSubmit);
 });
 
+test("wallet UI e2e: a signer that locked itself is unlocked in place and the step continues", async () => {
+  const dom = installDOM();
+  let locked = true, signs = 0, submitted = 0, unlocks: string[] = [];
+  const signedSubmit = { transactionCID: "bafysent", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce: "3", chainPath: ["Nexus"],
+  } } } };
+  const wallet = walletFor(openState(), {
+    // The page still believes it is unlocked; the signer knows better.
+    signTransfer: async (args) => {
+      signs += 1;
+      return locked ? { ok: false, error: "Locked" }
+        : { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } };
+    },
+    unlock: async (password) => {
+      unlocks.push(password);
+      if (password !== "correct horse") return { ok: false, error: "Wrong password" };
+      locked = false;
+      return { ok: true, state: openState() };
+    },
+  });
+  const store = memoryStore();
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch({ onSubmit: () => { submitted += 1; } }), requestOrigins: async () => true });
+  const review = async () => {
+    button("Send").click();
+    await settle();
+    input("recipient address (bafy…)").value = bob;
+    input("amount (units)").value = "10";
+    button("Review").click();
+    await settle();
+  };
+  const dialog = () => document.querySelector('[role="dialog"][aria-label="Unlock wallet"]');
+  const inDialog = (text: string) => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent === text) as HTMLButtonElement;
+
+  // Cancel: the request's own answer is shown and nothing is sent.
+  await review();
+  button("Sign & send").click();
+  await settle();
+  assert.ok(dialog(), "the password is asked for over the review");
+  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review underneath is kept");
+  assert.match(dialog()!.textContent ?? "", /Nothing was signed or sent/);
+  inDialog("Not now").click();
+  await settle();
+  assert.equal(dialog(), null);
+  // Not a bare "Locked": what happened, that nothing went out, and what to do.
+  assert.match(document.body.textContent ?? "", /The wallet is locked, so this was not signed or sent\. Unlock it and try again\./);
+  const notice = document.querySelector(".lock-notice");
+  assert.match(notice?.textContent ?? "", /Wallet locked\..*signing and paying need your password/, "a standing notice says the wallet is locked");
+  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review is still there to retry from");
+  assert.equal(submitted, 0);
+
+  // Wrong, then right: the same request is sent again and the transfer goes out.
+  button("Sign & send").click();
+  await settle();
+  const password = dialog()!.querySelector("input") as HTMLInputElement;
+  password.value = "wrong";
+  inDialog("Unlock").click();
+  await settle();
+  assert.match(dialog()!.textContent ?? "", /That password is not right/);
+  assert.equal(submitted, 0);
+  password.value = "correct horse";
+  password.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await settle();
+  assert.equal(dialog(), null);
+  assert.deepEqual(unlocks, ["wrong", "correct horse"]);
+  assert.equal(signs, 3, "locked, locked again after cancel, then signed once unlocked");
+  assert.equal(submitted, 1);
+  assert.equal(store.value.settings.pendingSubmissions[0]?.cid, "bafysent");
+  assert.equal(document.querySelector(".lock-notice"), null, "unlocking clears the notice");
+});
+
+test("wallet UI e2e: a page in view learns that the signer locked and offers to unlock before anything fails", async () => {
+  const dom = installDOM();
+  let state = openState();
+  let unlocked = 0;
+  const wallet = walletFor(state, {
+    getState: async () => ({ ok: true, state }),
+    unlock: async () => { unlocked += 1; state = openState(); return { ok: true, state }; },
+  });
+  await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  await settle();
+  assert.equal(document.querySelector(".lock-notice"), null);
+  // The signer locks on its own; the page is told nothing.
+  state = { ...state, locked: true, accounts: [] };
+  document.dispatchEvent(new dom.window.Event("visibilitychange")); // the page comes back into view and checks in
+  await settle();
+  const notice = document.querySelector(".lock-notice");
+  assert.match(notice?.textContent ?? "", /Wallet locked/);
+  assert.match(document.body.textContent ?? "", /Balance/, "the screen the user was on is left alone");
+  (notice!.querySelector("button") as HTMLButtonElement).click();
+  await settle();
+  const dialog = document.querySelector('[role="dialog"][aria-label="Unlock wallet"]')!;
+  (dialog.querySelector("input") as HTMLInputElement).value = "correct horse";
+  ([...dialog.querySelectorAll("button")].find((item) => item.textContent === "Unlock") as HTMLButtonElement).click();
+  await settle();
+  assert.equal(unlocked, 1);
+  assert.equal(document.querySelector(".lock-notice"), null);
+  assert.equal(document.querySelector('[role="dialog"]'), null);
+});
+
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
   installDOM();
   let lockRequests = 0;
