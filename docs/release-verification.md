@@ -49,10 +49,10 @@ That automated review was not an independent review, and no certification is cla
 ## Public-release status (updated by owner report)
 
 - Independent-review requirement waived by the release owner on October 10 in favor of his own review; no independent audit is claimed.
-- The release owner reports that he already completed a live purchase test. Withdrawal back to the buyer wallet is awaiting his clarification. This owner report supersedes the earlier preparation statement that payment had never been executed. No transaction evidence was supplied for automated verification.
+- The release owner confirms that the full live purchase/payment/withdrawal completed, including withdrawal back to the buyer wallet. This satisfies the owner-confirmed live-flow gate. It supersedes earlier pending statements; it is not independent or automated reproduction. No repeat transaction or transaction-hash submission is required as a new gate.
 - Published policy links, the publisher account and final store declarations.
 
-No user funds or keys were used for any check above.
+No user funds or keys were used by the assistant for these checks. The release owner’s owner-confirmed live test is recorded separately.
 
 ## October 10 follow-up validation from merged main
 
@@ -99,11 +99,10 @@ Do not infer account readiness or certify declarations from the listing draft.
    He explicitly waived independent review on October 10. Record the final
    commit, SDK revision and ZIP covered by publication approval; do not describe
    his review or automated checks as an independent audit.
-3. Reconcile the release owner’s completed live purchase with his pending withdrawal
-   clarification and any existing private evidence. Do not repeat payment because
-   the regression currently lacks an offer. If available, run the read-only
-   acceptance test against the existing transaction CIDs. The owner handoff covers
-   only missing acceptance observations or a separately authorized future test.
+3. Retain the release owner’s confirmation of the completed live purchase/payment/withdrawal
+   back to the buyer wallet. Do not repeat transactions or require hashes as a
+   new gate. Automated reproduction remains separately unverified; the owner
+   handoff is reference material for a separately authorized future test.
 4. The release owner opens the Web Store dashboard and completes publisher registration,
    verified contact/2FA, any fees or terms, and jurisdiction/data declarations.
    Recheck final policy wording and permission explanations against the manifest.
@@ -131,8 +130,10 @@ See [the compact owner handoff](release-owner-handoff.md) for prerequisites,
 manual signing steps, evidence and the precise browser-permission observations.
 
 The release owner subsequently reported “I already did a live purchase test”. This is recorded
-as owner-reported completion, separately from automated reproduction. Withdrawal
-clarification is pending. A filename search of the original release/docs directories
+as owner-reported completion, separately from automated reproduction. He then
+confirmed: “Yes, we did complete the withdrawal back to the buyers wallet”.
+The live purchase/payment/withdrawal gate is therefore owner-confirmed complete.
+No additional transaction or hashes are requested to close it. A filename search of the original release/docs directories
 found no separate trade/purchase/withdrawal evidence artifact; this does not establish
 that none exists elsewhere. No wallet storage or secret-bearing files were inspected.
 The empty current listing does not establish that no prior live test occurred.

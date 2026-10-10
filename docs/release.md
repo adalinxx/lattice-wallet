@@ -31,7 +31,7 @@ The first command starts isolated nodes, mines disposable funds, and checks auth
 
 ## Public release gates
 
-Follow [store-signed upgrade and funded trade acceptance](release-live-testing.md) for the real-browser steps and opt-in read-only trade verification. A skipped live test does not satisfy either gate.
+Follow [store-signed upgrade and funded trade acceptance](release-live-testing.md) for the real-browser steps and opt-in read-only trade verification. A skipped live test is not automated acceptance evidence. The release owner has confirmed the completed live purchase/payment/withdrawal back to the buyer wallet; that owner confirmation satisfies the live-flow gate without requiring a repeat transaction or new hash submission.
 
 - Merge branding and release preparation; package a reviewed commit from main.
 - Run unit/UI/conformance tests, isolated submission tests, and deployed read/discovery smoke.
