@@ -822,13 +822,14 @@ function endpointScreen() {
         return;
       }
       for (const e of list) {
-        found.append(h("div", { class: "row" },
-          h("span", { class: "v mono" }, short(e.url)),
-          h("span", { class: "tag" }, e.declaresSubmit ? "declares submit" : "read-only"),
+        found.append(h("div", { class: "node-row" },
+          h("div", { class: "node-text" },
+            h("span", { class: "node-name mono" }, e.url),
+            h("span", { class: "node-detail" }, e.declaresSubmit ? "declares it accepts transactions" : "read-only")),
           h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit, undefined, false, true)) route(); } }, "Use"),
         ));
       }
-      if (list.length) found.append(h("p", { class: "muted" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
+      if (list.length) found.append(h("p", { class: "muted node-note" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
     } catch (e) {
       err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
     } finally {
@@ -857,10 +858,14 @@ async function chainScreen() {
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Chain"),
-      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "row" },
-        h("span", { class: "v mono" }, c),
-        h("span", { class: "k" }, platform.ownNode ? "own node" : settings.endpoints[c] ? short(settings.endpoints[c].url) : "no node"),
-        h("button", { class: "btn", onclick: () => pick(c) }, c === settings.chain ? "Selected" : "Select"),
+      // A name or address of any length wraps in its own column; the button
+      // beside it keeps its size.
+      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "node-row" },
+        h("div", { class: "node-text" },
+          h("span", { class: "node-name mono" }, c),
+          h("span", { class: "node-detail" }, platform.ownNode ? "own node" : settings.endpoints[c]?.url ?? "no node chosen")),
+        h("button", { class: c === settings.chain ? "btn btn--primary" : "btn", ...(c === settings.chain ? { "aria-current": "true" } : {}), onclick: () => pick(c) },
+          c === settings.chain ? "Selected" : "Select"),
       ))),
       add,
       h("button", { class: "btn block", onclick: async () => {
