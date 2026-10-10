@@ -1,6 +1,6 @@
 // Lattice Wallet UI, shared by the extension popup and the desktop app. Talks
 // only to the signer (key material never enters this module) and to the node
-// the user chose for reads/submit. There is no default node. Styled with the
+// the user chose for reads/submit. No node is used until one is chosen. Styled with the
 // Lattice design system. The host supplies a Platform: signer, settings
 // store, network permission, and optionally its own node.
 
