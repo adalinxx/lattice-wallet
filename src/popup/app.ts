@@ -115,7 +115,13 @@ export const render = (node: El) => {
   renderVersion += 1;
   closeChainMenu();
   view().replaceChildren(node);
+  // The top-left button opens Settings, and on Settings it does what Done does.
+  const label = onSettingsScreen() ? "Close settings" : "Open settings";
+  const button = document.getElementById("settings-button");
+  button?.setAttribute("aria-label", label);
+  button?.setAttribute("title", label);
 };
+const onSettingsScreen = () => !!document.getElementById("settings-screen");
 
 let st: WalletState = { initialized: false, locked: true, accounts: [], active: null };
 let settings: Settings;
@@ -966,7 +972,7 @@ function settingsScreen() {
   void reconcileRecovery();
   const acct = activeAccount()!;
   const node = endpoint()!;
-  render(h("div", { class: "stack" },
+  render(h("div", { class: "stack", id: "settings-screen" },
     h("h1", {}, "Settings"),
     h("div", { class: "kv" },
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
@@ -2326,7 +2332,8 @@ export function startWallet(host: Platform) {
     if (parent) switchToChain(parent, h("div"));
   });
   document.getElementById("settings-button")?.addEventListener("click", () => {
-    if (st.initialized && !st.locked && activeAccount() && endpoint()) settingsScreen();
+    if (!(st.initialized && !st.locked && activeAccount() && endpoint())) return;
+    if (onSettingsScreen()) mainScreen(); else settingsScreen();
   });
   return refresh();
 }
