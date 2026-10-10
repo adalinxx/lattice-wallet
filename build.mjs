@@ -1,7 +1,7 @@
 // Build the extension into dist/. No remote code: everything is bundled from
 // vendored, lockfile-pinned deps. Run: `node build.mjs` (add --watch to watch).
 import * as esbuild from "esbuild";
-import { cpSync, mkdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 const watch = process.argv.includes("--watch");
 const outdir = "dist";
@@ -22,6 +22,7 @@ const ctx = await esbuild.context({
   },
   outdir,
   bundle: true,
+  metafile: process.argv.includes("--metafile"),
   format: "esm",
   target: "es2022",
   platform: "browser",
@@ -34,7 +35,11 @@ if (watch) {
   await ctx.watch();
   console.log("watching…");
 } else {
-  await ctx.rebuild();
+  const result = await ctx.rebuild();
+  if (result.metafile) {
+    mkdirSync("release", { recursive: true });
+    writeFileSync("release/bundle-metafile.json", JSON.stringify(result.metafile, null, 2));
+  }
   await ctx.dispose();
   console.log("built -> dist/");
 }

@@ -137,3 +137,22 @@ No additional transaction or hashes are requested to close it. A filename search
 found no separate trade/purchase/withdrawal evidence artifact; this does not establish
 that none exists elsewhere. No wallet storage or secret-bearing files were inspected.
 The empty current listing does not establish that no prior live test occurred.
+
+
+### Bundled-license correction (supersedes earlier ZIP checksum)
+
+Package review found that the ZIP retained only wallet/Lucide legal texts.
+Packaging now inventories every esbuild input package (12 installed package
+versions, including both Noble hashes versions) and appends its exact upstream
+license/notice texts. It also retains source copyright comments and supplemental
+QR/ZXing, Microsoft helper, BLAKE2b and Go crypto reference attributions.
+The ZIP includes `THIRD_PARTY_INVENTORY.json`; packaging fails if a bundled
+package has no license text. The SDK package licenses are included separately.
+`SECURITY.md` now agrees with the release owner's owner-review decision.
+
+The corrected ZIP SHA-256 is
+`8e4fd2fad38b2d31cc1adbfd0ddc307e978770eb902befe2b8ca7381c419a072`.
+This replaces the earlier `de572bc…` artifact for submission. Runtime JavaScript,
+manifest and existing assets are byte-identical to the earlier candidate; the
+archive changes add legal material and its inventory. No signing or permissions
+changed. Two local packaging runs under different timezones compare identically.
