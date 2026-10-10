@@ -145,3 +145,7 @@ body.page main { max-width: 560px; margin: 0 auto; }
 
 .lock-notice { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin: 0 0 var(--s-3); padding: var(--s-2) var(--s-3); border: var(--rule); border-left-width: 3px; font-size: var(--fs-12); }
 .lock-notice .btn { flex: 0 0 auto; }
+
+.node-status:empty { display: none; }
+.kv .v.mono { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+h2.section-label { margin-top: var(--s-4); padding-top: var(--s-3); border-top: var(--rule); }
