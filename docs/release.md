@@ -15,7 +15,7 @@ npm audit --omit=dev --prefix vendor/lattice-sdk
 npm run package
 ```
 
-The package script builds, checks manifest references and creates a ZIP with the manifest at its root plus a SHA-256 checksum in release/. It copies LICENSE and third-party notices into the package. This is repeatable packaging; byte-for-byte reproducibility and a hermetic build have not been established. Chrome signs store-distributed extensions.
+The package script builds, checks manifest references and creates a ZIP with the manifest at its root plus a SHA-256 checksum in release/. It copies LICENSE and third-party notices into the package. Entry order, file modes and archive timestamps are normalized. Two builds with the same Node/dependency/zip toolchain must produce identical bytes; verify with `cmp` before recording the upload checksum. This is not a hermetic or cross-toolchain reproducibility claim. Chrome signs store-distributed extensions.
 
 Audit both dependency trees: the SDK resolves its own pinned signing dependencies. Do not infer the shipped signer version from the wallet lockfile alone. The SDK and wallet currently use different pinned hash-library versions; each is covered by its own audit and the wallet's conformance gate. Build a release only from its reviewed/tagged commit using Node 24, and retain the SDK revision and artifact checksum.
 
@@ -24,9 +24,10 @@ Run the optional tests explicitly; skipped tests are not release evidence:
 ```sh
 LATTICE_NODE_BIN=/path/to/lattice-node/.build/debug node --test test/e2e-local.test.ts
 LATTICE_LIVE_READ=https://lattice-mainnet-read.fly.dev node --test test/live-read.test.ts
+LATTICE_LIVE_PURCHASE=https://rpc.lattice.build node --test test/live-purchase-review.test.ts
 ```
 
-The first command starts isolated nodes, mines disposable funds, and checks authenticated and public submissions, inclusion, and relay fee refusals. The second only reads the deployed network and discovers testnet. Neither proves a funded cross-chain trade on the deployed network.
+The first command starts isolated nodes, mines disposable funds, and checks authenticated and public submissions, inclusion, and relay fee refusals. The second only reads the deployed network and discovers testnet. The third exercises the actual purchase-review UI against deployed node responses, asserts exact amounts and the required public-node acknowledgement, and forbids signing and all non-GET requests. It requires an unpaid testnet offer sufficient to cover withdrawal fees; missing fixtures fail the test, not pass or skip it. It does not click payment. None proves a funded cross-chain trade on the deployed network.
 
 ## Public release gates
 
@@ -42,7 +43,7 @@ Follow [store-signed upgrade and funded trade acceptance](release-live-testing.m
 
 Approval is tied to the tested commit and checksum. Any code change invalidates that approval until the relevant checks rerun. Do not tag or announce a public release while a gate is unresolved. Increment manifest and package versions together before subsequent uploads.
 
-For an unpacked extension, rebuilding files is not a reload. Use Reload on its chrome://extensions card, then reopen the wallet. A browser restart alone can leave cached service-worker code in this test setup even when the new manifest/popup is visible. Check behavior, not only the displayed name/version. This development check is not evidence for a store-signed upgrade; test that separately before public release.
+For an unpacked extension, rebuilding files is not a reload. Use Reload on its chrome://extensions card, then reopen the wallet. A browser restart alone can leave cached service-worker code in this test setup even when the new manifest/popup is visible. Check behavior, not only the displayed name/version. This development check is not evidence for a store-signed upgrade; test that separately from the second release onward; no store baseline exists for the first release.
 
 The hosted-node allowlist adds three exact required host permissions. Chrome may require a one-time upgrade acknowledgement; do not promise a prompt-free installation/update. Verify hosted Nexus and testnet connections after restarting Chrome and the computer, without another runtime host prompt. Custom host permissions must remain optional. Missing browser permission, a stopped local node and a changed operator cookie are distinct failures; record the exact message and endpoint before diagnosing them.
 

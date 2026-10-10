@@ -53,3 +53,60 @@ That review is not the named independent review the release procedure requires, 
 - Published policy links, the publisher account and final store declarations.
 
 No user funds or keys were used for any check above.
+
+## October 10 follow-up validation from merged main
+
+Baseline verified against GitHub: `989a09d8ef0a1d0c03429cdfc8ddddf98c41efc4`;
+PR #16 merged at 2026-10-10 05:24:55 UTC. SDK:
+`283d0e0e174e1a825e8a10b225f4a9a58e67e4ca`.
+The original clean checkout at `02505aaeb19298a2ceb92ee3729fd3701381df41`
+(settings-icon-closes) was preserved; that unmerged change is not in this candidate.
+
+This follow-up adds the missing opt-in deployed purchase-review UI regression and
+normalizes package file order, timestamps and modes. It supersedes the earlier
+statement that ZIP timestamps differ. No wallet runtime code changed.
+
+Validation on macOS, Node 24.21.0, Apple Info-ZIP 3.0:
+
+- Clean lockfile installation and SDK build, TypeScript, and diff whitespace checks pass.
+- 133 default tests: 128 pass, 5 opt-in tests skipped. 22 conformance checks pass.
+- Deployed read/discovery test explicitly passes: Nexus height 4962, testnet height 12206.
+- New live purchase-review test explicitly **fails its fixture precondition**:
+  the proof-verified deployed testnet listing contains zero deposits. The review UI
+  portion has not run against a live offer. This remains required evidence, not a pass.
+- Both production dependency audits report zero vulnerabilities.
+- Two Node 24 package builds, with different process timezones, compare byte-for-byte equal.
+  SHA-256: `de572bc1f9374763dd5c6929f16624423b81c79f3bee2f5af967b36106daa72b`.
+  Reproducibility is scoped to the recorded toolchain, not a hermetic guarantee.
+- Homepage, issues/support and main-branch privacy policy URLs return HTTP 200.
+  GitHub private vulnerability reporting is enabled.
+
+No new actual-Chrome candidate acceptance or isolated-node signing/submission run
+was performed in this follow-up. Earlier browser/local-node results above remain
+historical evidence, not checks repeated on this candidate. No live signing,
+purchase, withdrawal or transfer was attempted.
+
+Mac Chrome (the release owner's profile) was identified, but opening the Web Store developer
+console was refused by the computer-use tool with “Not allowed”. Publisher
+registration, item status and dashboard declarations therefore remain unverified.
+Do not infer account readiness or certify declarations from the listing draft.
+
+### Concrete completion sequence
+
+1. Review and merge this follow-up, then record the final main commit and rebuild;
+   compare the package hash. Any subsequent runtime changes require relevant retests.
+2. Obtain the named independent review described in security-review-scope.md,
+   tied to that commit, SDK revision and ZIP; resolve blocking findings. Automated
+   checks and AI review do not satisfy this signoff.
+3. The release owner supplies and executes the approved disposable deployed trade, budgets
+   and signing steps in release-live-testing.md. Before payment, leave an eligible
+   unpaid testnet offer available and run the new read-only purchase-review test.
+   Then complete Chrome payment/restart/withdrawal and balance accounting, wait
+   for six confirmations, and run the read-only acceptance test with private evidence.
+4. The release owner opens the Web Store dashboard and completes publisher registration,
+   verified contact/2FA, any fees or terms, and jurisdiction/data declarations.
+   Recheck final policy wording and permission explanations against the manifest.
+   Use docs/store-listing.md and the existing actual-UI screenshots. Upload the
+   reviewed ZIP and request review with deferred publication.
+5. Publish only after all gates and owner declarations are complete. Do not tag
+   or announce while blocked. Store-signed upgrade is a second-release gate.

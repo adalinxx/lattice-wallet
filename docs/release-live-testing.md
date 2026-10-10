@@ -1,6 +1,6 @@
 # Store upgrade and funded trade acceptance
 
-These are release gates, not a claim that either has passed. Keep evidence private: public addresses and CIDs link test activity. Never include passwords, seeds, cookies or signed payloads in reports or CI logs. Use disposable accounts and a dedicated Chrome profile; preserve its recovery data until the trade settles.
+The funded trade is a first-release gate. Store-signed upgrade applies from the second release, once a store baseline exists. Neither is claimed to have passed. Keep evidence private: public addresses and CIDs link test activity. Never include passwords, seeds, cookies or signed payloads in reports or CI logs. Use disposable accounts and a dedicated Chrome profile; preserve its recovery data until the trade settles.
 
 ## Store-signed upgrade
 
@@ -50,4 +50,4 @@ LATTICE_TRADE_EVIDENCE=/absolute/private/trade.json node --test test/live-cross-
 
 This test never signs or submits. Do not commit the filled file. Failure means investigate/recheck the existing CIDs, not create another payment. Test uncertain submissions and higher-fee replacements first on isolated nodes; never intentionally double-pay or abandon a deployed deposit to manufacture a failure case.
 
-The evidence report must distinguish automated read checks, actual Chrome observations, balance accounting, and any unexecuted edge cases. Store upgrade and funded trade remain pending until the corresponding evidence exists.
+The evidence report must distinguish automated read checks, actual Chrome observations, balance accounting, and any unexecuted edge cases. Funded trade remains pending until its evidence exists. Store upgrade remains untested and is required from the second release onward.

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, cpSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, cpSync, mkdirSync, writeFileSync, unlinkSync, readdirSync, utimesSync, chmodSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -13,7 +13,15 @@ for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) if (existsSync(file)) 
 mkdirSync("release", { recursive: true });
 const zip = resolve(`release/lattice-wallet-${manifest.version}.zip`);
 if (existsSync(zip)) unlinkSync(zip);
-execFileSync("zip", ["-X", "-qr", zip, "."], { cwd: "dist" });
+// Normalize timestamps, permissions and entry ordering. Reproducibility is
+// scoped to the same Node/dependency/zip toolchain, not a hermetic build.
+const files = readdirSync("dist", { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile())
+  .map((entry) => resolve(entry.parentPath, entry.name).slice(resolve("dist").length + 1))
+  .sort();
+const epoch = new Date("2000-01-01T00:00:00Z");
+for (const file of files) { utimesSync(`dist/${file}`, epoch, epoch); chmodSync(`dist/${file}`, 0o644); }
+execFileSync("zip", ["-X", "-q", zip, ...files], { cwd: "dist", env: { ...process.env, TZ: "UTC" } });
 const entries = execFileSync("unzip", ["-Z1", zip], { encoding: "utf8" }).split("\n");
 if (!entries.includes("manifest.json") || entries.some((p) => p.endsWith(".map") || p.includes("node_modules/"))) throw new Error("Invalid release contents");
 const digest = createHash("sha256").update(readFileSync(zip)).digest("hex");
