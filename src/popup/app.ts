@@ -689,9 +689,9 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
 function pairingSteps(origin: string, cookie: HTMLTextAreaElement): El[] {
   const line = `"rpcAllowedOrigins": [${JSON.stringify(origin)}]`;
   return [
-    h("p", { class: "muted" }, "Your own node on this computer: add this line to lattice.json in the node's root, then restart it (lattice down, lattice up):"),
+    h("p", { class: "muted" }, "1. Add this line to lattice.json in the node's root, then restart it (lattice down, lattice up):"),
     h("div", { class: "addr mono" }, line),
-    h("p", { class: "muted" }, "Then paste its cookie, the content of <root>/chains/Nexus/.cookie. The node writes a new cookie each time it starts; paste it again after a restart. It is kept encrypted with your keys."),
+    h("p", { class: "muted" }, "2. Paste its cookie, the content of <root>/chains/Nexus/.cookie. The node writes a new cookie each time it starts; paste it again after a restart. It is kept encrypted with your keys."),
     cookie,
   ];
 }
@@ -704,40 +704,66 @@ function endpointScreen() {
     type: "text", placeholder: "a Nexus node you trust to start from", spellcheck: "false",
     value: settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC,
   }) as HTMLInputElement;
-  const err = h("div", { class: "toast" });
+  start.id = "node-start";
+  const err = h("div", { class: "toast node-status", role: "status" });
   const found = h("div", { class: "kv" });
   const isChild = chainPath().length > 1;
+  // Three ways to choose, each under its own heading, most common first. The
+  // steps for pairing a node on this computer stay folded away unless the
+  // address typed is on this computer, since no other node needs them.
+  const hosted: El[] = [];
+  if (settings.chain === ROOT_CHAIN && !platform.ownNode) {
+    hosted.push(
+      h("button", { class: "btn btn--primary block", onclick: async () => {
+        if (await requestEndpoint({
+          chain: settings.chain, url: LATTICE_BUILD_RPC, source: "user",
+          declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+        }, err)) route();
+      } }, "Use Lattice.build"),
+      h("p", { class: "muted" }, "A public Nexus node run by Lattice. Nothing to set up. The wallet checks that it serves this chain and accepts transactions before saving it."),
+    );
+  }
+  if (isChild) {
+    if (settings.chain === "Nexus/testnet") {
+      hosted.push(
+        h("button", { class: "btn btn--primary block", onclick: async () => {
+          if (await requestEndpoint({
+            chain: settings.chain, url: LATTICE_TESTNET_RPC, source: "user",
+            declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+          }, err)) route();
+        } }, "Use Lattice.build testnet"),
+        h("p", { class: "muted" }, "A public testnet node run by Lattice. Nothing to set up."),
+      );
+    }
+    hosted.push(
+      h("button", { class: hosted.length ? "btn block" : "btn btn--primary block", onclick: () => discoverFrom(true) }, "Find node automatically"),
+      h("p", { class: "muted" }, "Asks the Lattice explorer's Nexus service which nodes serve this chain and picks one that accepts transactions."),
+    );
+  }
+  const pairing = platform.pairOrigin
+    ? h("details", { class: "advanced" },
+        h("summary", {}, "Pairing a node on this computer"),
+        h("div", { class: "advanced-content stack" }, ...pairingSteps(platform.pairOrigin, cookie)))  as HTMLDetailsElement
+    : null;
+  const showPairing = () => { if (pairing && isLoopbackNodeURL(normalizeNodeURL(url.value) ?? "")) pairing.open = true; };
+  url.addEventListener("input", showPairing);
+  showPairing();
+  url.id = "node-url";
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Node for " + settings.chain),
-      h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
-      ...(settings.chain === ROOT_CHAIN && !platform.ownNode ? [
-        h("button", { class: "block", onclick: async () => {
-          if (await requestEndpoint({
-            chain: settings.chain, url: LATTICE_BUILD_RPC, source: "user",
-            declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
-          }, err)) route();
-        } }, "Use Lattice.build"),
-        h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
-      ] : []),
-      ...(isChild ? [
-        ...(settings.chain === "Nexus/testnet" ? [
-          h("button", { class: "block", onclick: async () => {
-            if (await requestEndpoint({
-              chain: settings.chain, url: LATTICE_TESTNET_RPC, source: "user",
-              declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
-            }, err)) route();
-          } }, "Use Lattice.build testnet"),
-          h("p", { class: "muted" }, "Optional hosted testnet node. You can replace it with automatic discovery or any custom node."),
-        ] : []),
-        h("button", { class: "block", onclick: () => discoverFrom(true) }, "Find node automatically"),
-        h("p", { class: "muted" }, "Uses the explorer's configured Nexus service to find and verify a node that accepts transactions for this chain."),
-      ] : []),
-      url,
-      ...(platform.pairOrigin ? pairingSteps(platform.pairOrigin, cookie) : []),
-      h("button", { class: "block", onclick: async () => {
+      ...(current ? [h("div", { class: "kv" },
+        h("div", { class: "row" }, h("span", { class: "k" }, "Current node"), h("span", { class: "v mono" }, current.url)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, current.acceptsSubmit ? "read + send" : "read only")),
+      )] : []),
+      h("p", { class: "muted" }, `The node is where the wallet reads ${settings.chain} and sends your transactions. Its operator sees your addresses and can answer wrongly; your keys never leave this wallet.`),
+      ...(hosted.length ? [h("h2", { class: "section-label" }, "Hosted"), ...hosted] : []),
+      h("h2", { class: "section-label" }, "Your own or another node"),
+      h("label", { class: "k", for: "node-url" }, "Node address"), url,
+      ...(pairing ? [pairing] : []),
+      h("button", { class: "btn block", onclick: async () => {
         const n = normalizeNodeURL(url.value);
-        if (!n) { err.textContent = "Enter an https:// URL (http:// only for 127.0.0.1/localhost)."; return; }
+        if (!n) { err.textContent = "Enter an https:// address, or http:// for a node on this computer (127.0.0.1 or localhost)."; return; }
         const enteredCookie = cookie.value.trim() || undefined;
         if (await requestEndpoint({
           chain: settings.chain, url: n, source: "user", declaredSubmit: true,
@@ -745,14 +771,16 @@ function endpointScreen() {
         }, err, enteredCookie)) route();
       } }, "Use this node"),
       ...(isChild ? [
-        h("p", { class: "muted" }, "Or discover endpoints for " + settings.chain + " through a Nexus node you choose:"),
-        start,
+        h("h2", { class: "section-label" }, "Discover through a Nexus node"),
+        h("p", { class: "muted" }, "Ask a Nexus node you choose which nodes serve " + settings.chain + ", then pick one from the list."),
+        h("label", { class: "k", for: "node-start" }, "Nexus node to ask"), start,
         h("button", { class: "btn block", onclick: () => discoverFrom() }, "Discover"),
         found,
       ] : []),
       err,
-      ...(current ? [h("button", { class: "btn block", onclick: mainScreen }, "Back")] : []),
-      h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
+      h("div", { class: "row-actions" },
+        ...(current ? [h("button", { class: "btn", onclick: mainScreen }, "Back")] : []),
+        h("button", { class: "btn", onclick: chainScreen }, "Change chain")),
     ),
   );
 
@@ -794,13 +822,14 @@ function endpointScreen() {
         return;
       }
       for (const e of list) {
-        found.append(h("div", { class: "row" },
-          h("span", { class: "v mono" }, short(e.url)),
-          h("span", { class: "tag" }, e.declaresSubmit ? "declares submit" : "read-only"),
+        found.append(h("div", { class: "node-row" },
+          h("div", { class: "node-text" },
+            h("span", { class: "node-name mono" }, e.url),
+            h("span", { class: "node-detail" }, e.declaresSubmit ? "declares it accepts transactions" : "read-only")),
           h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit, undefined, false, true)) route(); } }, "Use"),
         ));
       }
-      if (list.length) found.append(h("p", { class: "muted" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
+      if (list.length) found.append(h("p", { class: "muted node-note" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
     } catch (e) {
       err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
     } finally {
@@ -829,10 +858,14 @@ async function chainScreen() {
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Chain"),
-      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "row" },
-        h("span", { class: "v mono" }, c),
-        h("span", { class: "k" }, platform.ownNode ? "own node" : settings.endpoints[c] ? short(settings.endpoints[c].url) : "no node"),
-        h("button", { class: "btn", onclick: () => pick(c) }, c === settings.chain ? "Selected" : "Select"),
+      // A name or address of any length wraps in its own column; the button
+      // beside it keeps its size.
+      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "node-row" },
+        h("div", { class: "node-text" },
+          h("span", { class: "node-name mono" }, c),
+          h("span", { class: "node-detail" }, platform.ownNode ? "own node" : settings.endpoints[c]?.url ?? "no node chosen")),
+        h("button", { class: c === settings.chain ? "btn btn--primary" : "btn", ...(c === settings.chain ? { "aria-current": "true" } : {}), onclick: () => pick(c) },
+          c === settings.chain ? "Selected" : "Select"),
       ))),
       add,
       h("button", { class: "btn block", onclick: async () => {
@@ -1308,11 +1341,13 @@ function connectionScreen() {
   render(h("div", { class: "stack" },
     h("h1", {}, "Connection"),
     h("p", { class: "muted" }, "Automatic uses the explorer directory to find a node serving each chain. These are operator declarations, not independently verified consensus. Choose custom when you operate or trust a specific node."),
-    h("button", { class: settings.nodeMode === "automatic" ? "block" : "btn block", onclick: async () => {
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "Now using"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes"))),
+    h("button", { class: settings.nodeMode === "automatic" ? "btn btn--primary block" : "btn block", "aria-pressed": String(settings.nodeMode === "automatic"), onclick: async () => {
       await update((s) => ({ ...s, nodeMode: "automatic" }));
       route();
     } }, "Automatic (recommended)"),
-    h("button", { class: settings.nodeMode === "custom" ? "block" : "btn block", onclick: async () => {
+    h("button", { class: settings.nodeMode === "custom" ? "btn btn--primary block" : "btn block", "aria-pressed": String(settings.nodeMode === "custom"), onclick: async () => {
       await update((s) => ({ ...s, nodeMode: "custom" }));
       endpointScreen();
     } }, "Use a custom node"),

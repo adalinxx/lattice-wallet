@@ -145,3 +145,22 @@ body.page main { max-width: 560px; margin: 0 auto; }
 
 .lock-notice { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin: 0 0 var(--s-3); padding: var(--s-2) var(--s-3); border: var(--rule); border-left-width: 3px; font-size: var(--fs-12); }
 .lock-notice .btn { flex: 0 0 auto; }
+
+.node-status:empty { display: none; }
+.kv .v.mono { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+h2.section-label { margin-top: var(--s-4); padding-top: var(--s-3); border-top: var(--rule); }
+
+/* A chain or node beside its button. The text column takes what is left and
+   wraps a long name or address anywhere; the button never shrinks or wraps. */
+.node-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); padding: var(--s-2) var(--s-3); border-bottom: var(--rule); }
+.node-row:last-child { border-bottom: 0; }
+.node-text { min-width: 0; }
+.node-name, .node-detail { display: block; overflow-wrap: anywhere; }
+.node-detail { margin-top: 2px; font-size: var(--fs-12); }
+.node-row .btn { white-space: nowrap; }
+.node-note { margin: 0; padding: var(--s-2) var(--s-3); }
+.kv:empty { display: none; }
+/* Addresses elsewhere: never push a box wider than the screen. */
+.warn .mono, .kv .v, .addr, .transaction-field .mono { overflow-wrap: anywhere; }
+.kv .row > .k { flex: 0 0 auto; }
+.kv .row > .v { min-width: 0; text-align: right; }
