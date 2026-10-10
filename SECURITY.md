@@ -6,4 +6,4 @@ Report vulnerabilities privately at https://github.com/adalinxx/lattice-wallet/s
 
 Reports should identify the affected commit, a reproduction using disposable accounts and isolated nodes, the impact, and relevant logs with credentials removed. Maintainers should acknowledge privately, reproduce, preserve recovery data, and coordinate a fix and disclosure before publishing exploit details.
 
-No independent security audit is claimed. Public-release approval requires a named independent review and disposition of its findings.
+No independent security audit is claimed. On October 10, 2026, the release owner chose his own review as release-owner sign-off and waived an independent reviewer. Resolve blocking findings and record the reviewed release commit and package checksum; automated checks and owner review must not be described as an independent audit.

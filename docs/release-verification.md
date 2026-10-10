@@ -44,12 +44,115 @@ All three are fixed and now have tests in the shape the live node sends. A read-
 
 An AI-assisted review of the 0.3.0 commit and package was carried out during preparation. Its findings on recovery after refused submissions, offer selection, export re-authentication, cross-page state, backup bounds, lock behaviour, dependency auditing and password derivation were addressed in this candidate. One was accepted rather than fixed: state proofs are checked against the tip the nodes supply, with no independent verification of the chain, so a purchase through a node that is not on the user's computer requires an explicit acknowledgement on each review. See [node trust](node-trust.md).
 
-That review is not the named independent review the release procedure requires, and no certification is claimed.
+That automated review was not an independent review, and no certification is claimed. The release owner subsequently stated on October 10 that he reviewed the wallet himself and does not require an independent reviewer; owner review is the chosen sign-off.
 
-## Outstanding public-release gates
+## Public-release status (updated by owner report)
 
-- A named independent security review and disposition of its findings.
-- Paying for and withdrawing a purchase on the deployed network. The purchase review has been reached there; payment and withdrawal have never been executed.
+- Independent-review requirement waived by the release owner on October 10 in favor of his own review; no independent audit is claimed.
+- The release owner confirms that the full live purchase/payment/withdrawal completed, including withdrawal back to the buyer wallet. This satisfies the owner-confirmed live-flow gate. It supersedes earlier pending statements; it is not independent or automated reproduction. No repeat transaction or transaction-hash submission is required as a new gate.
 - Published policy links, the publisher account and final store declarations.
 
-No user funds or keys were used for any check above.
+No user funds or keys were used by the assistant for these checks. The release owner’s owner-confirmed live test is recorded separately.
+
+## October 10 follow-up validation from merged main
+
+Baseline verified against GitHub: `989a09d8ef0a1d0c03429cdfc8ddddf98c41efc4`;
+PR #16 merged at 2026-10-10 05:24:55 UTC. SDK:
+`283d0e0e174e1a825e8a10b225f4a9a58e67e4ca`.
+The original clean checkout at `02505aaeb19298a2ceb92ee3729fd3701381df41`
+(settings-icon-closes) was preserved; that unmerged change is not in this candidate.
+
+This follow-up adds the missing opt-in deployed purchase-review UI regression and
+normalizes package file order, timestamps and modes. It supersedes the earlier
+statement that ZIP timestamps differ. No wallet runtime code changed.
+
+Validation on macOS, Node 24.21.0, Apple Info-ZIP 3.0:
+
+- Clean lockfile installation and SDK build, TypeScript, and diff whitespace checks pass.
+- 133 default tests: 128 pass, 5 opt-in tests skipped. 22 conformance checks pass.
+- Deployed read/discovery test explicitly passes: Nexus height 4962, testnet height 12206.
+- New live purchase-review test explicitly **fails its fixture precondition**:
+  the proof-verified deployed testnet listing contains zero deposits. The review UI
+  portion has not run against a live offer. This remains required evidence, not a pass.
+- Both production dependency audits report zero vulnerabilities.
+- Two Node 24 package builds, with different process timezones, compare byte-for-byte equal.
+  SHA-256: `de572bc1f9374763dd5c6929f16624423b81c79f3bee2f5af967b36106daa72b`.
+  Reproducibility is scoped to the recorded toolchain, not a hermetic guarantee.
+- Homepage, issues/support and main-branch privacy policy URLs return HTTP 200.
+  GitHub private vulnerability reporting is enabled.
+
+No new actual-Chrome candidate acceptance or isolated-node signing/submission run
+was performed in this follow-up. Earlier browser/local-node results above remain
+historical evidence, not checks repeated on this candidate. No live signing,
+purchase, withdrawal or transfer was attempted.
+
+Mac Chrome (the release owner's profile) was identified, but opening the Web Store developer
+console was refused by the computer-use tool with “Not allowed”. The release owner subsequently confirmed he has no publisher account and authorized creating one.
+Publisher registration is pending; account identity and dashboard declarations remain unverified.
+Do not infer account readiness or certify declarations from the listing draft.
+
+### Concrete completion sequence
+
+1. Review and merge this follow-up, then record the final main commit and rebuild;
+   compare the package hash. Any subsequent runtime changes require relevant retests.
+2. Retain the release owner’s owner-review sign-off and resolve any blocking findings.
+   He explicitly waived independent review on October 10. Record the final
+   commit, SDK revision and ZIP covered by publication approval; do not describe
+   his review or automated checks as an independent audit.
+3. Retain the release owner’s confirmation of the completed live purchase/payment/withdrawal
+   back to the buyer wallet. Do not repeat transactions or require hashes as a
+   new gate. Automated reproduction remains separately unverified; the owner
+   handoff is reference material for a separately authorized future test.
+4. The release owner opens the Web Store dashboard and completes publisher registration,
+   verified contact/2FA, any fees or terms, and jurisdiction/data declarations.
+   Recheck final policy wording and permission explanations against the manifest.
+   Use docs/store-listing.md and the existing actual-UI screenshots. Upload the
+   reviewed ZIP and request review with deferred publication.
+5. Publish only after all gates and owner declarations are complete. Do not tag
+   or announce while blocked. Store-signed upgrade is a second-release gate.
+
+### Follow-up diff review and CI
+
+GitHub CI run 38077628609 passed on exact head
+`8246db856a28ca39604de9d48d2d21e4510de2c5`; its Linux ZIP has the same SHA-256
+as the local macOS ZIP above. Subsequent diff review found the funded acceptance
+verifier still required the child tip to equal the parent commitment. The verifier
+now checks that the parent-committed block is on the child's current chain by
+height, matching the wallet's behavior, with a regression for a fork/missing child.
+This changes test code only and does not establish that funded acceptance passed.
+
+Both `rpc.lattice.build` and `lattice-mainnet-read.fly.dev` report Nexus height
+4962 and discover the same `lattice-mainnet-testnet.fly.dev` endpoint. At child
+height 12214 that endpoint listed zero deposits in both checks. No existing
+disposable offer was identified. Endpoint selection agrees with documented defaults;
+operator intent and the historical reason for the empty listing remain unknown.
+See [the compact owner handoff](release-owner-handoff.md) for prerequisites,
+manual signing steps, evidence and the precise browser-permission observations.
+
+The release owner subsequently reported “I already did a live purchase test”. This is recorded
+as owner-reported completion, separately from automated reproduction. He then
+confirmed: “Yes, we did complete the withdrawal back to the buyers wallet”.
+The live purchase/payment/withdrawal gate is therefore owner-confirmed complete.
+No additional transaction or hashes are requested to close it. A filename search of the original release/docs directories
+found no separate trade/purchase/withdrawal evidence artifact; this does not establish
+that none exists elsewhere. No wallet storage or secret-bearing files were inspected.
+The empty current listing does not establish that no prior live test occurred.
+
+
+### Bundled-license correction (supersedes earlier ZIP checksum)
+
+Package review found that the ZIP retained only wallet/Lucide legal texts.
+Packaging now inventories every esbuild input package (12 installed package
+versions, including both Noble hashes versions) and appends its exact upstream
+license/notice texts. It also retains source copyright comments and supplemental
+QR/ZXing, Microsoft helper, BLAKE2b and Go crypto reference attributions.
+The ZIP includes `THIRD_PARTY_INVENTORY.json`; packaging fails if a bundled
+package has no license text. The SDK package licenses are included separately.
+`SECURITY.md` now agrees with the release owner's owner-review decision.
+
+The corrected ZIP SHA-256 is
+`8e4fd2fad38b2d31cc1adbfd0ddc307e978770eb902befe2b8ca7381c419a072`.
+This replaces the earlier `de572bc…` artifact for submission. Runtime JavaScript,
+manifest and existing assets are byte-identical to the earlier candidate; the
+archive changes add legal material and its inventory. No signing or permissions
+changed. Two local packaging runs under different timezones compare identically.

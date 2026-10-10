@@ -22,7 +22,7 @@ Homepage: https://lattice.build/
 Support: https://github.com/adalinxx/lattice-wallet/issues
 Privacy policy: https://github.com/adalinxx/lattice-wallet/blob/main/docs/privacy-policy.md
 
-The privacy URL becomes valid after the release-preparation PR merges. Do not submit a draft branch URL as the permanent policy URL.
+The main-branch privacy URL returned HTTP 200 during October 10 release validation after PR #16 merged. Recheck it at submission time; do not submit a draft branch URL as the permanent policy URL.
 
 ## Privacy dashboard
 

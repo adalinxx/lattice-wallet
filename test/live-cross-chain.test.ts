@@ -6,6 +6,8 @@ import { activeDeposits, depositValues, reader, receiptWithdrawer, sentStatus } 
 import { isAccountAddress } from "../src/lib/wallet/session.ts";
 import { dagCborCIDBytes } from "@adalinxx/lattice-core";
 
+import { assertCommittedChild } from "./helpers/committed-child.ts";
+
 const evidenceFile = process.env.LATTICE_TRADE_EVIDENCE;
 test("deployed funded trade: inclusion, receipt owner, and spent deposit proofs", { skip: !evidenceFile, timeout: 120_000 }, async () => {
   const e = JSON.parse(await readFile(evidenceFile!, "utf8"));
@@ -27,8 +29,7 @@ test("deployed funded trade: inclusion, receipt owner, and spent deposit proofs"
     const parentTip = await parent.latestBlock();
     const childTip = await child.latestBlock();
     try {
-      const commitment = (await parent.children(parentTip.hash)).find((entry) => entry.directory === e.childChain.at(-1));
-      assert.equal(commitment?.blockHash, childTip.hash, "child must match the parent-reported commitment");
+      await assertCommittedChild(parent, child, parentTip.hash, e.childChain.at(-1));
       const statuses = await Promise.all([
         sentStatus(child, e.depositCID), sentStatus(parent, e.receiptCID), sentStatus(child, e.withdrawalCID),
       ]);
