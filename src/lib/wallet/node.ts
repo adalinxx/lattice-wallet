@@ -112,14 +112,17 @@ function verifyStateProof(value: unknown, kind: "deposits" | "receipts", expecte
   const claims = new Map<string, string | null>();
   for (const [index, raw] of proof.claims.entries()) {
     const claim = object(raw, `state proof.claims[${index}]`);
-    if (typeof claim.key !== "string" || !(typeof claim.value === "string" || claim.value === null)) {
+    // An absent key is claimed with a null value or, as the node encodes an
+    // empty optional, with no value at all. Either way it must prove absent.
+    const value = claim.value ?? null;
+    if (typeof claim.key !== "string" || !(typeof value === "string" || value === null)) {
       throw new TypeError(`state proof.claims[${index}] must contain a string key and optional value`);
     }
     if (claims.has(claim.key)) throw new TypeError("state proof claims must not repeat a key");
-    const expected = claim.value === null ? undefined : kind === "deposits"
-      ? unsigned(claim.value, `state proof.claims[${index}].value`) : claim.value;
+    const expected = value === null ? undefined : kind === "deposits"
+      ? unsigned(value, `state proof.claims[${index}].value`) : value;
     if (!verifySparseProof(proof.dictionaryRoot, claim.key, expected, entries)) throw new TypeError("state proof claim must verify");
-    claims.set(claim.key, claim.value);
+    claims.set(claim.key, value);
   }
   return claims;
 }
@@ -232,10 +235,11 @@ export async function depositValues(
   await Promise.all([...new Set(keys)].map(async (key) => {
     const query = new URLSearchParams({ key });
     const body = object(await nodeJSON(url, `/api/deposit-state?${query}`, chainPath, fetchImpl, authorization), "deposit state response");
-    if (body.key !== key || (typeof body.value !== "string" && body.value !== null)) throw new TypeError("deposit state response must match its requested key");
+    const stated = body.value ?? null; // an empty optional may be left out
+    if (body.key !== key || (typeof stated !== "string" && stated !== null)) throw new TypeError("deposit state response must match its requested key");
     const claims = verifyStateProof(body.proof, "deposits", tipCID);
-    if (claims.get(key) !== body.value) throw new TypeError("deposit state response must have a valid state claim");
-    values.set(key, typeof body.value === "string" ? unsigned(body.value, "deposit value") : null);
+    if (claims.get(key) !== stated) throw new TypeError("deposit state response must have a valid state claim");
+    values.set(key, typeof stated === "string" ? unsigned(stated, "deposit value") : null);
   }));
   return values;
 }
@@ -261,7 +265,9 @@ export async function receiptWithdrawer(
   const directory = childChain.at(-1);
   if (directory === undefined || typeof proof.dictionaryRoot !== "string") throw new TypeError("receipt proof must match the anchored state");
   const receiptKey = receiptStorageKey(directory, offer.demander, offer.amountDemanded, offer.depositNonce);
-  const withdrawer = value.exists === false && value.withdrawer === null ? undefined
+  // No receipt: `exists` is false and the withdrawer is null or, as the node
+  // encodes an empty optional, left out. The proof below decides, not this.
+  const withdrawer = value.exists === false && (value.withdrawer === null || value.withdrawer === undefined) ? undefined
     : value.exists === true && typeof value.withdrawer === "string" ? value.withdrawer
     : (() => { throw new TypeError("receipt response is malformed"); })();
   if (claims.get(receiptKey) !== (withdrawer ?? null)) {
