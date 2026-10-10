@@ -18,14 +18,6 @@ if (fullPage) document.body.classList.add("page");
 if (await chrome.permissions.contains({ origins: ["https://*/*"] })) {
   await chrome.permissions.remove({ origins: ["https://*/*"] });
 }
-// The signer lives in the background worker, which the browser stops after
-// about thirty seconds without a message, discarding the unlocked session.
-// While a wallet page is in view it checks in, so the session ends at the
-// signer's own idle lock instead. A status read never postpones that lock.
-setInterval(() => {
-  if (document.visibilityState === "visible") void chrome.runtime.sendMessage({ type: "getState" }).catch(() => {});
-}, 20_000);
-
 startWallet({
   wallet: walletClient((msg) => chrome.runtime.sendMessage(msg)),
   store: chrome.storage.local,

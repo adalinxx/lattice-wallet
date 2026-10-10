@@ -2186,13 +2186,18 @@ function feeScreen() {
 // ---------------- chain switch + boot ----------------
 
 // The signer locks without the page being told: its idle timer fires, the
-// browser stops its worker, or the extension is reloaded. A request that needs
-// keys then answers "Locked". Rather than leave that as a dead end on a screen
-// the user has already filled in, ask for the password there and send the same
-// request again. Passive reads are left alone: they must never raise a prompt.
+// browser stops its worker, or the extension is reloaded. The page finds out
+// in two ways and never answers with a bare "Locked":
+//  - it checks in while it is in view, and says so in a notice with an Unlock
+//    button as soon as the signer is found locked, before any step fails;
+//  - a request that needs keys and is answered "Locked" asks for the password
+//    over the current screen and is sent again, so nothing entered is lost.
+// Passive reads are left alone: they must never raise a prompt.
 const NEEDS_KEYS = ["signTransfer", "signDeposit", "signReceipt", "signWithdrawal", "exportBackup", "exportSeedQR",
   "transferSend", "addAccount", "importKey", "setActive", "setNodeCookie"] as const;
 type KeyCall = (...args: unknown[]) => Promise<{ ok: boolean; error?: string }>;
+const LOCKED_MESSAGE = "The wallet is locked, so this was not signed or sent. Unlock it and try again.";
+let signer: WalletClient; // the platform's own client, without the unlock wrapper
 
 function unlockingWallet(client: WalletClient): WalletClient {
   const wrapped = { ...client } as unknown as Record<string, KeyCall | undefined>;
@@ -2201,8 +2206,10 @@ function unlockingWallet(client: WalletClient): WalletClient {
     if (!call) continue;
     wrapped[name] = async (...args) => {
       const answer = await call(...args);
-      if (answer.ok || answer.error !== "Locked" || !await promptUnlock(client)) return answer;
-      return call(...args);
+      if (answer.ok || answer.error !== "Locked") return answer;
+      if (await promptUnlock()) return call(...args);
+      showLockNotice();
+      return { ok: false, error: LOCKED_MESSAGE };
     };
   }
   return wrapped as unknown as WalletClient;
@@ -2210,29 +2217,51 @@ function unlockingWallet(client: WalletClient): WalletClient {
 
 let unlocking: Promise<boolean> | undefined;
 /** Ask for the password over the current screen. Resolves true once unlocked. */
-function promptUnlock(client: WalletClient): Promise<boolean> {
+function promptUnlock(): Promise<boolean> {
   unlocking ??= new Promise<boolean>((resolve) => {
     const password = h("input", { type: "password", placeholder: "password", autocomplete: "current-password" }) as HTMLInputElement;
     const error = h("div", { class: "toast", role: "alert" });
     const finish = (unlocked: boolean) => { overlay.remove(); unlocking = undefined; resolve(unlocked); };
     const submit = async () => {
-      const answer = await client.unlock(password.value);
-      if (!answer.ok) { error.textContent = answer.error; password.select(); return; }
+      error.textContent = "unlocking…";
+      const answer = await signer.unlock(password.value);
+      if (!answer.ok) { error.textContent = answer.error === "Wrong password" ? "That password is not right. Try again." : answer.error; password.select(); return; }
       st = answer.state;
+      hideLockNotice();
       finish(true);
     };
     password.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void submit(); });
     const overlay = h("div", { class: "secret-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Unlock wallet" },
       h("h1", {}, "Unlock to continue"),
-      h("p", { class: "muted" }, "The wallet locked itself. Enter your password and this step continues where you left it; nothing you entered is lost."),
+      h("p", { class: "muted" }, "The wallet locks itself after ten minutes without use, and whenever the browser stops it in the background. Nothing was signed or sent. Enter your password and this step picks up where you left it; what you entered is still there."),
       password, error,
       h("button", { class: "block", onclick: () => { void submit(); } }, "Unlock"),
-      h("button", { class: "btn block", onclick: () => finish(false) }, "Cancel"),
+      h("button", { class: "btn block", onclick: () => finish(false) }, "Not now"),
     );
     document.body.append(overlay);
     password.focus();
   });
   return unlocking;
+}
+
+let lockNotice: El | undefined;
+function showLockNotice() {
+  if (lockNotice?.isConnected) return;
+  lockNotice = h("div", { class: "lock-notice", role: "status" },
+    h("span", {}, "Wallet locked. You can look around, but signing and paying need your password."),
+    h("button", { class: "btn", onclick: () => { void promptUnlock(); } }, "Unlock"));
+  view().before(lockNotice);
+}
+function hideLockNotice() { lockNotice?.remove(); lockNotice = undefined; }
+
+/** Learn whether the signer locked behind an unlocked-looking page. A status
+ * read never postpones the signer's idle lock; in the extension it also keeps
+ * the signer's worker running while a wallet page is in view. */
+async function checkSigner() {
+  if (!st.initialized || st.locked || document.visibilityState === "hidden") return;
+  const answer = await signer.getState().catch(() => undefined);
+  if (!answer?.ok) return;
+  if (answer.state.locked) showLockNotice(); else hideLockNotice();
 }
 
 export function startWallet(host: Platform) {
@@ -2241,8 +2270,13 @@ export function startWallet(host: Platform) {
   nodeAuth = undefined;
   nodeAuthURL = undefined;
   platform = host;
+  signer = host.wallet;
   wallet = unlockingWallet(host.wallet);
   store = host.store;
+  hideLockNotice();
+  const checkIn = setInterval(() => { void checkSigner(); }, 20_000) as unknown as { unref?: () => void };
+  checkIn.unref?.(); // never keeps a test or a headless host running
+  document.addEventListener("visibilitychange", () => { void checkSigner(); });
   initialView = host.initialView;
   enableOrderDrop();
   const badge = document.getElementById("net-badge")!;
