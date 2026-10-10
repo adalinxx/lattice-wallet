@@ -422,6 +422,71 @@ test("wallet UI e2e: a refusal retains recovery bytes and cannot invite another 
   assert.deepEqual(store.value.settings.pendingSubmissions?.[0]?.signedSubmit, signedSubmit);
 });
 
+test("wallet UI e2e: a signer that locked itself is unlocked in place and the step continues", async () => {
+  const dom = installDOM();
+  let locked = true, signs = 0, submitted = 0, unlocks: string[] = [];
+  const signedSubmit = { transactionCID: "bafysent", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce: "3", chainPath: ["Nexus"],
+  } } } };
+  const wallet = walletFor(openState(), {
+    // The page still believes it is unlocked; the signer knows better.
+    signTransfer: async (args) => {
+      signs += 1;
+      return locked ? { ok: false, error: "Locked" }
+        : { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } };
+    },
+    unlock: async (password) => {
+      unlocks.push(password);
+      if (password !== "correct horse") return { ok: false, error: "Wrong password" };
+      locked = false;
+      return { ok: true, state: openState() };
+    },
+  });
+  const store = memoryStore();
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch({ onSubmit: () => { submitted += 1; } }), requestOrigins: async () => true });
+  const review = async () => {
+    button("Send").click();
+    await settle();
+    input("recipient address (bafy…)").value = bob;
+    input("amount (units)").value = "10";
+    button("Review").click();
+    await settle();
+  };
+  const dialog = () => document.querySelector('[role="dialog"][aria-label="Unlock wallet"]');
+  const inDialog = (text: string) => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent === text) as HTMLButtonElement;
+
+  // Cancel: the request's own answer is shown and nothing is sent.
+  await review();
+  button("Sign & send").click();
+  await settle();
+  assert.ok(dialog(), "the password is asked for over the review");
+  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review underneath is kept");
+  inDialog("Cancel").click();
+  await settle();
+  assert.equal(dialog(), null);
+  assert.match(document.body.textContent ?? "", /Locked/);
+  assert.equal(submitted, 0);
+
+  // Wrong, then right: the same request is sent again and the transfer goes out.
+  button("Sign & send").click();
+  await settle();
+  const password = dialog()!.querySelector("input") as HTMLInputElement;
+  password.value = "wrong";
+  inDialog("Unlock").click();
+  await settle();
+  assert.match(dialog()!.textContent ?? "", /Wrong password/);
+  assert.equal(submitted, 0);
+  password.value = "correct horse";
+  password.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await settle();
+  assert.equal(dialog(), null);
+  assert.deepEqual(unlocks, ["wrong", "correct horse"]);
+  assert.equal(signs, 3, "locked, locked again after cancel, then signed once unlocked");
+  assert.equal(submitted, 1);
+  assert.equal(store.value.settings.pendingSubmissions[0]?.cid, "bafysent");
+});
+
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
   installDOM();
   let lockRequests = 0;

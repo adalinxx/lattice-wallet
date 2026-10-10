@@ -2185,13 +2185,63 @@ function feeScreen() {
 
 // ---------------- chain switch + boot ----------------
 
+// The signer locks without the page being told: its idle timer fires, the
+// browser stops its worker, or the extension is reloaded. A request that needs
+// keys then answers "Locked". Rather than leave that as a dead end on a screen
+// the user has already filled in, ask for the password there and send the same
+// request again. Passive reads are left alone: they must never raise a prompt.
+const NEEDS_KEYS = ["signTransfer", "signDeposit", "signReceipt", "signWithdrawal", "exportBackup", "exportSeedQR",
+  "transferSend", "addAccount", "importKey", "setActive", "setNodeCookie"] as const;
+type KeyCall = (...args: unknown[]) => Promise<{ ok: boolean; error?: string }>;
+
+function unlockingWallet(client: WalletClient): WalletClient {
+  const wrapped = { ...client } as unknown as Record<string, KeyCall | undefined>;
+  for (const name of NEEDS_KEYS) {
+    const call = wrapped[name];
+    if (!call) continue;
+    wrapped[name] = async (...args) => {
+      const answer = await call(...args);
+      if (answer.ok || answer.error !== "Locked" || !await promptUnlock(client)) return answer;
+      return call(...args);
+    };
+  }
+  return wrapped as unknown as WalletClient;
+}
+
+let unlocking: Promise<boolean> | undefined;
+/** Ask for the password over the current screen. Resolves true once unlocked. */
+function promptUnlock(client: WalletClient): Promise<boolean> {
+  unlocking ??= new Promise<boolean>((resolve) => {
+    const password = h("input", { type: "password", placeholder: "password", autocomplete: "current-password" }) as HTMLInputElement;
+    const error = h("div", { class: "toast", role: "alert" });
+    const finish = (unlocked: boolean) => { overlay.remove(); unlocking = undefined; resolve(unlocked); };
+    const submit = async () => {
+      const answer = await client.unlock(password.value);
+      if (!answer.ok) { error.textContent = answer.error; password.select(); return; }
+      st = answer.state;
+      finish(true);
+    };
+    password.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void submit(); });
+    const overlay = h("div", { class: "secret-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Unlock wallet" },
+      h("h1", {}, "Unlock to continue"),
+      h("p", { class: "muted" }, "The wallet locked itself. Enter your password and this step continues where you left it; nothing you entered is lost."),
+      password, error,
+      h("button", { class: "block", onclick: () => { void submit(); } }, "Unlock"),
+      h("button", { class: "btn block", onclick: () => finish(false) }, "Cancel"),
+    );
+    document.body.append(overlay);
+    password.focus();
+  });
+  return unlocking;
+}
+
 export function startWallet(host: Platform) {
   invalidateRecoveryStatus();
   lastRecoveryStatuses = new Map();
   nodeAuth = undefined;
   nodeAuthURL = undefined;
   platform = host;
-  wallet = host.wallet;
+  wallet = unlockingWallet(host.wallet);
   store = host.store;
   initialView = host.initialView;
   enableOrderDrop();
