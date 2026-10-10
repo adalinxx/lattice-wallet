@@ -1,6 +1,6 @@
-// Nexus Wallet UI, shared by the extension popup and the desktop app. Talks
+// Lattice Wallet UI, shared by the extension popup and the desktop app. Talks
 // only to the signer (key material never enters this module) and to the node
-// the user chose for reads/submit. There is no default node. Styled with the
+// the user chose for reads/submit. No node is used until one is chosen. Styled with the
 // Lattice design system. The host supplies a Platform: signer, settings
 // store, network permission, and optionally its own node.
 
@@ -8,14 +8,15 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern } from "../lib/config.ts";
-import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, forgetWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase } from "../lib/wallet/settings.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
+import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 import { scanner, scannerFileTexts } from "./scanner.ts";
 import { isAccountAddress } from "../lib/wallet/session.ts";
+import { replacementTransfer } from "../lib/wallet/replacement.ts";
 
 export interface Platform {
   /** The signer: the extension's background worker, or the desktop app's in-page signer. */
@@ -26,6 +27,8 @@ export interface Platform {
   requestOrigins(origins: string[]): Promise<boolean>;
   /** Whether these origins were already granted, used to resume after Chrome closes a permission prompt. */
   hasOrigins?(origins: string[]): Promise<boolean>;
+  /** Explicitly revoke grants not needed by saved node choices. */
+  releaseUnusedOrigins?(keep: string[]): Promise<void>;
   /**
    * The host's own node (its loopback operator URL), when it runs one: every
    * chain then reads and submits through it, and no endpoint is chosen. A
@@ -107,7 +110,9 @@ const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
 const depositKey = (offer: { demander: string; amountDemanded: string | bigint; depositNonce: string | bigint }) =>
   `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
 const view = () => document.getElementById("view")!;
+let renderVersion = 0;
 export const render = (node: El) => {
+  renderVersion += 1;
   closeChainMenu();
   view().replaceChildren(node);
 };
@@ -126,7 +131,11 @@ const endpointFor = (chain: string): ChosenEndpoint | undefined =>
   platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[chain];
 // The chosen node's cookie header when the user paired it (its operator port requires one).
 let nodeAuth: string | undefined;
-const client = () => reader(endpoint()!.url, chainPath(), platform.fetch, nodeAuth);
+let nodeAuthURL: string | undefined;
+const client = () => {
+  const chosen = endpoint()!;
+  return reader(chosen.url, chainPath(), platform.fetch, nodeAuthURL === chosen.url ? nodeAuth : undefined);
+};
 async function authorizationFor(url: string): Promise<string | undefined> {
   if (platform.ownNode) return undefined; // the host attaches its own node's cookie
   const r = await wallet.nodeAuthorization(url);
@@ -162,8 +171,7 @@ async function resubmitExact(url: string, authorization: string | undefined, sig
   }
 }
 
-/** Resolve the current child block through its parent commitment. Child state
- * is only final enough to delete recovery data when it matches this anchor. */
+/** The parent's current tip and the child block that tip commits. */
 async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], parentAuth?: string, expectedParentTip?: string) {
   const parent = reader(parentEndpoint.url, [...parentChain], platform.fetch, parentAuth);
   const parentTip = expectedParentTip ?? (await parent.latestBlock()).hash;
@@ -175,6 +183,29 @@ async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonl
   const child = (await parent.children(parentTip)).find((entry) => entry.directory === directory);
   if (!child) throw new Error(`The current ${parentChain.join("/")} tip does not commit ${childChain.join("/")}.`);
   return { parent: parentTip, child: child.blockHash };
+}
+
+/** The child node's chain must contain the child block the parent tip commits:
+ * the block it serves by that hash is the one it has at that height. A positive
+ * consistency check between the two nodes, never proof of either.
+ *
+ * It is not a comparison of tips. A child advances on grinds that meet its own
+ * target without meeting its parent's, so between parent blocks the child's tip
+ * is ahead of the block its parent last committed, usually by many blocks.
+ * Child state is therefore read and proven at the child node's own tip. */
+async function requireCommittedChild(
+  parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childEndpoint: ChosenEndpoint, childChain: readonly string[],
+  parentAuth?: string, childAuth?: string, expectedParentTip?: string,
+): Promise<void> {
+  const committed = (await adjacentTips(parentEndpoint, parentChain, childChain, parentAuth, expectedParentTip)).child;
+  const child = reader(childEndpoint.url, [...childChain], platform.fetch, childAuth);
+  const mismatch = () => new Error(`The ${childChain.join("/")} node's chain does not contain the block ${parentChain.join("/")} currently commits for it. The two nodes may be on different branches or still synchronizing; try again shortly.`);
+  let height: bigint;
+  try { height = (await child.block(committed)).height; } catch (error) {
+    if (describe(error).startsWith("not found")) throw mismatch();
+    throw error;
+  }
+  if ((await child.block(height)).hash !== committed) throw mismatch();
 }
 
 async function withStableTip<T>(chosen: ChosenEndpoint, chain: readonly string[], authorization: string | undefined, read: (tip: string) => Promise<T>): Promise<T> {
@@ -270,9 +301,10 @@ function reconcileRecovery(): Promise<RecoveryStatuses> {
         )));
         attemptsStatus.forEach((result, index) => statuses.set(attempts[index]!.transactionCID, result.status));
         if (!attemptsStatus.some((result) => result.deep)) return;
-        const tips = await adjacentTips(parent, purchase.parentChain, purchase.childChain, await auth(parent.url));
+        await requireCommittedChild(parent, purchase.parentChain, child, purchase.childChain, await auth(parent.url), childAuth);
         const keys = purchase.offers.map(depositKey);
-        const values = await depositValues(child.url, purchase.childChain, keys, platform.fetch, childAuth, tips.child);
+        const values = await withStableTip(child, purchase.childChain, childAuth,
+          (childTip) => depositValues(child.url, purchase.childChain, keys, platform.fetch, childAuth, childTip));
         if (keys.every((key) => values.has(key) && (values.get(key) === 0n || values.get(key) === null))) {
           completedPurchases.push(purchase.receiptCID);
         }
@@ -300,7 +332,7 @@ function reconcileRecovery(): Promise<RecoveryStatuses> {
 }
 
 async function dismissRecovery(label: string, remove: (current: Settings) => Settings): Promise<boolean> {
-  if (!window.confirm(`Dismiss ${label}? The wallet will delete its saved recovery data. This cannot be undone.`)) return false;
+  if (!window.confirm(`Dismiss ${label}? The wallet will delete its saved recovery data. This does not cancel the signed transaction: it may still confirm. This cannot be undone.`)) return false;
   await update(remove);
   return true;
 }
@@ -318,6 +350,12 @@ const dismissPurchase = (current: Settings, receiptCID: string): Settings => ({
 export async function ensureOrigins(host: Pick<Platform, "hasOrigins" | "requestOrigins">, origins: string[]): Promise<boolean> {
   if (host.hasOrigins && await host.hasOrigins(origins).catch(() => false)) return true;
   return host.requestOrigins(origins).catch(() => false);
+}
+
+/** Only the selected bootstrap and the two hosted chains get automatic reach.
+ * Other discovered operators require an explicit custom-node choice. */
+export function discoveryOrigins(bootstrap: string): string[] {
+  return [...new Set([bootstrap, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC].map(originPattern))];
 }
 
 function syncBadge() {
@@ -351,7 +389,7 @@ async function switchToChain(chain: string, status: El) {
       ...s, chain, pendingAutomaticChain: chain,
       chains: s.chains.includes(chain) ? s.chains : [...s.chains, chain],
     }));
-    const granted = await ensureOrigins(platform, [originPattern(bootstrap), "https://*/*"]);
+    const granted = await ensureOrigins(platform, discoveryOrigins(bootstrap));
     if (granted) {
       if (await finishAutomaticChain(chain, status)) { route(); return; }
     }
@@ -400,11 +438,9 @@ async function requestEndpoint(
     if (!paired.ok) { status.textContent = "Cookie: " + paired.error; return false; }
   }
   await update((s) => ({ ...s, pendingEndpoint: pending }));
-  // Choosing the hosted Nexus bootstrap opts into automatic HTTPS discovery.
-  // Ask for that reach once here, so its hosted child chains do not trigger a
-  // second Chrome permission prompt on first use.
+  // Grant the known hosted endpoints together, not every HTTPS origin.
   const origins = pending.chain === ROOT_CHAIN && pending.url === LATTICE_BUILD_RPC
-    && pending.nodeMode === "automatic" ? ["https://*/*"] : [originPattern(pending.url)];
+    && pending.nodeMode === "automatic" ? discoveryOrigins(pending.url) : [originPattern(pending.url)];
   const granted = await ensureOrigins(platform, origins);
   if (granted) return finishPendingEndpoint(status);
   if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
@@ -468,7 +504,7 @@ export async function refresh() {
   }
   if (settings.pendingAutomaticChain === settings.chain && !endpoint() && platform.hasOrigins) {
     const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
-    const origins = [originPattern(bootstrap), "https://*/*"];
+    const origins = discoveryOrigins(bootstrap);
     if (await platform.hasOrigins(origins).catch(() => false)) {
       const status = h("div");
       if (await finishAutomaticChain(settings.chain, status)) { route(); return; }
@@ -512,7 +548,7 @@ function route() {
 function welcome() {
   render(
     h("div", { class: "stack" },
-      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "NEXUS"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
+      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "LATTICE"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
       h("button", { class: "block", onclick: createFlow }, "Create wallet"),
       h("button", { class: "btn block", onclick: restoreChoice }, "Restore or import"),
     ),
@@ -533,7 +569,8 @@ function passwordFields(): { node: El; get: () => string | null } {
   const p1 = h("input", { type: "password", placeholder: "password (min 8)" }) as HTMLInputElement;
   const p2 = h("input", { type: "password", placeholder: "confirm password" }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
-  const node = h("div", { class: "stack" }, p1, p2, err);
+  const strength = h("p", { class: "muted" }, "Use a long, unique passphrase, such as four randomly chosen words. Anyone with an exported backup can guess its password offline.");
+  const node = h("div", { class: "stack" }, p1, p2, strength, err);
   return {
     node,
     get() {
@@ -652,9 +689,9 @@ async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err
 function pairingSteps(origin: string, cookie: HTMLTextAreaElement): El[] {
   const line = `"rpcAllowedOrigins": [${JSON.stringify(origin)}]`;
   return [
-    h("p", { class: "muted" }, "Your own node on this computer: add this line to lattice.json in the node's root, then restart it (lattice down, lattice up):"),
+    h("p", { class: "muted" }, "1. Add this line to lattice.json in the node's root, then restart it (lattice down, lattice up):"),
     h("div", { class: "addr mono" }, line),
-    h("p", { class: "muted" }, "Then paste its cookie, the content of <root>/chains/Nexus/.cookie. The node writes a new cookie each time it starts; paste it again after a restart. It is kept encrypted with your keys."),
+    h("p", { class: "muted" }, "2. Paste its cookie, the content of <root>/chains/Nexus/.cookie. The node writes a new cookie each time it starts; paste it again after a restart. It is kept encrypted with your keys."),
     cookie,
   ];
 }
@@ -667,40 +704,66 @@ function endpointScreen() {
     type: "text", placeholder: "a Nexus node you trust to start from", spellcheck: "false",
     value: settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC,
   }) as HTMLInputElement;
-  const err = h("div", { class: "toast" });
+  start.id = "node-start";
+  const err = h("div", { class: "toast node-status", role: "status" });
   const found = h("div", { class: "kv" });
   const isChild = chainPath().length > 1;
+  // Three ways to choose, each under its own heading, most common first. The
+  // steps for pairing a node on this computer stay folded away unless the
+  // address typed is on this computer, since no other node needs them.
+  const hosted: El[] = [];
+  if (settings.chain === ROOT_CHAIN && !platform.ownNode) {
+    hosted.push(
+      h("button", { class: "btn btn--primary block", onclick: async () => {
+        if (await requestEndpoint({
+          chain: settings.chain, url: LATTICE_BUILD_RPC, source: "user",
+          declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+        }, err)) route();
+      } }, "Use Lattice.build"),
+      h("p", { class: "muted" }, "A public Nexus node run by Lattice. Nothing to set up. The wallet checks that it serves this chain and accepts transactions before saving it."),
+    );
+  }
+  if (isChild) {
+    if (settings.chain === "Nexus/testnet") {
+      hosted.push(
+        h("button", { class: "btn btn--primary block", onclick: async () => {
+          if (await requestEndpoint({
+            chain: settings.chain, url: LATTICE_TESTNET_RPC, source: "user",
+            declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
+          }, err)) route();
+        } }, "Use Lattice.build testnet"),
+        h("p", { class: "muted" }, "A public testnet node run by Lattice. Nothing to set up."),
+      );
+    }
+    hosted.push(
+      h("button", { class: hosted.length ? "btn block" : "btn btn--primary block", onclick: () => discoverFrom(true) }, "Find node automatically"),
+      h("p", { class: "muted" }, "Asks the Lattice explorer's Nexus service which nodes serve this chain and picks one that accepts transactions."),
+    );
+  }
+  const pairing = platform.pairOrigin
+    ? h("details", { class: "advanced" },
+        h("summary", {}, "Pairing a node on this computer"),
+        h("div", { class: "advanced-content stack" }, ...pairingSteps(platform.pairOrigin, cookie)))  as HTMLDetailsElement
+    : null;
+  const showPairing = () => { if (pairing && isLoopbackNodeURL(normalizeNodeURL(url.value) ?? "")) pairing.open = true; };
+  url.addEventListener("input", showPairing);
+  showPairing();
+  url.id = "node-url";
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Node for " + settings.chain),
-      h("p", { class: "muted" }, "The wallet has no default node. Use your own node (its loopback API accepts your submits), or an endpoint whose operator chose to accept public submits."),
-      ...(settings.chain === ROOT_CHAIN && !platform.ownNode ? [
-        h("button", { class: "block", onclick: async () => {
-          if (await requestEndpoint({
-            chain: settings.chain, url: LATTICE_BUILD_RPC, source: "user",
-            declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
-          }, err)) route();
-        } }, "Use Lattice.build"),
-        h("p", { class: "muted" }, "Optional public Nexus service. The wallet verifies the chain and submission support before saving it."),
-      ] : []),
-      ...(isChild ? [
-        ...(settings.chain === "Nexus/testnet" ? [
-          h("button", { class: "block", onclick: async () => {
-            if (await requestEndpoint({
-              chain: settings.chain, url: LATTICE_TESTNET_RPC, source: "user",
-              declaredSubmit: true, requireSubmit: true, nodeMode: "automatic",
-            }, err)) route();
-          } }, "Use Lattice.build testnet"),
-          h("p", { class: "muted" }, "Optional hosted testnet node. You can replace it with automatic discovery or any custom node."),
-        ] : []),
-        h("button", { class: "block", onclick: () => discoverFrom(true) }, "Find node automatically"),
-        h("p", { class: "muted" }, "Uses the explorer's configured Nexus service to find and verify a node that accepts transactions for this chain."),
-      ] : []),
-      url,
-      ...(platform.pairOrigin ? pairingSteps(platform.pairOrigin, cookie) : []),
-      h("button", { class: "block", onclick: async () => {
+      ...(current ? [h("div", { class: "kv" },
+        h("div", { class: "row" }, h("span", { class: "k" }, "Current node"), h("span", { class: "v mono" }, current.url)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, current.acceptsSubmit ? "read + send" : "read only")),
+      )] : []),
+      h("p", { class: "muted" }, `The node is where the wallet reads ${settings.chain} and sends your transactions. Its operator sees your addresses and can answer wrongly; your keys never leave this wallet.`),
+      ...(hosted.length ? [h("h2", { class: "section-label" }, "Hosted"), ...hosted] : []),
+      h("h2", { class: "section-label" }, "Your own or another node"),
+      h("label", { class: "k", for: "node-url" }, "Node address"), url,
+      ...(pairing ? [pairing] : []),
+      h("button", { class: "btn block", onclick: async () => {
         const n = normalizeNodeURL(url.value);
-        if (!n) { err.textContent = "Enter an https:// URL (http:// only for 127.0.0.1/localhost)."; return; }
+        if (!n) { err.textContent = "Enter an https:// address, or http:// for a node on this computer (127.0.0.1 or localhost)."; return; }
         const enteredCookie = cookie.value.trim() || undefined;
         if (await requestEndpoint({
           chain: settings.chain, url: n, source: "user", declaredSubmit: true,
@@ -708,14 +771,16 @@ function endpointScreen() {
         }, err, enteredCookie)) route();
       } }, "Use this node"),
       ...(isChild ? [
-        h("p", { class: "muted" }, "Or discover endpoints for " + settings.chain + " through a Nexus node you choose:"),
-        start,
+        h("h2", { class: "section-label" }, "Discover through a Nexus node"),
+        h("p", { class: "muted" }, "Ask a Nexus node you choose which nodes serve " + settings.chain + ", then pick one from the list."),
+        h("label", { class: "k", for: "node-start" }, "Nexus node to ask"), start,
         h("button", { class: "btn block", onclick: () => discoverFrom() }, "Discover"),
         found,
       ] : []),
       err,
-      ...(current ? [h("button", { class: "btn block", onclick: mainScreen }, "Back")] : []),
-      h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
+      h("div", { class: "row-actions" },
+        ...(current ? [h("button", { class: "btn", onclick: mainScreen }, "Back")] : []),
+        h("button", { class: "btn", onclick: chainScreen }, "Change chain")),
     ),
   );
 
@@ -723,10 +788,9 @@ function endpointScreen() {
     const n = normalizeNodeURL(resumeURL ?? start.value);
     if (!n) { err.textContent = "Enter the starting node's URL."; return; }
     if (!permissionGranted) {
-      // Discovery may reach any declared host. Persist first because Chrome can
-      // close the popup while it asks for this broad reach.
+      // Persist first because Chrome can close the popup on a permission prompt.
       await update((s) => ({ ...s, pendingDiscovery: { chain: s.chain, url: n, autoSelect } }));
-      const granted = await ensureOrigins(platform, [originPattern(n), "https://*/*"]);
+      const granted = await ensureOrigins(platform, discoveryOrigins(n));
       if (!granted) {
         await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
         err.textContent = "Permission not granted.";
@@ -758,13 +822,14 @@ function endpointScreen() {
         return;
       }
       for (const e of list) {
-        found.append(h("div", { class: "row" },
-          h("span", { class: "v mono" }, short(e.url)),
-          h("span", { class: "tag" }, e.declaresSubmit ? "declares submit" : "read-only"),
+        found.append(h("div", { class: "node-row" },
+          h("div", { class: "node-text" },
+            h("span", { class: "node-name mono" }, e.url),
+            h("span", { class: "node-detail" }, e.declaresSubmit ? "declares it accepts transactions" : "read-only")),
           h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit, undefined, false, true)) route(); } }, "Use"),
         ));
       }
-      if (list.length) found.append(h("p", { class: "muted" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
+      if (list.length) found.append(h("p", { class: "muted node-note" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
     } catch (e) {
       err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
     } finally {
@@ -774,7 +839,7 @@ function endpointScreen() {
 
   const pendingDiscovery = settings.pendingDiscovery;
   if (pendingDiscovery?.chain === settings.chain && platform.hasOrigins) {
-    const origins = [originPattern(pendingDiscovery.url), "https://*/*"];
+    const origins = discoveryOrigins(pendingDiscovery.url);
     void platform.hasOrigins(origins).then(async (granted) => {
       if (granted) await discoverFrom(pendingDiscovery.autoSelect, true, pendingDiscovery.url);
       else await update((s) => { const { pendingDiscovery: _, ...rest } = s; return rest; });
@@ -793,10 +858,14 @@ async function chainScreen() {
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Chain"),
-      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "row" },
-        h("span", { class: "v mono" }, c),
-        h("span", { class: "k" }, platform.ownNode ? "own node" : settings.endpoints[c] ? short(settings.endpoints[c].url) : "no node"),
-        h("button", { class: "btn", onclick: () => pick(c) }, c === settings.chain ? "Selected" : "Select"),
+      // A name or address of any length wraps in its own column; the button
+      // beside it keeps its size.
+      h("div", { class: "kv" }, ...chains.map((c) => h("div", { class: "node-row" },
+        h("div", { class: "node-text" },
+          h("span", { class: "node-name mono" }, c),
+          h("span", { class: "node-detail" }, platform.ownNode ? "own node" : settings.endpoints[c]?.url ?? "no node chosen")),
+        h("button", { class: c === settings.chain ? "btn btn--primary" : "btn", ...(c === settings.chain ? { "aria-current": "true" } : {}), onclick: () => pick(c) },
+          c === settings.chain ? "Selected" : "Select"),
       ))),
       add,
       h("button", { class: "btn block", onclick: async () => {
@@ -821,12 +890,17 @@ async function chainScreen() {
 // ---------------- main ----------------
 
 async function mainScreen() {
+  const openingVersion = renderVersion;
   void reconcileRecovery();
   const acct = activeAccount();
   if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
   const nodeV = endpoint()!;
+  const homePath = [...chainPath()];
   nodeAuth = await authorizationFor(nodeV.url);
+  nodeAuthURL = nodeV.url;
+  if (openingVersion !== renderVersion) return; // navigation happened while authentication was read
+  const homeReads = reader(nodeV.url, homePath, platform.fetch, nodeAuth);
   const toast = h("div", { class: "toast" });
 
   const accountPicker = h("select", { class: "picker account-picker", onchange: async (e: Event) => {
@@ -881,7 +955,7 @@ async function mainScreen() {
   async function loadBalance() {
     balanceV.textContent = "…";
     try {
-      const { balance } = await client().account(acct!.address);
+      const { balance } = await homeReads.account(acct!.address);
       balanceV.textContent = balance.toLocaleString();
     } catch (e) { balanceV.textContent = describe(e); }
   }
@@ -914,11 +988,7 @@ function settingsScreen() {
     ...(settings.openDeposits.length
       ? [h("button", { class: "btn block", onclick: depositsScreen }, `Pending sales (${settings.openDeposits.length})`)]
       : []),
-    ...(settings.pendingSubmissions.length || settings.confirmedSubmissions.length
-      ? [h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, settings.confirmedSubmissions.length
-        ? `Transaction recovery (${settings.pendingSubmissions.length} pending, ${settings.confirmedSubmissions.length} confirmed)`
-        : `Pending transactions (${settings.pendingSubmissions.length})`)]
-      : []),
+    h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, "Transactions"),
     h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
     h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
     h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
@@ -1116,8 +1186,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
             toast.textContent = "Fee replacement submitted. Reopen this purchase to check confirmation.";
             replacementFee.remove(); replace.remove();
           } else if (submitted.kind === "refused") {
-            await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, replacementCID), purchase.receiptCID, replacementCID));
-            toast.textContent = `Replacement rejected: ${describe(submitted.error)} The preceding attempt remains current.`;
+            toast.textContent = `Replacement rejected: ${describe(submitted.error)} Both signed attempts remain saved; either may still confirm.`;
             replacementFee.remove(); replace.remove();
             const reviewPrevious = h("button", { class: "btn block", onclick: () => {
               const current = settings.openPurchases.find((item) => item.receiptCID === purchase.receiptCID);
@@ -1189,11 +1258,11 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
         }
         if (!included && latest && (latest.kind === "replaced" || latest.kind === "nonce advanced") && parentEndpoint) {
           try {
-            const tips = await adjacentTips(parentEndpoint, purchase.parentChain, purchase.childChain, await authorizationFor(parentEndpoint.url));
+            await requireCommittedChild(parentEndpoint, purchase.parentChain, childEndpoint, purchase.childChain, await authorizationFor(parentEndpoint.url), auth);
             const keys = purchase.offers.map(depositKey);
-            const values = await depositValues(childEndpoint.url, purchase.childChain, keys, platform.fetch, auth, tips.child);
-            const childInfo = await reader(childEndpoint.url, purchase.childChain, platform.fetch, auth).chainInfo();
-            if (childInfo.tipCID === tips.child && keys.every((key) => typeof values.get(key) === "bigint" && values.get(key)! > 0n)) {
+            const values = await withStableTip(childEndpoint, purchase.childChain, auth,
+              (childTip) => depositValues(childEndpoint.url, purchase.childChain, keys, platform.fetch, auth, childTip));
+            if (keys.every((key) => typeof values.get(key) === "bigint" && values.get(key)! > 0n)) {
               const restart = h("button", { class: "btn block", onclick: async () => {
                 restart.disabled = true;
                 await update((s) => ({ ...s, openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
@@ -1245,10 +1314,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
       });
       if (!signed.ok) throw new Error(signed.error);
       const withdrawalCID = signed.signedSubmit.transactionCID;
-      let attemptAlreadySaved = false;
       await update((s) => {
-        attemptAlreadySaved = s.openPurchases.some((item) => item.receiptCID === purchase.receiptCID
-          && purchaseWithdrawalAttempts(item).some((attempt) => attempt.transactionCID === withdrawalCID));
         return recordWithdrawalAttempt(recordSent(s, childName, {
             cid: withdrawalCID, to: purchase.withdrawer, amount: totalReceive.toString(), at: Date.now(),
             from: purchase.withdrawer, fee: fee.toString(), nonce: account.nonce.toString(),
@@ -1259,19 +1325,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
       try {
         await submitChecked(submitter(childEndpoint.url, platform.fetch, childAuth), signed.signedSubmit);
       } catch (e) {
-        if (isDefiniteSubmissionRefusal(e)) {
-          if (!attemptAlreadySaved) {
-            try {
-              await update((s) => forgetWithdrawalAttempt(forgetSent(s, childName, withdrawalCID), purchase.receiptCID, withdrawalCID));
-            } catch { /* Refusal remains definite. */ }
-            toast.textContent = describe(e);
-            withdraw.disabled = false; feeInput.disabled = false;
-          } else {
-            toast.textContent = `Retry rejected: ${describe(e)} The earlier withdrawal attempt remains saved.`;
-          }
-          return;
-        }
-        toast.textContent = "Withdrawal outcome unknown. Check this saved purchase before taking another action.";
+        toast.textContent = `Withdrawal confirmation unknown: ${describe(e)} The signed attempt remains saved. Check this purchase before taking another action.`;
         return;
       }
       toast.textContent = "Withdrawal submitted. Reopen this purchase to check confirmation.";
@@ -1283,17 +1337,31 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
 }
 
 function connectionScreen() {
+  const status = h("div", { class: "toast" });
   render(h("div", { class: "stack" },
     h("h1", {}, "Connection"),
-    h("p", { class: "muted" }, "Automatic uses the explorer directory to find a verified node for each chain. Choose custom only when you operate or trust a specific node."),
-    h("button", { class: settings.nodeMode === "automatic" ? "block" : "btn block", onclick: async () => {
+    h("p", { class: "muted" }, "Automatic uses the explorer directory to find a node serving each chain. These are operator declarations, not independently verified consensus. Choose custom when you operate or trust a specific node."),
+    h("div", { class: "kv" },
+      h("div", { class: "row" }, h("span", { class: "k" }, "Now using"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes"))),
+    h("button", { class: settings.nodeMode === "automatic" ? "btn btn--primary block" : "btn block", "aria-pressed": String(settings.nodeMode === "automatic"), onclick: async () => {
       await update((s) => ({ ...s, nodeMode: "automatic" }));
       route();
     } }, "Automatic (recommended)"),
-    h("button", { class: settings.nodeMode === "custom" ? "block" : "btn block", onclick: async () => {
+    h("button", { class: settings.nodeMode === "custom" ? "btn btn--primary block" : "btn block", "aria-pressed": String(settings.nodeMode === "custom"), onclick: async () => {
       await update((s) => ({ ...s, nodeMode: "custom" }));
       endpointScreen();
     } }, "Use a custom node"),
+    ...(platform.releaseUnusedOrigins ? [h("button", { class: "btn block", onclick: async () => {
+      try {
+        const current = await loadSettings(store);
+        const keep = discoveryOrigins(current.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC);
+        keep.push(...Object.values(current.endpoints).map((node) => originPattern(node.url)));
+        for (const url of [current.pendingEndpoint?.url, current.pendingDiscovery?.url]) if (url) keep.push(originPattern(url));
+        await platform.releaseUnusedOrigins!(keep);
+        status.textContent = "Unused node permissions removed. Saved nodes and hosted discovery remain available.";
+      } catch (error) { status.textContent = describe(error); }
+    } }, "Remove unused node permissions")] : []),
+    status,
     h("button", { class: "btn block", onclick: settingsScreen }, "Back"),
   ));
 }
@@ -1338,38 +1406,14 @@ const wireOffer = (offer: ActiveDeposit) => ({
   depositNonce: offer.depositNonce.toString(),
 });
 
-function chooseBuyOffers(order: BuyOrder, offers: ActiveDeposit[]): ActiveDeposit[] {
-  const sorted = [...offers].sort((a, b) => {
-    const left = a.amountDemanded * b.amountDeposited;
-    const right = b.amountDemanded * a.amountDeposited;
-    return left < right ? -1 : left > right ? 1 : 0;
-  });
-  const chosen: ActiveDeposit[] = [];
-  if (order.maxAmountDemanded) {
-    let remaining = BigInt(order.maxAmountDemanded);
-    for (const offer of sorted) {
-      if (offer.amountDemanded <= remaining) { chosen.push(offer); remaining -= offer.amountDemanded; }
-    }
-  } else {
-    const desired = BigInt(order.desiredAmountDeposited!);
-    let received = 0n;
-    for (const offer of sorted) {
-      chosen.push(offer); received += offer.amountDeposited;
-      if (received >= desired) break;
-    }
-    if (received < desired) return [];
-  }
-  return chosen;
-}
-
 async function reviewBuyOrder(order: BuyOrder) {
   const acct = activeAccount()!;
   const parentName = order.parentChain.join("/");
   const childName = order.childChain.join("/");
   const childEndpoint = endpointFor(childName);
   const parentEndpoint = endpointFor(parentName);
-  const toast = h("div", { class: "toast" }, "Finding available sell orders…");
-  render(h("div", { class: "stack" }, h("h1", {}, "Find sell orders"), toast,
+  const toast = h("div", { class: "toast" }, "Checking the selected sell orders…");
+  render(h("div", { class: "stack" }, h("h1", {}, "Check sell orders"), toast,
     h("button", { class: "btn block", onclick: orderFlow }, "Cancel")));
   if (!childEndpoint || !parentEndpoint) { toast.textContent = `Connect both ${parentName} and ${childName} before buying.`; return; }
   if (!parentEndpoint.acceptsSubmit || !childEndpoint.acceptsSubmit) {
@@ -1379,56 +1423,45 @@ async function reviewBuyOrder(order: BuyOrder) {
   let childAuth: string | undefined, parentAuth: string | undefined;
   try { [childAuth, parentAuth] = await Promise.all([authorizationFor(childEndpoint.url), authorizationFor(parentEndpoint.url)]); }
   catch (e) { toast.textContent = describe(e); return; }
-  let offers: ActiveDeposit[], minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
-  const unclaimedOffers = async (listed: ActiveDeposit[], parentTip: string) => {
-    let eligible = [...listed];
-    const verified = new Set<string>();
-    const identity = depositKey;
-    while (true) {
-      const selected = chooseBuyOffers(order, eligible);
-      if (!selected.length) return selected;
-      const unchecked = selected.find((offer) => !verified.has(identity(offer)));
-      if (!unchecked) return selected;
-      if (await receiptWithdrawer(parentEndpoint.url, order.parentChain, order.childChain, unchecked, platform.fetch, parentAuth, parentTip) === null) {
-        verified.add(identity(unchecked));
-      } else {
-        const claimed = identity(unchecked);
-        eligible = eligible.filter((offer) => identity(offer) !== claimed);
-      }
-    }
+  // Any node that is not on this computer is its operator's word about the
+  // chain, whether or not a cookie is stored for it.
+  const publicNodePurchase = !platform.ownNode && (!isLoopbackNodeURL(parentEndpoint.url) || !isLoopbackNodeURL(childEndpoint.url));
+  // The request names the deposits; nothing about them is taken from it on
+  // trust. Each must be proven in the child node's current state with exactly
+  // the stated amount, on a chain that contains the block the parent commits,
+  // and have no receipt on the parent.
+  const offers: ActiveDeposit[] = order.deposits.map((deposit) => ({
+    demander: deposit.demander, amountDemanded: BigInt(deposit.amountDemanded),
+    amountDeposited: BigInt(deposit.amountDeposited), depositNonce: BigInt(deposit.depositNonce),
+  }));
+  let minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
+  const verifySelected = () => withStableTip(parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
+    await requireCommittedChild(parentEndpoint, order.parentChain, childEndpoint, order.childChain, parentAuth, childAuth, parentTip);
+    const listed = await withStableTip(childEndpoint, order.childChain, childAuth,
+      (childTip) => activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, childTip));
+    const locked = new Map(listed.map((deposit) => [depositKey(deposit), deposit.amountDeposited]));
+    const owners = await Promise.all(offers.map((offer) => receiptWithdrawer(
+      parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, parentTip,
+    )));
+    return offers.map((offer, index) => locked.get(depositKey(offer)) !== offer.amountDeposited ? "is no longer locked with these terms"
+      : owners[index] !== null ? "was already bought" : null);
+  });
+  const unavailable = (problems: readonly (string | null)[]): string | null => {
+    const failed = problems.flatMap((problem, index) => problem === null ? [] : [`${fmt(offers[index]!.amountDeposited)} from ${short(offers[index]!.demander)} ${problem}`]);
+    return failed.length ? `${failed.length} of ${offers.length} selected sell orders cannot be bought: ${failed.join("; ")}. Nothing was paid. Select again on the Buy page.` : null;
   };
-  const stableDeposits = (receiptOffers: readonly ActiveDeposit[] = [], filterUnclaimed = false) => withStableTip(
-    parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
-      const tips = await adjacentTips(parentEndpoint, order.parentChain, order.childChain, parentAuth, parentTip);
-      let listed: ActiveDeposit[];
-      try {
-        listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
-      } catch (error) {
-        if (error instanceof ChildTipMismatchError) {
-          throw new Error("The child node is not at the block currently committed by its parent. Wait for the chains to synchronize, then try again.");
-        }
-        throw error;
-      }
-      const owners = await Promise.all(receiptOffers.map((offer) => receiptWithdrawer(
-        parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, parentTip,
-      )));
-      const available = filterUnclaimed ? await unclaimedOffers(listed, parentTip) : undefined;
-      return { tips, listed, owners, available };
-    },
-  );
   try {
-    const { available } = await stableDeposits([], true);
-    offers = available ?? [];
+    const refusal = unavailable(await verifySelected());
+    if (refusal) { toast.textContent = refusal; return; }
     [minRelayFee, childMinRelayFee] = await Promise.all([
       reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth).chainInfo().then((info) => info.minRelayFee),
       reader(childEndpoint.url, [...order.childChain], platform.fetch, childAuth).chainInfo().then((info) => info.minRelayFee),
     ]);
-  } catch (e) { toast.textContent = "Could not read active sell orders: " + describe(e); return; }
-  if (!offers.length) { toast.textContent = "No active sell orders satisfy this purchase amount."; return; }
+  } catch (e) { toast.textContent = "Could not check the selected sell orders: " + (e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e)); return; }
   const totalPay = offers.reduce((sum, offer) => sum + offer.amountDemanded, 0n);
   const totalReceive = offers.reduce((sum, offer) => sum + offer.amountDeposited, 0n);
   if (childMinRelayFee === undefined || totalReceive <= childMinRelayFee) {
-    toast.textContent = "These sell orders cannot safely cover the child-chain withdrawal fee.";
+    toast.textContent = "These sell orders cannot cover the fee of the child-chain withdrawal transaction.";
     return;
   }
   const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, parentName) }) as HTMLInputElement;
@@ -1439,35 +1472,48 @@ async function reviewBuyOrder(order: BuyOrder) {
   };
   feeInput.addEventListener("input", checkFee); checkFee();
   const buyButton = h("button", { class: "block" }, "Pay & reserve tokens") as HTMLButtonElement;
+  let purchaseSubmitting = false;
+  toast.textContent = ""; // the check is done; the review that follows is its result
+  const trustAcknowledgement = h("input", { type: "checkbox", id: "purchase-node-trust" }) as HTMLInputElement;
+  buyButton.disabled = publicNodePurchase;
+  trustAcknowledgement.addEventListener("change", () => { buyButton.disabled = purchaseSubmitting || !trustAcknowledgement.checked; });
   render(h("div", { class: "stack" },
     h("h1", {}, "Review purchase"),
     h("p", { class: "warn" }, "Payment on the parent chain is irreversible. After it confirms, complete the child-chain withdrawal from Settings."),
+    ...(publicNodePurchase ? [
+      h("div", { class: "warn" },
+        h("p", {}, "Public-node purchase: proofs check the supplied state, not whether it is the current canonical chain. A dishonest or stale operator can cause loss of your payment."),
+        h("p", { class: "mono" }, `Parent node: ${parentEndpoint.url}`),
+        h("p", { class: "mono" }, `Child node: ${childEndpoint.url}`),
+        h("label", {}, trustAcknowledgement, " I trust these node operators for this purchase."),
+      ),
+    ] : []),
+    h("p", { class: "muted" }, "These are the sell orders named in the request, each bought whole. The wallet proved each one in the child state its node serves and found no payment for it; it checks again before signing."),
     h("div", { class: "kv" },
       h("div", { class: "row" }, h("span", { class: "k" }, "You pay"), h("span", { class: "v" }, `${fmt(totalPay)} on ${parentName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "You receive"), h("span", { class: "v" }, `${fmt(totalReceive)} on ${childName}`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Sell orders"), h("span", { class: "v" }, offers.length.toString())),
-      h("div", { class: "row" }, h("span", { class: "k" }, "Child withdrawal fee"), h("span", { class: "v" }, `at least ${fmt(childMinRelayFee)}`)),
+      ...offers.map((offer) => h("div", { class: "row" }, h("span", { class: "k" }, short(offer.demander)), h("span", { class: "v" }, `${fmt(offer.amountDemanded)} parent / ${fmt(offer.amountDeposited)} child`))),
+      h("div", { class: "row" }, h("span", { class: "k" }, "Child node minimum fee"), h("span", { class: "v" }, `${fmt(childMinRelayFee)}, paid from what you receive`)),
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
     ),
     h("label", { class: "k" }, "Parent-chain fee"), feeInput, feeNote, toast, buyButton,
     h("button", { class: "btn block", onclick: orderFlow }, "Cancel"),
   ));
   buyButton.addEventListener("click", async () => {
+    if (purchaseSubmitting) return;
+    if (publicNodePurchase && !trustAcknowledgement.checked) {
+      toast.textContent = "Acknowledge trust in the selected public nodes before paying.";
+      return;
+    }
     if (Date.parse(order.expiresAt) <= Date.now() + 60_000) { toast.textContent = "This request is expired or has less than one minute left."; return; }
     const fee = parseFee(feeInput.value);
     if (fee === null) { toast.textContent = "Enter a whole fee of 0 or more."; return; }
-    buyButton.disabled = true; feeInput.disabled = true; toast.textContent = "Rechecking sell orders…";
+    purchaseSubmitting = true;
+    buyButton.disabled = true; feeInput.disabled = true; trustAcknowledgement.disabled = true; toast.textContent = "Rechecking the selected sell orders…";
     try {
-      const { listed: currentDeposits, owners } = await stableDeposits(offers);
-      for (const [index, offer] of offers.entries()) {
-        const stillLocked = currentDeposits.some((current) => current.demander === offer.demander
-          && current.depositNonce === offer.depositNonce && current.amountDemanded === offer.amountDemanded
-          && current.amountDeposited === offer.amountDeposited);
-        if (!stillLocked) throw new Error("A selected sell order is no longer locked. Create a fresh request.");
-        if (owners[index] !== null) {
-          throw new Error("A selected sell order was already purchased. Create a fresh request.");
-        }
-      }
+      const refusal = unavailable(await verifySelected());
+      if (refusal) throw new Error(refusal);
       const parent = reader(parentEndpoint.url, [...order.parentChain], platform.fetch, parentAuth);
       const account = await parent.account(acct.address);
       if (totalPay + fee > account.balance) throw new Error(`Insufficient parent balance (have ${fmt(account.balance)}, need ${fmt(totalPay + fee)}).`);
@@ -1481,9 +1527,7 @@ async function reviewBuyOrder(order: BuyOrder) {
         receiptCID: signed.signedSubmit.transactionCID, receiptSubmit: signed.signedSubmit, withdrawer: acct.address,
         offers: offers.map(wireOffer), parentChain: [...order.parentChain], childChain: [...order.childChain], createdAt: Date.now(),
       };
-      let purchaseAlreadySaved = false;
       await update((s) => {
-        purchaseAlreadySaved = s.openPurchases.some((item) => item.receiptCID === purchase.receiptCID);
         return recordSent(recordOpenPurchase(s, purchase), parentName, {
           cid: purchase.receiptCID, to: `buy on ${childName}`, amount: totalPay.toString(), at: Date.now(),
           from: acct.address, fee: fee.toString(), nonce: account.nonce.toString(),
@@ -1495,19 +1539,17 @@ async function reviewBuyOrder(order: BuyOrder) {
       try {
         await submitChecked(submitter(parentEndpoint.url, platform.fetch, parentAuth), signed.signedSubmit);
       } catch (e) {
-        if (isDefiniteSubmissionRefusal(e)) {
-          purchaseScreen(storedPurchase, purchaseAlreadySaved
-            ? `Retry rejected: ${describe(e)} The earlier attempt may still confirm; keep this record.`
-            : `Receipt refused: ${describe(e)} Nothing was paid; dismiss this record to try again with different terms.`);
-        } else {
-          purchaseScreen(storedPurchase);
-        }
+        purchaseScreen(storedPurchase, isTooLargeRefusal(e)
+          ? `Too many sell orders for one transaction: ${describe(e)} Nothing was paid through this node. Select fewer on the Buy page. The signed request is kept here; dismiss it once you have bought again.`
+          : `Receipt confirmation unknown: ${describe(e)} The payment may still confirm; keep this record and check its status before creating another purchase.`);
         return;
       }
       purchaseScreen(storedPurchase);
     } catch (e) {
       toast.textContent = e instanceof Error && !(e instanceof TypeError) ? e.message : describe(e);
-      buyButton.disabled = false; feeInput.disabled = false;
+      purchaseSubmitting = false;
+      buyButton.disabled = publicNodePurchase && !trustAcknowledgement.checked;
+      feeInput.disabled = false; trustAcknowledgement.disabled = false;
     }
   });
 }
@@ -1580,6 +1622,10 @@ function randomNonce(): bigint {
 
 async function reviewSellOrder(order: SellOrder) {
   const acct = activeAccount()!;
+  const chain = order.childChain.join("/");
+  const chosen = { ...endpointFor(chain)! };
+  const authorization = await authorizationFor(chosen.url);
+  const reads = reader(chosen.url, [...order.childChain], platform.fetch, authorization);
   const deposited = BigInt(order.amountDeposited);
   const demanded = BigInt(order.amountDemanded);
   const feeInput = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
@@ -1589,7 +1635,7 @@ async function reviewSellOrder(order: SellOrder) {
   ));
   let minRelayFee: bigint | undefined;
   try {
-    const info = await client().chainInfo();
+    const info = await reads.chainInfo();
     minRelayFee = info.minRelayFee;
   } catch (e) { toast.textContent = describe(e); return; }
   const depositNonce = randomNonce();
@@ -1626,7 +1672,7 @@ async function reviewSellOrder(order: SellOrder) {
     feeInput.disabled = true;
     let nonce: bigint, balance: bigint;
     try {
-      const account = await client().account(acct.address);
+      const account = await reads.account(acct.address);
       nonce = account.nonce; balance = account.balance;
     } catch (e) {
       toast.textContent = describe(e); lockButton.disabled = false; feeInput.disabled = false; return;
@@ -1642,13 +1688,10 @@ async function reviewSellOrder(order: SellOrder) {
     });
     if (!signed.ok) { toast.textContent = signed.error; lockButton.disabled = false; feeInput.disabled = false; return; }
     const cid = signed.signedSubmit.transactionCID;
-    const chain = settings.chain;
-    let depositAlreadySaved = false;
     try {
       // Persist the exact signed attempt before touching the network. A timeout
       // can mean the node accepted it even though no response arrived.
       await update((s) => {
-        depositAlreadySaved = s.openDeposits.some((item) => item.transactionCID === cid);
         return recordSent(recordOpenDeposit(s, {
           transactionCID: cid, demander: acct.address,
           depositNonce: depositNonce.toString(), amountDeposited: order.amountDeposited,
@@ -1667,22 +1710,12 @@ async function reviewSellOrder(order: SellOrder) {
     }
     toast.textContent = "submitting…";
     try {
-      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
+      await submitChecked(submitter(chosen.url, platform.fetch, authorization), signed.signedSubmit);
       sentScreen(cid);
     } catch (e) {
-      if (isDefiniteSubmissionRefusal(e)) {
-        if (!depositAlreadySaved) {
-          try { await update((s) => forgetSent(completeOpenDeposit(s, cid), chain, cid)); } catch { /* Refusal remains definite. */ }
-          toast.textContent = describe(e);
-          lockButton.disabled = false; feeInput.disabled = false;
-        } else {
-          toast.textContent = `Retry rejected: ${describe(e)} The earlier ambiguous deposit remains saved.`;
-        }
-        return;
-      }
       // Never return to a control that re-signs with a newly read account
       // nonce. Track this exact CID; resubmission must reuse its signed bytes.
-      sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" });
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce, kind: "deposit" }, reads);
     }
   });
 }
@@ -1749,6 +1782,7 @@ function keyFilePicker(target: HTMLTextAreaElement): El[] {
 
 async function sendFlow() {
   const acct = activeAccount()!;
+  const sendContext = { chain: settings.chain, path: [...chainPath()], chosen: { ...endpoint()! }, acct };
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
@@ -1771,7 +1805,7 @@ async function sendFlow() {
     if (warning) feeAdvanced.open = true;
   };
   fee.addEventListener("input", checkFee);
-  client().chainInfo().then((info) => {
+  void authorizationFor(sendContext.chosen.url).then((auth) => reader(sendContext.chosen.url, sendContext.path, platform.fetch, auth).chainInfo()).then((info) => {
     minRelayFee = info.minRelayFee;
     checkFee();
   }).catch(() => {});
@@ -1794,23 +1828,26 @@ async function sendFlow() {
     if (!isAccountAddress(toAddr)) { err.textContent = "Enter a valid recipient address."; return; }
     if (toAddr === acct.address) { err.textContent = "That is this account."; return; }
     let amt: bigint, f: bigint;
-    try { amt = BigInt(amount.value.trim()); if (amt <= 0n) throw 0; } catch { err.textContent = "Enter a whole, positive amount."; return; }
+    try { if (!/^[1-9][0-9]*$/.test(amount.value.trim())) throw 0; amt = BigInt(amount.value.trim()); } catch { err.textContent = "Enter a whole, positive amount."; return; }
     const parsedFee = parseFee(fee.value);
     if (parsedFee === null) { err.textContent = "Enter a whole fee of 0 or more."; return; }
     f = parsedFee;
     err.textContent = "reading account…";
     let nonce: bigint, balance: bigint;
     try {
-      const [a, info] = await Promise.all([client().account(acct.address), client().chainInfo()]);
+      const reads = reader(sendContext.chosen.url, sendContext.path, platform.fetch, await authorizationFor(sendContext.chosen.url));
+      const [a, info] = await Promise.all([reads.account(acct.address), reads.chainInfo()]);
       nonce = a.nonce; balance = a.balance; minRelayFee = info.minRelayFee;
     } catch (e) { err.textContent = describe(e); return; }
     if (amt + f > balance) { err.textContent = `Insufficient balance (have ${fmt(balance.toString())}, need ${fmt((amt + f).toString())}).`; return; }
-    reviewScreen(toAddr, amt, f, nonce, minRelayFee);
+    reviewScreen(toAddr, amt, f, nonce, minRelayFee, sendContext);
   }
 }
 
-function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, minRelayFee: bigint | undefined) {
-  const acct = activeAccount()!;
+function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, minRelayFee: bigint | undefined,
+  context: { chain: string; path: string[]; chosen: ChosenEndpoint; acct: NonNullable<ReturnType<typeof activeAccount>> }) {
+  const { acct, chain, path, chosen } = context;
+  let acknowledgedPending: string | undefined;
   const toast = h("div", { class: "toast" });
   const warning = feeWarning(fee, minRelayFee);
   const sendButton = h("button", { class: "block", onclick: confirm }, "Sign & send") as HTMLButtonElement;
@@ -1825,14 +1862,14 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, fmt(amount.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, fmt(fee.toString()))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, fmt((amount + fee).toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, settings.chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
       ),
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
         h("div", { class: "kv advanced-content" },
-          h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
           ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
-          h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(endpoint()!.url))),
+          h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(chosen.url))),
         ),
       ),
       ...(warning ? [h("p", { class: "warn" }, warning)] : []),
@@ -1847,16 +1884,26 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
     sendButton.disabled = true;
     toast.textContent = "signing…";
     let signed;
+    let authorization: string | undefined;
     try {
-      signed = await wallet.signTransfer({ from: acct.address, to, amount: amount.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: chainPath() });
+      const latest = await loadSettings(store);
+      const unresolved = latest.pendingSubmissions.filter((item) => item.chain === chain && item.from === acct.address);
+      const fingerprint = unresolved.map((item) => item.cid).sort().join(",");
+      if (unresolved.length && acknowledgedPending !== fingerprint) {
+        acknowledgedPending = fingerprint;
+        toast.textContent = "This account has saved transactions that may still confirm. Check Pending transactions before paying again. Sending another payment may pay twice or compete for the same nonce.";
+        sendButton.textContent = "Send another payment";
+        sendButton.disabled = false;
+        return;
+      }
+      authorization = await authorizationFor(chosen.url);
+      signed = await wallet.signTransfer({ from: acct.address, to, amount: amount.toString(), fee: fee.toString(), nonce: nonce.toString(), chainPath: path });
     } catch (e) {
       toast.textContent = describe(e); sendButton.disabled = false; return;
     }
     if (!signed.ok) { toast.textContent = signed.error; sendButton.disabled = false; return; }
     toast.textContent = "submitting…";
     const cid = signed.signedSubmit.transactionCID;
-    const chain = settings.chain;
-    let transferAlreadySaved = false;
     try {
       const pending = {
         cid, to, amount: amount.toString(), at: Date.now(),
@@ -1864,7 +1911,6 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         chain,
       };
       await update((s) => {
-        transferAlreadySaved = s.pendingSubmissions.some((item) => item.cid === cid);
         return recordPendingSubmission(recordSent(s, chain, {
           cid, to, amount: amount.toString(), at: pending.at,
           from: acct.address, fee: fee.toString(), nonce: nonce.toString(),
@@ -1877,77 +1923,202 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       return;
     }
     try {
-      await submitChecked(submitter(endpoint()!.url, platform.fetch, nodeAuth), signed.signedSubmit);
+      await submitChecked(submitter(chosen.url, platform.fetch, authorization), signed.signedSubmit);
       sentScreen(cid);
     } catch (e) {
-      if (isDefiniteSubmissionRefusal(e)) {
-        if (!transferAlreadySaved) {
-          try { await update((s) => completePendingSubmission(forgetSent(s, chain, cid), cid)); } catch { /* The refusal remains definite. */ }
-          toast.textContent = describe(e);
-          sendButton.disabled = false;
-        } else {
-          toast.textContent = `Retry rejected: ${describe(e)} The earlier ambiguous transaction remains saved.`;
-        }
-        return;
-      }
-      sentScreen(cid, { uncertain: true, from: acct.address, nonce });
+      sentScreen(cid, { uncertain: true, from: acct.address, nonce }, reader(chosen.url, path, platform.fetch, authorization));
     }
   }
 }
 
 function pendingSubmissionsScreen() {
   const reconciliationResult = reconcileRecovery();
-  const list = h("div", { class: "kv" });
-  for (const pending of settings.pendingSubmissions) {
-    const state = h("span", { class: "muted" }, "Checking…");
-    const row = h("div", { class: "stack compact" },
-      h("div", { class: "row" }, h("span", { class: "v mono" }, short(pending.cid)), h("span", { class: "v" }, pending.chain)),
-      h("div", { class: "row-actions" }, state,
-        h("button", { class: "text-action", onclick: async () => {
-          if (await dismissRecovery("this pending transaction", (s) => dismissSubmission(s, pending.cid))) pendingSubmissionsScreen();
-        } }, "Dismiss")));
-    list.append(row);
-    const chosen = endpointFor(pending.chain);
-    if (!chosen) { state.textContent = `Connect ${pending.chain} to check or resubmit.`; continue; }
-    const retry = h("button", { class: "btn", onclick: async () => {
-      retry.disabled = true; state.textContent = "Resubmitting the exact saved transaction…";
-      try {
-        const submitted = await resubmitExact(chosen.url, await authorizationFor(chosen.url), pending.signedSubmit);
-        state.textContent = submitted.kind === "submitted" ? "Exact transaction resubmitted."
-          : `${submitted.kind === "refused" ? "Retry rejected" : "Retry outcome unknown"}: ${describe(submitted.error)} The saved transaction was kept.`;
-      } catch (error) { state.textContent = describe(error); }
-      retry.disabled = false;
-    } }, "Resubmit exact") as HTMLButtonElement;
-    row.append(retry);
+  const tipReads = new Map<string, ReturnType<ReturnType<typeof reader>["latestBlock"]>>();
+  const pendingList = h("div", { class: "transaction-list" });
+  const recentList = h("div", { class: "transaction-list" });
+  const seen = new Set<string>();
+  const add = (transaction: SentTransaction, chain: string, recovery?: SignedSubmit, archived = false, pending = false) => {
+    const identity = `${chain}:${transaction.cid}`;
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    const replacesCID = [...settings.pendingSubmissions, ...settings.confirmedSubmissions]
+      .find((item) => item.chain === chain && item.cid === transaction.cid)?.replacesCID;
+    const state = h("span", { class: "transaction-status", role: "status" }, "Checking…");
+    const message = h("div", { class: "toast", role: "status" });
+    const field = (label: string, value: string) => h("div", { class: "transaction-field" }, h("span", { class: "muted" }, label), h("span", { class: "mono" }, value));
+    const date = new Date(transaction.at);
+    const confirmations = h("span", {}, "Checking…");
+    const details = h("div", { class: "transaction-details stack" },
+      field("Transaction", transaction.cid),
+      ...(replacesCID ? [field("Replaces", replacesCID)] : []),
+      ...(transaction.from ? [field("From", transaction.from)] : []),
+      field("To", transaction.to), field("Chain", chain),
+      ...(transaction.fee !== undefined ? [field("Fee", fmt(transaction.fee))] : []),
+      ...(transaction.nonce !== undefined ? [field("Nonce", transaction.nonce)] : []),
+      field("Created", Number.isFinite(date.getTime()) ? date.toLocaleString() : "Unknown"),
+      h("div", { class: "transaction-field" }, h("span", { class: "muted" }, "Confirmations (node-reported)"), confirmations),
+      ...(recovery ? [h("p", { class: "muted" }, archived
+        ? "Archived locally. Signed recovery is still saved; node status may change."
+        : "Signed recovery is saved. Retry sends the same transaction, not another payment.")] : []),
+      message,
+    );
+    if (recovery) details.append(h("details", { class: "advanced" },
+      h("summary", {}, "Signed transaction"),
+      h("pre", { class: "transaction-payload" }, JSON.stringify(recovery.payload, null, 2))));
+    const actions = h("div", { class: "row-actions" }, h("button", {
+      class: "btn icon-action", "aria-label": "Copy transaction ID", title: "Copy transaction ID", onclick: async () => {
+        try { await navigator.clipboard.writeText(transaction.cid); message.textContent = "Transaction ID copied."; }
+        catch { message.textContent = "Could not copy. Select the transaction ID above."; }
+      },
+    }, actionIcon("copy")));
+    const row = h("details", { class: "transaction-item" }, h("summary", {},
+      h("div", { class: "transaction-summary" },
+        h("div", { class: "transaction-line" }, h("span", { class: "transaction-title" }, replacesCID ? "Fee replacement" : transaction.to.startsWith("buy on ") ? "Purchase payment" : transaction.to.startsWith("sell on ") ? "Sell order" : "Sent"), h("span", { class: "transaction-amount" }, fmt(transaction.amount))),
+        h("div", { class: "transaction-line muted" }, h("span", { class: "transaction-context", title: chain }, chain), state),
+      ),
+    ), details);
+    (pending ? pendingList : recentList).append(row);
+    const chosen = endpointFor(chain);
+    let increaseFee: El | undefined;
+    if (recovery) {
+      if (chosen?.acceptsSubmit) {
+        const retry = h("button", { class: "btn", onclick: async () => {
+          if (retry.disabled) return;
+          retry.disabled = true; message.textContent = "Resubmitting the exact saved transaction…";
+          try {
+            const submitted = await resubmitExact(chosen.url, await authorizationFor(chosen.url), recovery);
+            message.textContent = submitted.kind === "submitted" ? "Exact transaction resubmitted. Check status for confirmation."
+              : `${submitted.kind === "refused" ? "Retry rejected" : "Retry outcome unknown"}: ${describe(submitted.error)} The saved transaction was kept.`;
+          } catch (error) { message.textContent = describe(error); }
+          finally { retry.disabled = false; }
+        } }, "Resubmit exact") as HTMLButtonElement;
+        actions.append(retry);
+        const saved = settings.pendingSubmissions.find((item) => item.chain === chain && item.cid === transaction.cid);
+        if (pending && saved && replacementTransfer(saved)) {
+          increaseFee = h("button", { class: "btn", onclick: () => replacementScreen(saved, chosen) }, "Increase fee");
+          actions.append(increaseFee);
+        }
+      }
+      actions.append(h("button", { class: "text-action", onclick: async () => {
+        if (await dismissRecovery("this transaction's recovery data", (s) => dismissSubmission(s, transaction.cid))) pendingSubmissionsScreen();
+      } }, "Dismiss"));
+    }
+    details.append(actions);
+    if (!chosen) { state.textContent = "Not connected"; confirmations.textContent = "Unavailable"; message.textContent = `Connect ${chain} to check or resubmit.`; return; }
+    const recorded = transaction.from && transaction.nonce !== undefined ? { from: transaction.from, nonce: BigInt(transaction.nonce) } : undefined;
     void (async () => {
       try {
         const auth = await authorizationFor(chosen.url);
-        const result = (await reconciliationResult).get(pending.cid) ?? await sentStatus(
-          reader(chosen.url, pending.chain.split("/"), platform.fetch, auth), pending.cid,
-          { from: pending.from, nonce: BigInt(pending.nonce) });
+        const result = (await reconciliationResult).get(transaction.cid) ?? await sentStatus(
+          reader(chosen.url, chain.split("/"), platform.fetch, auth), transaction.cid, recorded);
         state.textContent = statusText(result);
-        if (result.kind === "included") state.textContent += " — signed recovery retained against reorgs.";
-      } catch (e) { state.textContent = describe(e); }
+        if (result.kind === "included" || result.kind === "replaced" || result.kind === "nonce advanced") increaseFee?.remove();
+        if (result.kind === "included") {
+          try {
+            const key = `${chosen.url}\n${chain}`;
+            let tip = tipReads.get(key);
+            const node = reader(chosen.url, chain.split("/"), platform.fetch, auth);
+            if (!tip) { tip = node.latestBlock(); tipReads.set(key, tip); }
+            const [latest, included] = await Promise.all([tip, node.block(result.height)]);
+            if (included.hash !== result.hash || latest.height < result.height) {
+              confirmations.textContent = "Unavailable — inclusion changed";
+            } else {
+              const depth = latest.height - result.height + 1n;
+              confirmations.textContent = depth.toString();
+              state.textContent = `${depth} confirmation${depth === 1n ? "" : "s"}`;
+            }
+          } catch { confirmations.textContent = "Unavailable"; }
+        } else { confirmations.textContent = result.kind === "pending" ? "0" : "Unknown"; }
+      } catch (e) { state.textContent = "Status unavailable"; confirmations.textContent = "Unavailable"; message.textContent = describe(e); }
     })();
-  }
-  for (const confirmed of settings.confirmedSubmissions) {
-    list.append(h("div", { class: "stack compact" },
-      h("div", { class: "row" }, h("span", { class: "v mono" }, short(confirmed.cid)), h("span", { class: "tag" }, "confirmed archive")),
-      h("button", { class: "text-action", onclick: async () => {
-        if (await dismissRecovery("this confirmed transaction archive", (s) => dismissSubmission(s, confirmed.cid))) pendingSubmissionsScreen();
-      } }, "Dismiss")));
-  }
-  render(h("div", { class: "stack" }, h("h1", {}, "Pending transactions"), list,
-    h("p", { class: "muted" }, "The wallet keeps exact signed transactions through confirmation and archives them until you explicitly dismiss them."),
+  };
+  for (const transaction of [...settings.pendingSubmissions].sort((a, b) => b.at - a.at)) add(transaction, transaction.chain, transaction.signedSubmit, false, true);
+  const recent = [
+    ...settings.confirmedSubmissions.map((transaction) => ({ transaction, chain: transaction.chain, recovery: transaction.signedSubmit, archived: true })),
+    ...(settings.sent[settings.chain] ?? []).map((transaction) => ({ transaction, chain: settings.chain, recovery: transaction.signedSubmit, archived: false })),
+  ].sort((a, b) => b.transaction.at - a.transaction.at || Number(b.archived) - Number(a.archived));
+  for (const entry of recent) add(entry.transaction, entry.chain, entry.recovery, entry.archived);
+  const refreshNotice = h("div", { class: "toast", role: "status" });
+  const refreshButton = h("button", {
+    class: "btn icon-action", title: "Refresh transactions", "aria-label": "Refresh transactions", onclick: async () => {
+      if (refreshButton.disabled) return;
+      refreshButton.disabled = true;
+      try {
+        const current = await loadSettings(store);
+        invalidateRecoveryStatus();
+        settings = current;
+        pendingSubmissionsScreen();
+      } catch { refreshNotice.textContent = "Could not refresh saved transactions. Try again."; }
+      finally { refreshButton.disabled = false; }
+    },
+  }, actionIcon("refresh")) as HTMLButtonElement;
+  render(h("div", { class: "stack" },
+    h("div", { class: "transaction-heading" }, h("h1", {}, "Transactions"), refreshButton),
+    h("p", { class: "muted" }, `Local sent history for ${settings.chain}, plus saved recovery across chains. Not a complete on-chain history.`),
+    refreshNotice,
+    ...(pendingList.childElementCount ? [h("h2", { class: "section-label" }, `Pending recovery · ${pendingList.childElementCount}`), pendingList] : []),
+    ...(recentList.childElementCount ? [h("h2", { class: "section-label" }, "Recent & archived"), recentList] : []),
+    ...(!seen.size ? [h("p", { class: "transaction-empty muted" }, "No transactions yet. Transactions sent from this wallet will appear here.")] : []),
     h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
 }
 
-function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }) {
+function replacementScreen(original: Parameters<typeof replacementTransfer>[0], chosen: ChosenEndpoint) {
+  const terms = replacementTransfer(original);
+  if (!terms) return pendingSubmissionsScreen();
+  const fee = h("input", { type: "text", inputmode: "numeric", value: (terms.fee + 1n).toString(), "aria-label": "Replacement fee" }) as HTMLInputElement;
+  const message = h("div", { class: "toast", role: "status" });
+  const confirm = h("button", { class: "block", onclick: async () => {
+    if (confirm.disabled) return;
+    const nextFee = parseFee(fee.value);
+    if (nextFee === null || nextFee <= terms.fee) { message.textContent = `Enter a fee higher than ${terms.fee}.`; return; }
+    confirm.disabled = true; fee.disabled = true;
+    try {
+      const auth = await authorizationFor(chosen.url);
+      const node = reader(chosen.url, terms.chainPath, platform.fetch, auth);
+      const [account, status, info] = await Promise.all([node.account(terms.from), sentStatus(node, original.cid, { from: terms.from, nonce: terms.nonce }), node.chainInfo()]);
+      if (status.kind === "included" || account.nonce > terms.nonce) throw new Error("This nonce has already been used. Refresh transactions; do not replace it.");
+      if (terms.amount + nextFee > account.balance) throw new Error("Insufficient balance for this replacement fee.");
+      if (info.minRelayFee !== undefined && nextFee < info.minRelayFee) throw new Error(`This node requires a fee of at least ${info.minRelayFee}.`);
+      const signed = await wallet.signTransfer({ from: terms.from, to: terms.to, amount: terms.amount.toString(), fee: nextFee.toString(), nonce: terms.nonce.toString(), chainPath: terms.chainPath });
+      if (!signed.ok) throw new Error(signed.error);
+      const replacement = { ...original, cid: signed.signedSubmit.transactionCID, signedSubmit: signed.signedSubmit, fee: nextFee.toString(), at: Date.now(), replacesCID: original.cid };
+      // Check all same-nonce attempts inside the cross-page settings lock. A
+      // racing replacement may have raised the fee while this screen was open.
+      await update((s) => {
+        const attempts = [...s.pendingSubmissions, ...s.confirmedSubmissions].filter((item) => item.chain === original.chain && item.from === original.from && item.nonce === original.nonce);
+        if (!s.pendingSubmissions.some((item) => item.cid === original.cid && item.chain === original.chain)) throw new Error("The saved transaction changed. Refresh before replacing it.");
+        if (attempts.some((item) => BigInt(item.fee) >= nextFee)) throw new Error("A newer fee attempt is already saved. Refresh before replacing it.");
+        return recordPendingSubmission(recordSent(s, original.chain, {
+          cid: replacement.cid, from: terms.from, to: terms.to, amount: terms.amount.toString(), fee: nextFee.toString(), nonce: terms.nonce.toString(), at: replacement.at,
+        }), replacement);
+      });
+      const submitted = await resubmitExact(chosen.url, auth, signed.signedSubmit);
+      message.textContent = submitted.kind === "submitted"
+        ? "Replacement submitted. Both attempts remain saved; only one can use this nonce."
+        : `${submitted.kind === "refused" ? "Replacement refused" : "Replacement outcome unknown"}: ${describe(submitted.error)} Both attempts remain saved; either may still confirm.`;
+      confirm.remove(); fee.disabled = true;
+    } catch (error) {
+      message.textContent = error instanceof Error ? error.message : describe(error);
+      confirm.disabled = false; fee.disabled = false;
+    }
+  } }, "Sign replacement") as HTMLButtonElement;
+  render(h("div", { class: "stack" }, h("h1", {}, "Increase fee"),
+    h("p", { class: "warn" }, "Same payment and nonce, higher fee. This is not a second payment or a cancellation. Replacement is not guaranteed; the original may confirm first."),
+    h("div", { class: "transaction-details stack" },
+      h("p", { class: "mono" }, `From: ${terms.from}`), h("p", { class: "mono" }, `To: ${terms.to}`),
+      h("p", {}, `Amount: ${fmt(terms.amount)} · Chain: ${original.chain}`),
+      h("p", {}, `Nonce: ${terms.nonce} · Previous fee: ${terms.fee}`)),
+    h("label", { class: "k", for: "replacement-fee" }, "New fee"), fee, message, confirm,
+    h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, "Back")));
+  fee.id = "replacement-fee";
+}
+
+function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; nonce: bigint; kind?: "deposit" }, reads = client()) {
   const toast = h("div", { class: "toast" });
   const subject = outcome?.kind === "deposit" ? "deposit" : "transaction";
   const status = h("p", { class: outcome ? "warn" : "muted" }, outcome
     ? `Submission outcome unknown. Do not create this ${subject} again; checking this exact transaction…`
-    : "Admitted to the node's pool (pending). See Sent for its block once mined.");
+    : "Admitted to the node's pool (pending). Check Pending transactions or Pending sales in Settings for confirmation.");
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Sent"),
@@ -1961,7 +2132,7 @@ function sentScreen(txCID: string, outcome?: { uncertain: true; from: string; no
     ),
   );
   if (outcome) {
-    sentStatus(client(), txCID, { from: outcome.from, nonce: outcome.nonce })
+    sentStatus(reads, txCID, { from: outcome.from, nonce: outcome.nonce })
       .then(async (result) => {
         status.textContent = `Submission outcome: ${statusText(result)}. Do not create this ${subject} again.`;
         if (subject === "transaction" && result.kind === "included") status.textContent += " Signed recovery retained against reorgs.";
@@ -2049,10 +2220,98 @@ function feeScreen() {
 
 // ---------------- chain switch + boot ----------------
 
+// The signer locks without the page being told: its idle timer fires, the
+// browser stops its worker, or the extension is reloaded. The page finds out
+// in two ways and never answers with a bare "Locked":
+//  - it checks in while it is in view, and says so in a notice with an Unlock
+//    button as soon as the signer is found locked, before any step fails;
+//  - a request that needs keys and is answered "Locked" asks for the password
+//    over the current screen and is sent again, so nothing entered is lost.
+// Passive reads are left alone: they must never raise a prompt.
+const NEEDS_KEYS = ["signTransfer", "signDeposit", "signReceipt", "signWithdrawal", "exportBackup", "exportSeedQR",
+  "transferSend", "addAccount", "importKey", "setActive", "setNodeCookie"] as const;
+type KeyCall = (...args: unknown[]) => Promise<{ ok: boolean; error?: string }>;
+const LOCKED_MESSAGE = "The wallet is locked, so this was not signed or sent. Unlock it and try again.";
+let signer: WalletClient; // the platform's own client, without the unlock wrapper
+
+function unlockingWallet(client: WalletClient): WalletClient {
+  const wrapped = { ...client } as unknown as Record<string, KeyCall | undefined>;
+  for (const name of NEEDS_KEYS) {
+    const call = wrapped[name];
+    if (!call) continue;
+    wrapped[name] = async (...args) => {
+      const answer = await call(...args);
+      if (answer.ok || answer.error !== "Locked") return answer;
+      if (await promptUnlock()) return call(...args);
+      showLockNotice();
+      return { ok: false, error: LOCKED_MESSAGE };
+    };
+  }
+  return wrapped as unknown as WalletClient;
+}
+
+let unlocking: Promise<boolean> | undefined;
+/** Ask for the password over the current screen. Resolves true once unlocked. */
+function promptUnlock(): Promise<boolean> {
+  unlocking ??= new Promise<boolean>((resolve) => {
+    const password = h("input", { type: "password", placeholder: "password", autocomplete: "current-password" }) as HTMLInputElement;
+    const error = h("div", { class: "toast", role: "alert" });
+    const finish = (unlocked: boolean) => { overlay.remove(); unlocking = undefined; resolve(unlocked); };
+    const submit = async () => {
+      error.textContent = "unlocking…";
+      const answer = await signer.unlock(password.value);
+      if (!answer.ok) { error.textContent = answer.error === "Wrong password" ? "That password is not right. Try again." : answer.error; password.select(); return; }
+      st = answer.state;
+      hideLockNotice();
+      finish(true);
+    };
+    password.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void submit(); });
+    const overlay = h("div", { class: "secret-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Unlock wallet" },
+      h("h1", {}, "Unlock to continue"),
+      h("p", { class: "muted" }, "The wallet locks itself after ten minutes without use, and whenever the browser stops it in the background. Nothing was signed or sent. Enter your password and this step picks up where you left it; what you entered is still there."),
+      password, error,
+      h("button", { class: "block", onclick: () => { void submit(); } }, "Unlock"),
+      h("button", { class: "btn block", onclick: () => finish(false) }, "Not now"),
+    );
+    document.body.append(overlay);
+    password.focus();
+  });
+  return unlocking;
+}
+
+let lockNotice: El | undefined;
+function showLockNotice() {
+  if (lockNotice?.isConnected) return;
+  lockNotice = h("div", { class: "lock-notice", role: "status" },
+    h("span", {}, "Wallet locked. You can look around, but signing and paying need your password."),
+    h("button", { class: "btn", onclick: () => { void promptUnlock(); } }, "Unlock"));
+  view().before(lockNotice);
+}
+function hideLockNotice() { lockNotice?.remove(); lockNotice = undefined; }
+
+/** Learn whether the signer locked behind an unlocked-looking page. A status
+ * read never postpones the signer's idle lock; in the extension it also keeps
+ * the signer's worker running while a wallet page is in view. */
+async function checkSigner() {
+  if (!st.initialized || st.locked || document.visibilityState === "hidden") return;
+  const answer = await signer.getState().catch(() => undefined);
+  if (!answer?.ok) return;
+  if (answer.state.locked) showLockNotice(); else hideLockNotice();
+}
+
 export function startWallet(host: Platform) {
+  invalidateRecoveryStatus();
+  lastRecoveryStatuses = new Map();
+  nodeAuth = undefined;
+  nodeAuthURL = undefined;
   platform = host;
-  wallet = host.wallet;
+  signer = host.wallet;
+  wallet = unlockingWallet(host.wallet);
   store = host.store;
+  hideLockNotice();
+  const checkIn = setInterval(() => { void checkSigner(); }, 20_000) as unknown as { unref?: () => void };
+  checkIn.unref?.(); // never keeps a test or a headless host running
+  document.addEventListener("visibilitychange", () => { void checkSigner(); });
   initialView = host.initialView;
   enableOrderDrop();
   const badge = document.getElementById("net-badge")!;

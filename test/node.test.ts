@@ -7,10 +7,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { SubmissionError } from "@adalinxx/lattice-relay";
 import { NodeError } from "@adalinxx/lattice-client";
-import { normalizeNodeURL, parseChainPath, originPattern } from "../src/lib/config.ts";
+import { normalizeNodeURL, parseChainPath, originPattern, isLoopbackNodeURL } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -54,6 +54,13 @@ test("no default node, and only https or the CSP's loopback http", async () => {
   assert.deepEqual(parseChainPath("Nexus/testnet"), ["Nexus", "testnet"]);
   assert.equal(parseChainPath("testnet"), null);
   assert.equal(parseChainPath("Nexus//x"), null);
+});
+
+test("only a node on this computer counts as the user's own", () => {
+  for (const own of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "https://localhost"]) assert.equal(isLoopbackNodeURL(own), true, own);
+  for (const other of ["https://rpc.lattice.build", "https://127.0.0.1.example.com", "https://localhost.example.com", "https://192.168.1.10", "not a url", ""]) {
+    assert.equal(isLoopbackNodeURL(other), false, other);
+  }
 });
 
 test("recordSent keeps newest first, deduplicated", () => {
@@ -215,13 +222,22 @@ test("submission posts the signer's payload to /transactions; refusals are typed
   assert.match(describe(error), /^refused \(belowMinRelayFee\): the fee is below this node's minimum relay fee/);
   assert.match(describe(new SubmissionError(400, "feeTooLow")), /higher fee/);
   assert.match(describe(new SubmissionError(404)), /does not accept transactions/);
+  // A node naming the transaction as too big for it is told apart from other
+  // refusals, so a purchase of too many sell orders can say so.
+  assert.equal(isTooLargeRefusal(new SubmissionError(400, "tooLarge")), true);
+  assert.equal(isTooLargeRefusal(new SubmissionError(413, "requestTooLarge")), true);
+  assert.equal(isTooLargeRefusal(new SubmissionError(413)), false, "a proxy's bare 413 is not the node's word");
+  assert.equal(isTooLargeRefusal(new SubmissionError(400, "feeTooLow")), false);
+  assert.equal(isTooLargeRefusal(new TypeError("Failed to fetch")), false);
   assert.equal(describe(new SubmissionError(500, "something new")), "refused: something new");
   // A local node's operator port: unpaired or stale cookie, or this origin not listed.
   assert.match(describe(new SubmissionError(401)), /needs its cookie/);
   assert.match(describe(new NodeError(401)), /needs its cookie/);
   assert.match(describe(new NodeError(403)), /rpcAllowedOrigins/);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(400, "belowMinRelayFee")), true);
-  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(429, "rate limited")), true);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(429, "rate limited")), false);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(403)), false);
+  assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(400, "unknown reason")), false);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(408)), false);
   assert.equal(isDefiniteSubmissionRefusal(new SubmissionError(500)), false);
   assert.equal(isDefiniteSubmissionRefusal(new TypeError("connection lost")), false);

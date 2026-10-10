@@ -30,7 +30,7 @@ test("backup round-trips through CBOR and a UR (single and animated); wrong pass
   const m = cborDecode(cbor) as Map<number, Cbor>;
   assert.equal(m.get(1), 1, "version");
   assert.equal(m.get(2), 1, "argon2id");
-  assert.deepEqual(m.get(3), [19456, 2, 1], "KDF params travel with it");
+  assert.deepEqual(m.get(3), [65536, 3, 1], "KDF params travel with it");
   assert.equal(bytesToHex(cbor).includes(Buffer.from("abandon").toString("hex")), false, "no plaintext");
   assert.deepEqual(await decryptBackup("correct horse", cbor), data());
   await assert.rejects(decryptBackup("wrong horse", cbor), /Wrong password/);
@@ -113,7 +113,7 @@ test("signer: export needs the password again; restore, merge and replace", asyn
   const wc = walletClient(c.handle);
   await wc.create("pw-c-pw-c", { mnemonic: OTHER });
   assert.equal((await wc.importBackup(plain.backup, "pw-a-pw-a", "merge")).ok, false);
-  const replaced = await wc.importBackup(plain.backup, "pw-a-pw-a", "replace");
+  const replaced = await wc.importBackup(plain.backup, "pw-a-pw-a", "replace", "pw-c-pw-c");
   assert.ok(replaced.ok && replaced.state.accounts.length === 3);
   assert.equal((await decryptVault<WalletData>("pw-c-pw-c", cVaults.vault!)).mnemonic, MNEMONIC);
   c.lock();

@@ -7,6 +7,7 @@ import {
   NodeClient,
   NodeError,
   OPERATOR_DECLARED,
+  getJSON,
   type Fetch,
   type ResolvedEndpoint,
 } from "@adalinxx/lattice-client";
@@ -16,6 +17,7 @@ import { verifyVolume, type VolumeEntry } from "@adalinxx/lattice-volumes";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ROOT_CHAIN } from "../config.ts";
 import type { SignedSubmit } from "./types.ts";
+import { isAccountAddress } from "./session.ts";
 
 // A browser's fetch must be called unbound from any other object (the SDK
 // stores it as a field): always hand the SDK this wrapper.
@@ -110,14 +112,17 @@ function verifyStateProof(value: unknown, kind: "deposits" | "receipts", expecte
   const claims = new Map<string, string | null>();
   for (const [index, raw] of proof.claims.entries()) {
     const claim = object(raw, `state proof.claims[${index}]`);
-    if (typeof claim.key !== "string" || !(typeof claim.value === "string" || claim.value === null)) {
+    // An absent key is claimed with a null value or, as the node encodes an
+    // empty optional, with no value at all. Either way it must prove absent.
+    const value = claim.value ?? null;
+    if (typeof claim.key !== "string" || !(typeof value === "string" || value === null)) {
       throw new TypeError(`state proof.claims[${index}] must contain a string key and optional value`);
     }
     if (claims.has(claim.key)) throw new TypeError("state proof claims must not repeat a key");
-    const expected = claim.value === null ? undefined : kind === "deposits"
-      ? unsigned(claim.value, `state proof.claims[${index}].value`) : claim.value;
+    const expected = value === null ? undefined : kind === "deposits"
+      ? unsigned(value, `state proof.claims[${index}].value`) : value;
     if (!verifySparseProof(proof.dictionaryRoot, claim.key, expected, entries)) throw new TypeError("state proof claim must verify");
-    claims.set(claim.key, claim.value);
+    claims.set(claim.key, value);
   }
   return claims;
 }
@@ -172,11 +177,9 @@ function receiptStorageKey(directory: string, demander: string, amountDemanded: 
 async function nodeJSON(
   url: string, path: string, chainPath: readonly string[], fetchImpl: Fetch, authorization?: string,
 ): Promise<unknown> {
-  const target = new URL(path, `${url}/`);
+  const target = new URL(`${url.replace(/\/$/, "")}${path}`);
   target.searchParams.set("chainPath", chainPath.join("/"));
-  const response = await fetchImpl(target, { headers: authorization ? { authorization } : undefined });
-  if (!response.ok) throw new NodeError(response.status, await response.text());
-  return response.json();
+  return getJSON(target, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization });
 }
 
 /** Active, unwithdrawn child deposits advertised as sell offers. */
@@ -198,6 +201,7 @@ export async function activeDeposits(
     for (const [index, entry] of body.deposits.entries()) {
       const row = object(entry, `deposits[${index}]`);
       if (typeof row.key !== "string" || typeof row.demander !== "string") throw new TypeError(`deposits[${index}] must contain key and demander`);
+      if (!isAccountAddress(row.demander)) throw new TypeError(`deposits[${index}].demander must be an account address`);
       const amountDemanded = unsigned(row.amountDemanded, `deposits[${index}].amountDemanded`);
       const depositNonce = unsigned(row.nonce, `deposits[${index}].nonce`);
       const amountDeposited = unsigned(row.amountDeposited, `deposits[${index}].amountDeposited`);
@@ -207,7 +211,8 @@ export async function activeDeposits(
       seen.add(row.key);
       result.push({ demander: row.demander, amountDemanded, depositNonce, amountDeposited });
     }
-    if (body.next === null) return result;
+    // The last page says so with null, or by leaving the cursor out.
+    if (body.next === null || body.next === undefined) return result;
     if (typeof body.next !== "string" || body.next === after) throw new TypeError("deposits response next must advance");
     after = body.next;
   }
@@ -230,10 +235,11 @@ export async function depositValues(
   await Promise.all([...new Set(keys)].map(async (key) => {
     const query = new URLSearchParams({ key });
     const body = object(await nodeJSON(url, `/api/deposit-state?${query}`, chainPath, fetchImpl, authorization), "deposit state response");
-    if (body.key !== key || (typeof body.value !== "string" && body.value !== null)) throw new TypeError("deposit state response must match its requested key");
+    const stated = body.value ?? null; // an empty optional may be left out
+    if (body.key !== key || (typeof stated !== "string" && stated !== null)) throw new TypeError("deposit state response must match its requested key");
     const claims = verifyStateProof(body.proof, "deposits", tipCID);
-    if (claims.get(key) !== body.value) throw new TypeError("deposit state response must have a valid state claim");
-    values.set(key, typeof body.value === "string" ? unsigned(body.value, "deposit value") : null);
+    if (claims.get(key) !== stated) throw new TypeError("deposit state response must have a valid state claim");
+    values.set(key, typeof stated === "string" ? unsigned(stated, "deposit value") : null);
   }));
   return values;
 }
@@ -248,20 +254,20 @@ export async function receiptWithdrawer(
     if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
     tipCID = info.tipCID;
   }
-  const path = new URL("/api/receipt-state", `${url}/`);
+  const path = new URL(`${url.replace(/\/$/, "")}/api/receipt-state`);
   path.searchParams.set("demander", offer.demander);
   path.searchParams.set("amount", offer.amountDemanded.toString());
   path.searchParams.set("nonce", offer.depositNonce.toString());
   path.searchParams.set("chainPath", childChain.join("/"));
-  const response = await fetchImpl(path, { headers: authorization ? { authorization } : undefined });
-  if (!response.ok) throw new NodeError(response.status, await response.text());
-  const value = object(await response.json(), "receipt response");
+  const value = object(await getJSON(path, { fetch: fetchImpl, timeoutMilliseconds: 8_000, maximumResponseBytes: 4 * 1024 * 1024, authorization }), "receipt response");
   const claims = verifyStateProof(value.proof, "receipts", tipCID);
   const proof = object(value.proof, "receipt proof");
   const directory = childChain.at(-1);
   if (directory === undefined || typeof proof.dictionaryRoot !== "string") throw new TypeError("receipt proof must match the anchored state");
   const receiptKey = receiptStorageKey(directory, offer.demander, offer.amountDemanded, offer.depositNonce);
-  const withdrawer = value.exists === false && value.withdrawer === null ? undefined
+  // No receipt: `exists` is false and the withdrawer is null or, as the node
+  // encodes an empty optional, left out. The proof below decides, not this.
+  const withdrawer = value.exists === false && (value.withdrawer === null || value.withdrawer === undefined) ? undefined
     : value.exists === true && typeof value.withdrawer === "string" ? value.withdrawer
     : (() => { throw new TypeError("receipt response is malformed"); })();
   if (claims.get(receiptKey) !== (withdrawer ?? null)) {
@@ -311,10 +317,17 @@ export async function submitChecked(relay: TransactionSubmitter, signed: SignedS
   return signed.transactionCID;
 }
 
-/** A 4xx response means the node explicitly refused the transaction. A 408
- * can be generated after an upstream timeout, so its admission is uncertain. */
+/** Recognized node refusals describe this delivery, never prove an earlier
+ * delivery was not admitted. Proxy/auth/rate-limit responses are uncertain. */
 export function isDefiniteSubmissionRefusal(error: unknown): boolean {
-  return error instanceof SubmissionError && error.status >= 400 && error.status < 500 && error.status !== 408;
+  return error instanceof SubmissionError && error.status >= 400 && error.status < 500
+    && error.status !== 401 && error.status !== 403 && error.status !== 408 && error.status !== 429
+    && ["belowMinRelayFee", "feeTooLow", "invalidState", "invalidSignature", "invalidTransaction"].includes(error.reason ?? "");
+}
+
+/** The node named the transaction itself as too big for it to take. */
+export function isTooLargeRefusal(error: unknown): boolean {
+  return error instanceof SubmissionError && (error.reason === "tooLarge" || error.reason === "requestTooLarge");
 }
 
 /** Only an explicit fee-floor refusal justifies offering a higher-fee
@@ -329,8 +342,14 @@ export function isTransientSubmissionRefusal(error: unknown): boolean {
     || error.reason === "full" || error.reason === "shuttingDown");
 }
 
+/** A browser permission failure, not an endpoint outage. */
+export class NodePermissionError extends Error {
+  constructor(message: string) { super(message); this.name = "NodePermissionError"; }
+}
+
 /** A refusal or failure, in words, keeping the node's own name for it. */
 export function describe(e: unknown): string {
+  if (e instanceof NodePermissionError) return e.message;
   if (e instanceof CIDMismatchError) return "unexpected answer from node: " + e.message;
   if ((e instanceof SubmissionError || e instanceof NodeError) && (e.status === 401 || e.status === 403)) return authRefusal(e.status);
   if (e instanceof SubmissionError) {

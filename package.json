@@ -1,9 +1,9 @@
 {
-  "name": "nexus-wallet",
-  "version": "0.3.0",
+  "name": "lattice-wallet",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
-  "description": "Nexus Wallet — non-custodial MV3 browser extension for the Lattice network",
+  "description": "Lattice Wallet — non-custodial MV3 browser extension for Lattice chains",
   "license": "MIT",
   "scripts": {
     "prepare": "npm run sdk",
@@ -11,6 +11,7 @@
     "test": "node --test test/*.ts",
     "conformance": "node test/conformance.ts",
     "build": "node build.mjs",
+    "package": "node scripts/package.mjs",
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit"
   },

@@ -1,15 +1,26 @@
-# Nexus Wallet
+# Lattice Wallet
 
-A **non-custodial** wallet for **Nexus** — the root chain of the
-[Lattice](https://github.com/adalinxx) network — and its child chains, built as
+See [network binding and replay](docs/network-binding.md) before reusing keys on separate networks.
+
+Release materials: [release procedure](docs/release.md), [privacy policy](docs/privacy-policy.md), [store listing](docs/store-listing.md), and [verification evidence](docs/release-verification.md). Report vulnerabilities through [SECURITY.md](SECURITY.md).
+
+A **non-custodial** wallet for the [Lattice](https://github.com/adalinxx)
+network, including its **Nexus** root chain and child chains, built as
 a **Manifest V3 browser extension**. Keys are generated and used **entirely on
 your device**; the extension talks directly to a node **you choose** and signs
 locally.
 
-## Nodes: you choose, there is no default
+## Nodes: you choose
 
-The wallet ships with **no node URL**. On first use it asks for one per chain:
+Nothing is selected until you choose it. On first use the wallet asks for a
+node per chain:
 
+- a **hosted Lattice node** — `rpc.lattice.build` for Nexus, and the hosted
+  testnet node. The wallet declares these three origins
+  (`rpc.lattice.build`, `lattice-mainnet-read.fly.dev`,
+  `lattice-mainnet-testnet.fly.dev`) as required host permissions so choosing
+  them needs no further prompt; it still contacts none of them until you pick
+  one or ask for automatic discovery; or
 - **your own node** — its loopback API (`http://127.0.0.1:<rpc-port>`)
   accepts your submits once the wallet is **paired** with it (below); or
 - an endpoint **discovered** through a Nexus node you choose, by the SDK's
@@ -73,16 +84,21 @@ is display history only and cannot delete recovery material. Settings exposes
 pending transactions for status checks and immediate exact-byte resubmission.
 At six confirmations, active recovery moves into a confirmed
 archive instead of being destroyed; every recovery record also has an explicit,
-confirmed **Dismiss** action for cases no endpoint can settle. A definite
-refusal of the first submission is removed so the user can correct it; a
-refused rebroadcast is retained because it cannot disprove earlier admission.
+confirmed **Dismiss** action for cases no endpoint can settle. Every submission
+error retains the signed record: even a refusal can follow admission by an
+upstream node. Check or resubmit the exact transaction before creating another
+payment. The wallet requires an explicit acknowledgement when the account has
+unresolved transfers.
 
 ### Cross-chain deposits
 
 The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded
-`openDeposits` list before attempting submission. Buy requests read active
-child-chain deposits, reject already-receipted offers, sign the parent payment,
-and persist the exact signed receipt and child withdrawal in `openPurchases`.
+`openDeposits` list before attempting submission. A buy request names the exact
+sell deposits to buy (`orderType: "take"`); the wallet chooses none itself. It
+proves each named deposit in the child state with the stated amount, refuses the
+whole request if any is missing or already receipted, signs one parent payment
+for all of them, and persists the exact signed receipt and child withdrawal in
+`openPurchases`.
 Withdrawal records retain every attempt and its signed nonce. A node-reported
 inclusion is displayed but does not immediately delete recovery state.
 Automatic completion moves a purchase into the confirmed archive only when one
@@ -158,7 +174,7 @@ monochrome, monospace, hairlines only, zero accent. Tokens are vendored in
 **Functional.** End to end:
 
 - Conformance-gated crypto core; HD + raw-key derivation.
-- **Encrypted keystore** — Argon2id + AES-256-GCM (PBKDF2-600k fallback),
+- **Encrypted keystore** — Argon2id (64 MiB, 3 passes) + AES-256-GCM; legacy PBKDF2 vaults remain readable, but new encryption never silently falls back,
   persisted in `chrome.storage.local`; wrong password fails closed.
 - **Background service-worker signer** — the sole holder of keys; the popup
   exchanges messages and never receives key material. Idle auto-lock.
@@ -228,10 +244,15 @@ mode → **Load unpacked** → select `dist/`.
 
 ## Security posture
 
+Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Buys through any node that is not on this computer require explicit trust acknowledgement for the displayed operators on each purchase review, whether or not a cookie is stored for it. Paired/own-node mode also relies on your node's honesty. State witnesses alone do not prove a canonical tip.
+
 - Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
   remote code. `connect-src` is `https:` plus loopback `http:` (your own
-  node); the wallet holds no host permission until you choose a node, and then
-  asks for that host only (discovery asks once for `https://*/*`).
+  node). The three exact hosted Lattice node origins are declared as required
+  host permissions, avoiding connection-time prompts for those nodes. Other
+  operators require explicit Custom node selection and optional permission.
+  Old all-HTTPS grants are revoked on upgrade. DNS rebinding of public host
+  names cannot be excluded by a browser-only client; discovery sends no cookies.
 - Lockfile-pinned deps; the SDK pinned by commit (submodule). With
   `npm ci --ignore-scripts`, run `npm run sdk` to build it.
 - Signer isolated in the background worker; popup never receives raw keys (target

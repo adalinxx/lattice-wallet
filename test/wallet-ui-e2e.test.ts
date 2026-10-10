@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 import type { WalletState } from "../src/lib/wallet/types.ts";
 import { startWallet } from "../src/popup/app.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
+import { signTransfer as signTestTransfer } from "../src/lib/wallet/session.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 24; i += 1) await tick(); }
@@ -36,6 +37,133 @@ const openState = (): WalletState => ({
   initialized: true, locked: false,
   accounts: [{ address: alice, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }],
   active: alice,
+});
+
+test("transactions UI: empty history is accessible from settings", async () => {
+  installDOM();
+  const store = memoryStore();
+  await startWallet({ wallet: walletFor(openState()), store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Transactions").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Transactions");
+  assert.match(document.body.textContent ?? "", /No transactions yet/);
+  assert.match(document.body.textContent ?? "", /Not a complete on-chain history/);
+  button("Back").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Settings");
+});
+
+test("transactions RBF: higher fee, same payment and nonce, both attempts saved before a refusal", async () => {
+  installDOM();
+  const account = importPrivateKey("a1".repeat(32));
+  const original = signTestTransfer(account, { to: bob, amount: 10n, fee: 1n, nonce: 3n, chainPath: ["Nexus"] });
+  const record = { cid: original.transactionCID, from: alice, to: bob, amount: "10", fee: "1", nonce: "3", chain: "Nexus", at: 1, signedSubmit: original };
+  const store = memoryStore({ pendingSubmissions: [record] });
+  let signs = 0, posts = 0;
+  const wallet = walletFor(openState(), { signTransfer: async (args) => {
+    signs += 1;
+    assert.equal(args.nonce, "3"); assert.equal(args.to, bob); assert.equal(args.amount, "10"); assert.equal(args.fee, "2");
+    return { ok: true, summary: args, signedSubmit: signTestTransfer(account, { to: args.to, amount: BigInt(args.amount), fee: BigInt(args.fee), nonce: BigInt(args.nonce), chainPath: args.chainPath }) };
+  } });
+  await startWallet({ wallet, store: store.api, fetch: nodeFetch({ submitRefusal: "feeTooLow", onSubmit: () => {
+    posts += 1;
+    assert.equal(store.value.settings.pendingSubmissions.length, 2, "save occurs before broadcast");
+  } }), requestOrigins: async () => true });
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Transactions").click(); await settle();
+  button("Increase fee").click();
+  const fee = document.querySelector('[aria-label="Replacement fee"]') as HTMLInputElement;
+  fee.value = "1"; button("Sign replacement").click(); await settle();
+  assert.equal(signs, 0); assert.equal(posts, 0);
+  assert.match(document.body.textContent ?? "", /higher than 1/);
+  fee.value = "2"; button("Sign replacement").click(); button("Sign replacement").click();
+  await settle();
+  assert.equal(signs, 1); assert.equal(posts, 1);
+  assert.match(document.body.textContent ?? "", /Replacement refused.*Both attempts remain saved/s);
+  assert.deepEqual(store.value.settings.pendingSubmissions.find((item: { cid: string }) => item.cid === record.cid)?.signedSubmit, original);
+  assert.equal(store.value.settings.pendingSubmissions[0]?.replacesCID, record.cid);
+});
+
+test("transactions UI: included rows show confirmations and accessible signed details", async () => {
+  installDOM();
+  const account = importPrivateKey("a1".repeat(32));
+  const signed = signTestTransfer(account, { to: bob, amount: 10n, fee: 1n, nonce: 3n, chainPath: ["Nexus"] });
+  const record = { cid: signed.transactionCID, from: alice, to: bob, amount: "10", fee: "1", nonce: "3", chain: "Nexus", at: 1, signedSubmit: signed };
+  const store = memoryStore({ pendingSubmissions: [record] });
+  const normal = nodeFetch();
+  const fetch = async (raw: string | URL, init?: RequestInit) => {
+    const path = new URL(raw).pathname;
+    if (path === `/api/transaction/${record.cid}`) return json({ txCID: record.cid, nonce: "3", signers: [alice], chainPath: ["Nexus"], accountActions: [], depositActions: [], receiptActions: [], withdrawalActions: [], blockHeight: "7", blockHash: "bafyblock" });
+    if (path === "/api/block/7") return json({ height: "7", hash: "bafyblock", timestamp: "1", transactionCount: 1, childBlockCount: 0, nonce: "0", version: 1, target: "0x1", nextTarget: "0x1", transactionsCID: "bafyt", postStateCID: "bafys", chain: ["Nexus"] });
+    return normal(raw, init);
+  };
+  await startWallet({ wallet: walletFor(openState()), store: store.api, fetch, requestOrigins: async () => true });
+  (document.getElementById("settings-button") as HTMLButtonElement).click(); button("Transactions").click(); await settle();
+  assert.match(document.body.textContent ?? "", /2 confirmations/);
+  assert.match(document.body.textContent ?? "", /Confirmations \(node-reported\)/);
+  assert.equal([...document.querySelectorAll("button")].some((b) => b.textContent === "Increase fee"), false);
+  assert.deepEqual(JSON.parse(document.querySelector(".transaction-payload")!.textContent!), signed.payload);
+});
+
+test("transactions RBF: advanced nonce and failed recovery save prevent broadcast", async () => {
+  for (const failure of ["nonce", "storage"] as const) {
+    installDOM();
+    const account = importPrivateKey("a1".repeat(32));
+    const signed = signTestTransfer(account, { to: bob, amount: 10n, fee: 1n, nonce: 3n, chainPath: ["Nexus"] });
+    const record = { cid: signed.transactionCID, from: alice, to: bob, amount: "10", fee: "1", nonce: "3", chain: "Nexus", at: 1, signedSubmit: signed };
+    const store = memoryStore({ pendingSubmissions: [record] });
+    let signs = 0, posts = 0, advanced = false;
+    const normal = nodeFetch({ onSubmit: () => { posts += 1; } });
+    const fetch = async (raw: string | URL, init?: RequestInit) => advanced && new URL(raw).pathname === `/api/state/account/${alice}`
+      ? json({ owner: alice, balance: "100", nonce: "4" }) : normal(raw, init);
+    const wallet = walletFor(openState(), { signTransfer: async (args) => {
+      signs += 1;
+      store.api.set = async () => { throw new Error("storage failure"); };
+      return { ok: true, summary: args, signedSubmit: signTestTransfer(account, { to: args.to, amount: BigInt(args.amount), fee: BigInt(args.fee), nonce: BigInt(args.nonce), chainPath: args.chainPath }) };
+    } });
+    await startWallet({ wallet, store: store.api, fetch, requestOrigins: async () => true });
+    (document.getElementById("settings-button") as HTMLButtonElement).click(); button("Transactions").click(); await settle();
+    button("Increase fee").click();
+    advanced = failure === "nonce";
+    button("Sign replacement").click(); await settle();
+    assert.equal(signs, failure === "nonce" ? 0 : 1);
+    assert.equal(posts, 0);
+    assert.equal(store.value.settings.pendingSubmissions.length, 1);
+    assert.match(document.body.textContent ?? "", failure === "nonce" ? /nonce has already been used/ : /storage failure/);
+    assert.equal(button("Sign replacement").disabled, false);
+  }
+});
+
+test("transactions UI: disconnected recovery remains visible, archived rows deduplicate and copy full IDs", async () => {
+  const dom = installDOM();
+  let copied = "";
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copied = text; } } });
+  const recovery = { transactionCID: "bafyarchived", bodyCID: "bafybody", payload: {} };
+  const archived = { cid: "bafyarchived", from: alice, to: bob, amount: "15", fee: "1", nonce: "2", at: 2000, chain: "Nexus", signedSubmit: recovery };
+  const missing = { ...archived, cid: "bafymissing", chain: "Nexus/offline", at: 3000, signedSubmit: { ...recovery, transactionCID: "bafymissing" } };
+  const store = memoryStore({ pendingSubmissions: [missing], confirmedSubmissions: [archived], sent: { Nexus: [archived] } });
+  const normalFetch = nodeFetch();
+  const failedStatus = async (raw: string | URL, init?: RequestInit) => new URL(raw).pathname.includes("bafyarchived")
+    ? json({ error: { message: "temporary status failure" } }, 500) : normalFetch(raw, init);
+  await startWallet({ wallet: walletFor(openState()), store: store.api, fetch: failedStatus, requestOrigins: async () => true });
+  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Transactions").click();
+  await settle();
+  const rows = [...document.querySelectorAll(".transaction-item")] as HTMLDetailsElement[];
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => !row.open));
+  assert.match(rows[0]!.textContent ?? "", /Nexus\/offline.*Not connected/s);
+  assert.equal(rows[0]!.querySelectorAll("button").length, 2, "copy and dismiss work without an endpoint");
+  assert.match(rows[1]!.textContent ?? "", /Archived locally/);
+  assert.match(rows[1]!.textContent ?? "", /Status unavailable|unknown to node/);
+  assert.ok(rows[1]!.querySelectorAll("button").length >= 3, "read failure cannot hide exact recovery");
+  rows[1]!.open = true;
+  (rows[1]!.querySelector('[aria-label="Copy transaction ID"]') as HTMLButtonElement).click();
+  await settle();
+  assert.equal(copied, archived.cid);
+  dom.window.confirm = () => false;
+  (rows[0]!.querySelector(".text-action") as HTMLButtonElement).click();
+  await settle();
+  assert.equal(store.value.settings.pendingSubmissions.length, 1, "cancelled dismissal retains recovery");
 });
 
 function memoryStore(overrides: Record<string, unknown> = {}) {
@@ -96,6 +224,7 @@ test("wallet UI e2e: onboarding validation, secret handoff, lock, and keyboard u
   });
   const store = memoryStore();
   await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  assert.equal(document.querySelector(".wordmark")?.textContent, "LATTICE");
 
   button("Create wallet").click();
   input("password (min 8)").value = "short";
@@ -119,6 +248,7 @@ test("wallet UI e2e: onboarding validation, secret handoff, lock, and keyboard u
   (document.getElementById("settings-button") as HTMLButtonElement).click();
   button("Lock wallet").click();
   await settle();
+  assert.equal(document.querySelector(".wordmark")?.textContent, "WALLET");
   assert.equal(document.querySelector("h1")?.textContent, "Unlock");
   const password = input("password");
   password.value = "wrong";
@@ -249,8 +379,15 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   button("Done").click();
   await settle();
   (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Pending transactions (1)").click();
+  button("Transactions").click();
   await settle();
+  assert.equal(document.querySelector("h1")?.textContent, "Transactions");
+  assert.equal(document.querySelectorAll(".transaction-item").length, 1, "history and recovery are deduplicated");
+  const transactionDetails = document.querySelector(".transaction-item") as HTMLDetailsElement;
+  assert.equal(transactionDetails.open, false, "technical details are initially collapsed");
+  transactionDetails.open = true;
+  assert.match(transactionDetails.textContent ?? "", /From.*To.*Chain.*Fee.*Nonce/s);
+  assert.match(transactionDetails.textContent ?? "", /Signed recovery is saved/);
   submitState.failSubmit = false;
   submitState.submitRefusal = "conflictingNonce";
   button("Resubmit exact").click();
@@ -260,7 +397,7 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   assert.match(document.body.textContent ?? "", /saved transaction was kept/i);
 });
 
-test("wallet UI e2e: a definite refusal is removed from recovery history and can be corrected", async () => {
+test("wallet UI e2e: a refusal retains recovery bytes and cannot invite another signature", async () => {
   installDOM();
   const signedSubmit = { transactionCID: "bafyrejected", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
     accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
@@ -279,11 +416,110 @@ test("wallet UI e2e: a definite refusal is removed from recovery history and can
   await settle();
   button("Sign & send").click();
   await settle();
-  assert.equal(document.querySelector("h1")?.textContent, "Review");
-  assert.match(document.body.textContent ?? "", /belowMinRelayFee/);
-  assert.equal(button("Sign & send").disabled, false);
-  assert.deepEqual(store.value.settings.sent.Nexus ?? [], []);
-  assert.deepEqual(store.value.settings.pendingSubmissions ?? [], []);
+  assert.equal(document.querySelector("h1")?.textContent, "Sent");
+  assert.match(document.body.textContent ?? "", /Do not create this transaction again/);
+  assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, signedSubmit.transactionCID);
+  assert.deepEqual(store.value.settings.pendingSubmissions?.[0]?.signedSubmit, signedSubmit);
+});
+
+test("wallet UI e2e: a signer that locked itself is unlocked in place and the step continues", async () => {
+  const dom = installDOM();
+  let locked = true, signs = 0, submitted = 0, unlocks: string[] = [];
+  const signedSubmit = { transactionCID: "bafysent", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce: "3", chainPath: ["Nexus"],
+  } } } };
+  const wallet = walletFor(openState(), {
+    // The page still believes it is unlocked; the signer knows better.
+    signTransfer: async (args) => {
+      signs += 1;
+      return locked ? { ok: false, error: "Locked" }
+        : { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } };
+    },
+    unlock: async (password) => {
+      unlocks.push(password);
+      if (password !== "correct horse") return { ok: false, error: "Wrong password" };
+      locked = false;
+      return { ok: true, state: openState() };
+    },
+  });
+  const store = memoryStore();
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch({ onSubmit: () => { submitted += 1; } }), requestOrigins: async () => true });
+  const review = async () => {
+    button("Send").click();
+    await settle();
+    input("recipient address (bafy…)").value = bob;
+    input("amount (units)").value = "10";
+    button("Review").click();
+    await settle();
+  };
+  const dialog = () => document.querySelector('[role="dialog"][aria-label="Unlock wallet"]');
+  const inDialog = (text: string) => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent === text) as HTMLButtonElement;
+
+  // Cancel: the request's own answer is shown and nothing is sent.
+  await review();
+  button("Sign & send").click();
+  await settle();
+  assert.ok(dialog(), "the password is asked for over the review");
+  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review underneath is kept");
+  assert.match(dialog()!.textContent ?? "", /Nothing was signed or sent/);
+  inDialog("Not now").click();
+  await settle();
+  assert.equal(dialog(), null);
+  // Not a bare "Locked": what happened, that nothing went out, and what to do.
+  assert.match(document.body.textContent ?? "", /The wallet is locked, so this was not signed or sent\. Unlock it and try again\./);
+  const notice = document.querySelector(".lock-notice");
+  assert.match(notice?.textContent ?? "", /Wallet locked\..*signing and paying need your password/, "a standing notice says the wallet is locked");
+  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review is still there to retry from");
+  assert.equal(submitted, 0);
+
+  // Wrong, then right: the same request is sent again and the transfer goes out.
+  button("Sign & send").click();
+  await settle();
+  const password = dialog()!.querySelector("input") as HTMLInputElement;
+  password.value = "wrong";
+  inDialog("Unlock").click();
+  await settle();
+  assert.match(dialog()!.textContent ?? "", /That password is not right/);
+  assert.equal(submitted, 0);
+  password.value = "correct horse";
+  password.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await settle();
+  assert.equal(dialog(), null);
+  assert.deepEqual(unlocks, ["wrong", "correct horse"]);
+  assert.equal(signs, 3, "locked, locked again after cancel, then signed once unlocked");
+  assert.equal(submitted, 1);
+  assert.equal(store.value.settings.pendingSubmissions[0]?.cid, "bafysent");
+  assert.equal(document.querySelector(".lock-notice"), null, "unlocking clears the notice");
+});
+
+test("wallet UI e2e: a page in view learns that the signer locked and offers to unlock before anything fails", async () => {
+  const dom = installDOM();
+  let state = openState();
+  let unlocked = 0;
+  const wallet = walletFor(state, {
+    getState: async () => ({ ok: true, state }),
+    unlock: async () => { unlocked += 1; state = openState(); return { ok: true, state }; },
+  });
+  await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  await settle();
+  assert.equal(document.querySelector(".lock-notice"), null);
+  // The signer locks on its own; the page is told nothing.
+  state = { ...state, locked: true, accounts: [] };
+  document.dispatchEvent(new dom.window.Event("visibilitychange")); // the page comes back into view and checks in
+  await settle();
+  const notice = document.querySelector(".lock-notice");
+  assert.match(notice?.textContent ?? "", /Wallet locked/);
+  assert.match(document.body.textContent ?? "", /Balance/, "the screen the user was on is left alone");
+  (notice!.querySelector("button") as HTMLButtonElement).click();
+  await settle();
+  const dialog = document.querySelector('[role="dialog"][aria-label="Unlock wallet"]')!;
+  (dialog.querySelector("input") as HTMLInputElement).value = "correct horse";
+  ([...dialog.querySelectorAll("button")].find((item) => item.textContent === "Unlock") as HTMLButtonElement).click();
+  await settle();
+  assert.equal(unlocked, 1);
+  assert.equal(document.querySelector(".lock-notice"), null);
+  assert.equal(document.querySelector('[role="dialog"]'), null);
 });
 
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
@@ -323,4 +559,74 @@ test("wallet UI e2e: a locked update re-reads storage and preserves another page
   assert.equal(store.value.settings.pendingSubmissions[0]?.cid, signedSubmit.transactionCID);
   assert.deepEqual(store.value.settings.pendingSubmissions[0]?.signedSubmit, signedSubmit,
     "a stale page cannot overwrite signed recovery data saved by another page");
+});
+
+test("wallet UI e2e: a background cross-page chain change cannot redirect a reviewed transfer or its cookie", async () => {
+  installDOM();
+  const own = "https://own.test", other = "https://other.test";
+  const signed = (cid: string, path: string[], nonce: string) => ({ transactionCID: cid, bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [alice], nonce, chainPath: path,
+  } } } });
+  const old = signed("bafyold", ["Nexus"], "2");
+  const store = memoryStore({ nodeMode: "custom", chains: ["Nexus", "Nexus/shop"],
+    endpoints: { Nexus: { url: own, acceptsSubmit: true, source: "user" }, "Nexus/shop": { url: other, acceptsSubmit: true, source: "user" } },
+    pendingSubmissions: [{ cid: old.transactionCID, to: bob, amount: "1", at: 1, from: alice, fee: "1", nonce: "2", chain: "Nexus", signedSubmit: old }],
+  });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let signedPath: readonly string[] | undefined;
+  const posts: { origin: string; auth: string | null }[] = [];
+  const fetch = async (raw: string | URL, init?: RequestInit) => {
+    const url = new URL(raw);
+    if (init?.method === "POST") {
+      posts.push({ origin: url.origin, auth: new Headers(init.headers).get("Authorization") });
+      return json({ transactionCID: "bafysent" });
+    }
+    if (url.pathname === "/api/transaction/bafyold") {
+      await gate;
+      return json({ txCID: old.transactionCID, blockHeight: "1", blockHash: "bafyblock", timestamp: "1", nonce: "2", signers: [alice], chainPath: ["Nexus"],
+        accountActions: [], depositActions: [], receiptActions: [], withdrawalActions: [], actions: [] });
+    }
+    if (url.pathname === "/api/chain/info") return json({ chain: (url.searchParams.get("chainPath") ?? "Nexus").split("/"), minRelayFee: "1", acceptsSubmit: true, height: "50", tipCID: "bafytip" });
+    if (url.pathname.startsWith("/api/state/account/")) return json({ owner: alice, balance: "100", nonce: "3" });
+    return json({ error: { message: "not found" } }, 404);
+  };
+  const wallet = walletFor(openState(), {
+    nodeAuthorization: async (url) => ({ ok: true, ...(url === own ? { authorization: "Basic disposable-own-cookie" } : {}) }),
+    signTransfer: async (args) => { signedPath = args.chainPath; return { ok: true, signedSubmit: signed("bafysent", [...args.chainPath], "3"), summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; },
+  });
+  await startWallet({ wallet, store: store.api, fetch, requestOrigins: async () => true });
+  await settle();
+  button("Send").click(); await settle();
+  input("recipient address (bafy…)").value = bob;
+  input("amount (units)").value = "10";
+  button("Review").click(); await settle();
+  await store.api.set({ settings: { ...store.value.settings, chain: "Nexus/shop" } });
+  release(); await settle();
+  assert.equal(store.value.settings.confirmedSubmissions.length, 1, "background archive reloaded the other page's settings");
+  assert.match(document.getElementById("net-badge")?.textContent ?? "", /Nexus\/shop/);
+  button("Sign & send").click(); await settle();
+  assert.deepEqual(signedPath, ["Nexus"]);
+  assert.deepEqual(posts, [{ origin: own, auth: "Basic disposable-own-cookie" }]);
+  assert.equal(store.value.settings.pendingSubmissions[0]?.chain, "Nexus");
+});
+
+test("wallet UI e2e: saved uncertain payments require explicit acknowledgement before signing another", async () => {
+  installDOM();
+  let signatures = 0;
+  const signedSubmit = { transactionCID: "bafynew", bodyCID: "bafybody", payload: { transaction: { signatures: {}, body: {
+    accountActions: [], actions: [], depositActions: [], receiptActions: [], withdrawalActions: [], signers: [alice], nonce: "3", chainPath: ["Nexus"],
+  } } } };
+  const store = memoryStore({ pendingSubmissions: [{ cid: "bafyold", to: bob, amount: "10", at: 1, from: alice, fee: "1", nonce: "2", signedSubmit, chain: "Nexus" }] });
+  const wallet = walletFor(openState(), { signTransfer: async (args) => { signatures += 1; return { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; } });
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  button("Send").click(); await settle();
+  input("recipient address (bafy…)").value = bob; input("amount (units)").value = "10";
+  button("Review").click(); await settle();
+  button("Sign & send").click(); await settle();
+  assert.equal(signatures, 0);
+  assert.match(document.body.textContent ?? "", /may pay twice/);
+  button("Send another payment").click(); await settle();
+  assert.equal(signatures, 1);
 });
