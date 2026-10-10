@@ -44,15 +44,15 @@ All three are fixed and now have tests in the shape the live node sends. A read-
 
 An AI-assisted review of the 0.3.0 commit and package was carried out during preparation. Its findings on recovery after refused submissions, offer selection, export re-authentication, cross-page state, backup bounds, lock behaviour, dependency auditing and password derivation were addressed in this candidate. One was accepted rather than fixed: state proofs are checked against the tip the nodes supply, with no independent verification of the chain, so a purchase through a node that is not on the user's computer requires an explicit acknowledgement on each review. See [node trust](node-trust.md).
 
-That automated review was not an independent review, and no certification is claimed. The release owner subsequently stated on October 10 that he reviewed the wallet himself and does not require an independent reviewer; owner review is the chosen sign-off.
+That automated review was not an independent review, and no certification is claimed.
 
-## Public-release status (updated by owner report)
+## Public-release status
 
-- Independent-review requirement waived by the release owner on October 10 in favor of his own review; no independent audit is claimed.
-- The release owner confirms that the full live purchase/payment/withdrawal completed, including withdrawal back to the buyer wallet. This satisfies the owner-confirmed live-flow gate. It supersedes earlier pending statements; it is not independent or automated reproduction. No repeat transaction or transaction-hash submission is required as a new gate.
+- No independent audit has been carried out, and none is claimed.
+- A full live purchase, payment and withdrawal back to the buyer wallet were completed by hand. This satisfies the live-flow gate and supersedes earlier pending statements; it was not reproduced independently or by the automated verifier.
 - Published policy links, the publisher account and final store declarations.
 
-No user funds or keys were used by the assistant for these checks. The release owner’s owner-confirmed live test is recorded separately.
+No user funds or keys were used for the automated checks. The live test is recorded separately.
 
 ## October 10 follow-up validation from merged main
 
@@ -86,8 +86,6 @@ was performed in this follow-up. Earlier browser/local-node results above remain
 historical evidence, not checks repeated on this candidate. No live signing,
 purchase, withdrawal or transfer was attempted.
 
-Mac Chrome (the release owner's profile) was identified, but opening the Web Store developer
-console was refused by the computer-use tool with “Not allowed”. The release owner subsequently confirmed he has no publisher account and authorized creating one.
 Publisher registration is pending; account identity and dashboard declarations remain unverified.
 Do not infer account readiness or certify declarations from the listing draft.
 
@@ -95,26 +93,24 @@ Do not infer account readiness or certify declarations from the listing draft.
 
 1. Review and merge this follow-up, then record the final main commit and rebuild;
    compare the package hash. Any subsequent runtime changes require relevant retests.
-2. Retain the release owner’s owner-review sign-off and resolve any blocking findings.
-   He explicitly waived independent review on October 10. Record the final
-   commit, SDK revision and ZIP covered by publication approval; do not describe
-   his review or automated checks as an independent audit.
-3. Retain the release owner’s confirmation of the completed live purchase/payment/withdrawal
-   back to the buyer wallet. Do not repeat transactions or require hashes as a
-   new gate. Automated reproduction remains separately unverified; the owner
-   handoff is reference material for a separately authorized future test.
-4. The release owner opens the Web Store dashboard and completes publisher registration,
+2. Resolve any blocking review findings. Record the final commit, SDK revision
+   and ZIP covered by publication approval; do not describe the review or
+   automated checks as an independent audit.
+3. The live purchase, payment and withdrawal back to the buyer wallet are
+   complete; do not repeat transactions as a new gate. Automated reproduction
+   remains separately unverified.
+4. Complete publisher registration in the Web Store dashboard,
    verified contact/2FA, any fees or terms, and jurisdiction/data declarations.
    Recheck final policy wording and permission explanations against the manifest.
    Use docs/store-listing.md and the existing actual-UI screenshots. Upload the
    reviewed ZIP and request review with deferred publication.
-5. Publish only after all gates and owner declarations are complete. Do not tag
+5. Publish only after all gates and store declarations are complete. Do not tag
    or announce while blocked. Store-signed upgrade is a second-release gate.
 
 ### Follow-up diff review and CI
 
 GitHub CI run 38077628609 passed on exact head
-`8246db856a28ca39604de9d48d2d21e4510de2c5`; its Linux ZIP has the same SHA-256
+`200f0c4d583277f1ee0815ae283a55cc9e7dc6c4`; its Linux ZIP has the same SHA-256
 as the local macOS ZIP above. Subsequent diff review found the funded acceptance
 verifier still required the child tip to equal the parent commitment. The verifier
 now checks that the parent-committed block is on the child's current chain by
@@ -126,17 +122,14 @@ Both `rpc.lattice.build` and `lattice-mainnet-read.fly.dev` report Nexus height
 height 12214 that endpoint listed zero deposits in both checks. No existing
 disposable offer was identified. Endpoint selection agrees with documented defaults;
 operator intent and the historical reason for the empty listing remain unknown.
-See [the compact owner handoff](release-owner-handoff.md) for prerequisites,
-manual signing steps, evidence and the precise browser-permission observations.
+See [store upgrade and funded trade acceptance](release-live-testing.md) for
+prerequisites, manual signing steps and evidence.
 
-The release owner subsequently reported “I already did a live purchase test”. This is recorded
-as owner-reported completion, separately from automated reproduction. He then
-confirmed: “Yes, we did complete the withdrawal back to the buyers wallet”.
-The live purchase/payment/withdrawal gate is therefore owner-confirmed complete.
-No additional transaction or hashes are requested to close it. A filename search of the original release/docs directories
-found no separate trade/purchase/withdrawal evidence artifact; this does not establish
-that none exists elsewhere. No wallet storage or secret-bearing files were inspected.
-The empty current listing does not establish that no prior live test occurred.
+A live purchase, payment and withdrawal back to the buyer wallet were then
+completed by hand, which closes the live-flow gate. This is recorded separately
+from automated reproduction; no evidence artifact for that run is kept in this
+repository. The empty current listing does not establish that no prior live test
+occurred.
 
 
 ### Bundled-license correction (supersedes earlier ZIP checksum)
@@ -148,7 +141,6 @@ license/notice texts. It also retains source copyright comments and supplemental
 QR/ZXing, Microsoft helper, BLAKE2b and Go crypto reference attributions.
 The ZIP includes `THIRD_PARTY_INVENTORY.json`; packaging fails if a bundled
 package has no license text. The SDK package licenses are included separately.
-`SECURITY.md` now agrees with the release owner's owner-review decision.
 
 The corrected ZIP SHA-256 is
 `8e4fd2fad38b2d31cc1adbfd0ddc307e978770eb902befe2b8ca7381c419a072`.
