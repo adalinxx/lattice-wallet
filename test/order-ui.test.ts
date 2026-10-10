@@ -868,3 +868,79 @@ test("a chain switch is saved before Chrome's permission prompt can close the po
   answerPermission(false);
   await settle();
 });
+
+test("a host with its own node hosts a child chain before the menu switches to it", async () => {
+  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  for (const [name, value] of Object.entries({
+    window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
+    Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
+    HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
+  })) Object.defineProperty(globalThis, name, { configurable: true, value });
+
+  const address = "bafyaccount";
+  const ownNode = "http://127.0.0.1:18080";
+  const wallet = {
+    getState: async () => ({ ok: true, state: {
+      initialized: true, locked: false,
+      accounts: [{ address, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }], active: address,
+    } }),
+    nodeAuthorization: async () => ({ ok: true }),
+  } as unknown as WalletClient;
+  let stored: { settings: Settings } = { settings: { ...structuredClone(DEFAULT_SETTINGS), chain: "Nexus" } };
+  const store = {
+    get: async () => stored,
+    set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
+  };
+  const fetch = async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "0" }));
+    if (url.pathname === "/api/block/latest") return new Response(JSON.stringify({ height: "1", hash: "bafytip", timestamp: "1", transactionCount: 0 }));
+    if (url.pathname === "/api/block/bafytip/children") {
+      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: "bafya" }, { directory: "shop", blockHash: "bafyb" }] }));
+    }
+    return new Response("not found", { status: 404 });
+  };
+  const hosted = ["Nexus", "Nexus/testnet"];
+  const added: string[] = [];
+  let refuse = true;
+  const chains = {
+    list: async () => [...hosted],
+    add: async (chain: string) => {
+      if (refuse) throw new Error("the node could not be restarted");
+      added.push(chain);
+      hosted.push(chain);
+    },
+  };
+  const item = (name: string) => [...document.querySelectorAll(".chain-menu-item")]
+    .find((entry) => entry.firstChild?.textContent === name) as HTMLButtonElement;
+  const openMenu = async () => { (document.getElementById("net-badge") as HTMLButtonElement).click(); await settle(); };
+
+  const { startWallet } = await import("../src/popup/app.ts");
+  await startWallet({ wallet, store, fetch, requestOrigins: async () => false, ownNode, chains });
+  await settle();
+  await openMenu();
+  // The hosted child reads as any other; the one the node lacks says what choosing it does.
+  assert.equal(item("testnet").textContent, "testnet›");
+  assert.equal(item("shop").textContent, "shopadd to node ›");
+
+  // A node that cannot take the chain leaves the wallet where it was, and says why.
+  item("shop").click();
+  await settle();
+  assert.equal(stored.settings.chain, "Nexus");
+  assert.match(document.querySelector(".chain-menu")?.textContent ?? "", /the node could not be restarted/);
+
+  refuse = false;
+  item("shop").click();
+  await settle();
+  assert.deepEqual(added, ["Nexus/shop"]);
+  assert.equal(stored.settings.chain, "Nexus/shop");
+
+  // A chain the node already hosts is switched to without touching the node.
+  (document.getElementById("parent-chain") as HTMLButtonElement).click();
+  await settle();
+  await openMenu();
+  item("testnet").click();
+  await settle();
+  assert.equal(stored.settings.chain, "Nexus/testnet");
+  assert.deepEqual(added, ["Nexus/shop"]);
+});
