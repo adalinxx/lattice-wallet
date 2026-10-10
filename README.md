@@ -86,9 +86,12 @@ unresolved transfers.
 ### Cross-chain deposits
 
 The wallet saves every signed, unwithdrawn sell deposit in a separate unbounded
-`openDeposits` list before attempting submission. Buy requests read active
-child-chain deposits, reject already-receipted offers, sign the parent payment,
-and persist the exact signed receipt and child withdrawal in `openPurchases`.
+`openDeposits` list before attempting submission. A buy request names the exact
+sell deposits to buy (`orderType: "take"`); the wallet chooses none itself. It
+proves each named deposit in the child state with the stated amount, refuses the
+whole request if any is missing or already receipted, signs one parent payment
+for all of them, and persists the exact signed receipt and child withdrawal in
+`openPurchases`.
 Withdrawal records retain every attempt and its signed nonce. A node-reported
 inclusion is displayed but does not immediately delete recovery state.
 Automatic completion moves a purchase into the confirmed archive only when one
@@ -234,7 +237,7 @@ mode → **Load unpacked** → select `dist/`.
 
 ## Security posture
 
-Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Public-node buys require explicit trust acknowledgement for the displayed operators on each purchase review. Paired/own-node mode also relies on your node's honesty. State witnesses alone do not prove a canonical tip.
+Read [node trust and purchase safety](docs/node-trust.md) before using cross-chain orders. Buys through any node that is not on this computer require explicit trust acknowledgement for the displayed operators on each purchase review, whether or not a cookie is stored for it. Paired/own-node mode also relies on your node's honesty. State witnesses alone do not prove a canonical tip.
 
 - Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
   remote code. `connect-src` is `https:` plus loopback `http:` (your own

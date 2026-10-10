@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createSigner } from "../src/lib/wallet/signer.ts";
-import { chooseBuyOffers } from "../src/popup/app.ts";
+import { decodeOrderRequest } from "../src/lib/wallet/order.ts";
 import { validWalletData } from "../src/lib/wallet/backup.ts";
 import type { Vault } from "../src/lib/crypto/keystore.ts";
 import { decryptVault, encryptVault } from "../src/lib/crypto/keystore.ts";
@@ -29,14 +29,13 @@ test("concurrent export guesses lock after five failures and cannot export later
   assert.deepEqual(await signer.handle({ type: "exportBackup", password: "correct password" }), { ok: false, error: "Locked" });
 });
 
-test("market buys reject bait prices without spending the full budget", () => {
-  const offers = [
-    { demander: "honest", amountDeposited: 100n, amountDemanded: 100n, depositNonce: 1n },
-    { demander: "bait", amountDeposited: 1n, amountDemanded: 900n, depositNonce: 2n },
-  ];
-  const order = { version: 1 as const, parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], asset: "LAT" as const,
-    expiresAt: "2099-01-01", side: "buy_child" as const, orderType: "market" as const, maxAmountDemanded: "1000" };
-  assert.deepEqual(chooseBuyOffers(order, offers), [offers[0]]);
+test("the wallet no longer chooses sell orders: a buy names them or is refused", () => {
+  const request = (intent: Record<string, unknown>) => `lattice://order?v=1&intent=${Buffer.from(JSON.stringify({
+    version: 1, parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], asset: "LAT", expiresAt: "2099-01-01T00:00:00Z", side: "buy_child", ...intent,
+  })).toString("base64url")}`;
+  // The bait-order case: a budget with no named orders has nothing to sweep.
+  assert.throws(() => decodeOrderRequest(request({ orderType: "market", maxAmountDemanded: "1000" })), /no longer supported/);
+  assert.throws(() => decodeOrderRequest(request({ orderType: "take", deposits: [] })), /must name the sell orders/);
 });
 
 test("oversized backups fail before deriving any accounts", () => {

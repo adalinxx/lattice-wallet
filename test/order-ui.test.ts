@@ -75,6 +75,23 @@ test("deposit discovery rejects a proof-valid offer repeated by the listing", as
   await assert.rejects(activeDeposits("https://child.example", ["Nexus", "testnet"], fetch), /repeats/);
 });
 
+test("a deposit listing whose last page omits the cursor is complete, as the hosted node sends it", async () => {
+  const seller = importPrivateKey("c1".repeat(32)).address;
+  const row = { key: `${seller}/50/42`, demander: seller, amountDemanded: "50", nonce: "42", amountDeposited: "300" };
+  const trie = testTrie(new Map([[row.key, 300n]]));
+  const proof = testProof("deposits", trie, [{ key: row.key, value: row.amountDeposited }]);
+  const listing = (body: Record<string, unknown>) => activeDeposits("https://child.example", ["Nexus", "testnet"], async (input: string | URL) => {
+    const url = new URL(input);
+    if (url.pathname === "/api/chain/info") return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], tipCID: proof.blockHash }));
+    if (url.pathname === "/api/deposits") return new Response(JSON.stringify(body));
+    return new Response("not found", { status: 404 });
+  });
+  const expected = [{ demander: seller, amountDemanded: 50n, depositNonce: 42n, amountDeposited: 300n }];
+  assert.deepEqual(await listing({ chain: "Nexus/testnet", count: 1, deposits: [row], proof }), expected);
+  assert.deepEqual(await listing({ deposits: [row], next: null, proof }), expected);
+  await assert.rejects(listing({ deposits: [row], next: 7, proof }), /next must advance/);
+});
+
 test("targeted deposit state verifies requested keys without scanning discovery pages", async () => {
   const key = "seller/50/42";
   const missing = "seller/50/43";
@@ -105,10 +122,11 @@ function orderURI(expiresAt: string): string {
   return `lattice://order?v=1&intent=${Buffer.from(JSON.stringify(intent)).toString("base64url")}`;
 }
 
-function buyOrderURI(expiresAt: string): string {
+type Selected = { demander: string; amountDemanded: string; amountDeposited: string; depositNonce: string };
+function buyOrderURI(deposits: Selected[], expiresAt = new Date(Date.now() + 600_000).toISOString()): string {
   const intent = {
     version: 1, parentChain: ["Nexus"], childChain: ["Nexus", "testnet"], asset: "LAT",
-    expiresAt, side: "buy_child", orderType: "market", maxAmountDemanded: "150",
+    expiresAt, side: "buy_child", orderType: "take", deposits,
   };
   return `lattice://order?v=1&intent=${Buffer.from(JSON.stringify(intent)).toString("base64url")}`;
 }
@@ -349,7 +367,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   let receiptSigns = 0, withdrawalSigns = 0, posts = 0, depositReads = 0, receiptMined = false, withdrawalMined = false;
   let paired = false;
   let parentTipHeight = 1n, parentLatestReads = 0;
-  let signedOffers: Array<{ demander: string }> = [];
+  let signedOffers: Selected[] = [];
   const depositRows = [
     { demander: expensiveSeller, amountDemanded: "100", nonce: "43", amountDeposited: "100" },
     { demander: claimedSeller, amountDemanded: "1", nonce: "44", amountDeposited: "1000" },
@@ -373,7 +391,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       accounts: [{ address, publicKey: "ed01" + "00".repeat(32), label: "Account 1", kind: "hd", index: 0 }], active: address,
     } }),
     nodeAuthorization: async () => paired ? { ok: true, authorization: "Basic disposable-test-cookie" } : { ok: true },
-    signReceipt: async (args: { offers: Array<{ demander: string }> }) => {
+    signReceipt: async (args: { offers: Selected[] }) => {
       receiptSigns += 1; signedOffers = args.offers;
       return { ok: true, signedSubmit: makeSigned("bafyreceipt", ["Nexus"]) };
     },
@@ -443,11 +461,41 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   (document.getElementById("settings-button") as HTMLButtonElement).click();
   button("Open cross-chain order").click();
   assert.equal(document.querySelector("h1")?.textContent, "Open order", document.body.textContent ?? "");
-  const paste = document.querySelector("textarea") as HTMLTextAreaElement;
-  paste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
-  button("Use pasted text").click();
-  assert.ok(document.querySelector("h1"), document.body.textContent ?? "");
-  await settle();
+  const wanted: Selected = { demander: seller, amountDemanded: "50", amountDeposited: "300", depositNonce: "42" };
+  const open = async (deposits: Selected[]) => {
+    (document.querySelector("textarea") as HTMLTextAreaElement).value = buyOrderURI(deposits);
+    button("Use pasted text").click();
+    await settle();
+  };
+  const acknowledge = () => {
+    const box = document.getElementById("purchase-node-trust") as HTMLInputElement;
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+  };
+  // The request only names deposits. One that someone already paid for, one
+  // that is not locked, and one whose amount differs from the proven state are
+  // each refused before any review, and one bad entry refuses the whole request.
+  await open([wanted, { demander: claimedSeller, amountDemanded: "1", amountDeposited: "1000", depositNonce: "44" }]);
+  assert.match(document.body.textContent ?? "", /1 of 2 selected sell orders cannot be bought:.*was already bought.*Nothing was paid/);
+  assert.equal(document.querySelector("h1")?.textContent, "Check sell orders");
+  button("Cancel").click();
+  await open([{ ...wanted, depositNonce: "4242" }]);
+  assert.match(document.body.textContent ?? "", /1 of 1 selected sell orders cannot be bought:.*no longer locked with these terms/);
+  button("Cancel").click();
+  await open([{ ...wanted, amountDeposited: "301" }]);
+  assert.match(document.body.textContent ?? "", /no longer locked with these terms/, "the stated child amount must equal the proven one");
+  button("Cancel").click();
+  assert.equal(receiptSigns, 0);
+  assert.equal(posts, 0);
+  // A stored cookie for a node that is not on this computer does not make it
+  // the user's own: the warning and acknowledgement still apply.
+  paired = true;
+  await open([wanted]);
+  assert.match(document.body.textContent ?? "", /Public-node purchase/, "a cookie cannot hide the public-node warning");
+  assert.equal(button("Pay & reserve tokens").disabled, true);
+  button("Cancel").click();
+  paired = false;
+  await open([wanted]);
   assert.match(document.body.textContent ?? "", /Public-node purchase/);
   assert.match(document.body.textContent ?? "", /https:\/\/parent.example/);
   assert.match(document.body.textContent ?? "", /https:\/\/child.example/);
@@ -469,7 +517,10 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   trust.checked = true;
   trust.dispatchEvent(new window.Event("change"));
   assert.equal(document.querySelector("h1")?.textContent, "Review purchase", document.body.textContent ?? "");
-  assert.ok(depositReads > 0, "buy discovery reads the proof-bearing deposits endpoint");
+  assert.ok(depositReads > 0, "each named deposit is checked against the proof-bearing deposits endpoint");
+  assert.match(document.body.textContent ?? "", /You pay50 on Nexus/);
+  assert.match(document.body.textContent ?? "", /You receive300 on Nexus\/testnet/);
+  assert.doesNotMatch(document.body.textContent ?? "", /5%|Price protection/);
   assert.ok(parentLatestReads >= 4, "a proof failure caused by a moving parent tip is retried inside one stable-tip read");
   button("Pay & reserve tokens").click();
   pay.dispatchEvent(new window.Event("click"));
@@ -478,7 +529,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   await settle();
   assert.equal(receiptSigns, 1);
   paired = true;
-  assert.deepEqual(signedOffers.map((offer) => offer.demander), [seller], "bad-price offers are excluded even when the budget permits them");
+  assert.deepEqual(signedOffers, [wanted], "exactly the named sell order is signed, and nothing the wallet chose itself");
   assert.equal(stored.settings.openPurchases.length, 1);
   assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
   assert.match(document.body.textContent ?? "", /Receipt confirmation unknown:.*belowMinRelayFee.*may still confirm/i,
@@ -489,10 +540,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.equal(stored.settings.openPurchases.length, 0, "an irreversible purchase record is deleted only by explicit dismissal");
   button("Back").click();
   button("Open cross-chain order").click();
-  const retryPaste = document.querySelector("textarea") as HTMLTextAreaElement;
-  retryPaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
-  button("Use pasted text").click();
-  await settle();
+  await open([wanted]);
+  acknowledge();
   button("Pay & reserve tokens").click();
   await settle();
   assert.equal(receiptSigns, 2);
@@ -501,10 +550,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Back").click();
   button("Back").click();
   button("Open cross-chain order").click();
-  const duplicatePaste = document.querySelector("textarea") as HTMLTextAreaElement;
-  duplicatePaste.value = buyOrderURI(new Date(Date.now() + 600_000).toISOString());
-  button("Use pasted text").click();
-  await settle();
+  await open([wanted]);
+  acknowledge();
   button("Pay & reserve tokens").click();
   await settle();
   assert.equal(receiptSigns, 3);
