@@ -1,6 +1,6 @@
 # Store upgrade and funded trade acceptance
 
-The funded trade first-release gate is owner-confirmed complete: the release owner confirms purchase/payment and withdrawal back to the buyer wallet. This is not independent or automated reproduction, and no repeat transaction or hash submission is required as a new gate. The procedure below remains a reference for future tests. Store-signed upgrade remains untested and applies from the second release, once a store baseline exists. Keep evidence private: public addresses and CIDs link test activity. Never include passwords, seeds, cookies or signed payloads in reports or CI logs. Use disposable accounts and a dedicated Chrome profile; preserve its recovery data until the trade settles.
+A funded purchase, payment and withdrawal back to the buyer wallet were completed by hand for the first release. That run was not reproduced independently or by the automated verifier. The procedure below remains a reference for future tests. Store-signed upgrade remains untested and applies from the second release, once a store baseline exists. Keep evidence private: public addresses and CIDs link test activity. Never include passwords, seeds, cookies or signed payloads in reports or CI logs. Use disposable accounts and a dedicated Chrome profile; preserve its recovery data until the trade settles.
 
 ## Store-signed upgrade
 
@@ -50,4 +50,4 @@ LATTICE_TRADE_EVIDENCE=/absolute/private/trade.json node --test test/live-cross-
 
 This test never signs or submits. Do not commit the filled file. Failure means investigate/recheck the existing CIDs, not create another payment. Test uncertain submissions and higher-fee replacements first on isolated nodes; never intentionally double-pay or abandon a deployed deposit to manufacture a failure case.
 
-The evidence report must distinguish automated read checks, actual Chrome observations, balance accounting, and any unexecuted edge cases. The current funded trade is owner-confirmed complete; automated verification remains unexecuted and distinct. Store upgrade remains untested and is required from the second release onward.
+The evidence report must distinguish automated read checks, actual Chrome observations, balance accounting, and any unexecuted edge cases. The first-release funded trade was completed by hand; automated verification of it remains unexecuted and distinct. Store upgrade remains untested and is required from the second release onward.

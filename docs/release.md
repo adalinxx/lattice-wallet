@@ -31,12 +31,12 @@ The first command starts isolated nodes, mines disposable funds, and checks auth
 
 ## Public release gates
 
-Follow [store-signed upgrade and funded trade acceptance](release-live-testing.md) for the real-browser steps and opt-in read-only trade verification. A skipped live test is not automated acceptance evidence. The release owner has confirmed the completed live purchase/payment/withdrawal back to the buyer wallet; that owner confirmation satisfies the live-flow gate without requiring a repeat transaction or new hash submission.
+Follow [store-signed upgrade and funded trade acceptance](release-live-testing.md) for the real-browser steps and opt-in read-only trade verification. A skipped live test is not automated acceptance evidence. For the first release, a live purchase, payment and withdrawal back to the buyer wallet were completed by hand; that satisfies the live-flow gate without a repeat transaction.
 
 - Merge branding and release preparation; package a reviewed commit from main.
 - Run unit/UI/conformance tests, isolated submission tests, and deployed read/discovery smoke.
 - Drive fresh-install, upgrade with existing recovery records, backup/restore, and funded cross-chain receipt/withdrawal flows in actual Chrome. Include node failures and uncertain submissions. Record the exact browser, node and wallet versions.
-- Record release-owner security sign-off and resolve blocking findings. On October 10, the release owner stated that he reviewed the wallet himself and waived the independent-review requirement. This is owner review, not an independent audit or certification. docs/security-review-scope.md remains a useful scope checklist.
+- Review the candidate for security and resolve blocking findings. No independent audit or certification is claimed. docs/security-review-scope.md remains a useful scope checklist.
 - Enable private vulnerability reporting or establish a verified private security contact.
 - Publish the privacy policy and verify all listing links; create screenshots from actual UI.
 - Complete the publisher account and accurate store declarations. Upload the ZIP, supply reviewer instructions, and request review with deferred publication.

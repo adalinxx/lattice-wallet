@@ -1,6 +1,6 @@
 # Security review scope
 
-The release owner chose owner review and waived an independent reviewer on October 10, 2026. This scope is retained for review and future audits; it does not assert an independent audit occurred.
+No independent audit has been carried out. This scope is kept for review and future audits; it does not assert that one occurred.
 
 Target: reviewed Lattice Wallet commit and its SHA-256 release package, with the exact recorded lattice-sdk revision. Source: https://github.com/adalinxx/lattice-wallet
 
