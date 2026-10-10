@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS, type Settings } from "../src/lib/wallet/settings.ts";
 import { cidV1DagCbor, encodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ensureOrigins } from "../src/popup/app.ts";
-import { activeDeposits, depositValues } from "../src/lib/wallet/node.ts";
+import { activeDeposits, receiptWithdrawer, depositValues } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -90,6 +90,28 @@ test("a deposit listing whose last page omits the cursor is complete, as the hos
   assert.deepEqual(await listing({ chain: "Nexus/testnet", count: 1, deposits: [row], proof }), expected);
   assert.deepEqual(await listing({ deposits: [row], next: null, proof }), expected);
   await assert.rejects(listing({ deposits: [row], next: 7, proof }), /next must advance/);
+});
+
+test("an unpaid deposit is read as the node reports it: empty optionals left out, absence still proven", async () => {
+  const seller = importPrivateKey("c1".repeat(32)).address, buyer = importPrivateKey("d1".repeat(32)).address;
+  const offer = { demander: seller, amountDemanded: 50n, depositNonce: 42n, amountDeposited: 300n };
+  const unpaid = testReceiptKey("testnet", seller, "50", "42"), paid = testReceiptKey("testnet", seller, "60", "43");
+  const trie = testTrie(new Map([[paid, buyer]]));
+  const ask = (body: (proof: ReturnType<typeof testProof>) => Record<string, unknown>, claims: Array<Record<string, unknown>>) => {
+    const proof = testProof("receipts", trie, claims as Array<{ key: string; value: string | null }>);
+    return receiptWithdrawer("https://parent.example", ["Nexus"], ["Nexus", "testnet"], offer,
+      async () => new Response(JSON.stringify(body(proof))), undefined, proof.blockHash);
+  };
+  // The node's own encoding: no `withdrawer`, and a claim with no `value`.
+  assert.equal(await ask((proof) => ({ exists: false, key: "k", directory: "testnet", proof }), [{ key: unpaid }]), null);
+  // The explicit-null spelling reads the same.
+  assert.equal(await ask((proof) => ({ exists: false, withdrawer: null, proof }), [{ key: unpaid, value: null }]), null);
+  // Leaving the value out is not a way to hide a receipt: absence must still verify.
+  const paidOffer = { ...offer, amountDemanded: 60n, depositNonce: 43n };
+  const hidden = testProof("receipts", trie, [{ key: paid } as unknown as { key: string; value: null }]);
+  await assert.rejects(receiptWithdrawer("https://parent.example", ["Nexus"], ["Nexus", "testnet"], paidOffer,
+    async () => new Response(JSON.stringify({ exists: false, proof: hidden })), undefined, hidden.blockHash), /claim must verify/);
+  await assert.rejects(ask((proof) => ({ exists: false, withdrawer: 7, proof }), [{ key: unpaid }]), /malformed/);
 });
 
 test("targeted deposit state verifies requested keys without scanning discovery pages", async () => {
@@ -365,7 +387,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
     } } },
   });
   let receiptSigns = 0, withdrawalSigns = 0, posts = 0, depositReads = 0, receiptMined = false, withdrawalMined = false;
-  let paired = false;
+  let paired = false, childOnOtherBranch = false, childMissesCommitted = false;
   let parentTipHeight = 1n, parentLatestReads = 0;
   let signedOffers: Selected[] = [];
   const depositRows = [
@@ -433,8 +455,21 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
       if (parentLatestReads === 1) parentTipHeight = 2n;
       return response;
     }
+    // As on a live network: the child has advanced past the block its parent
+    // last committed. The parent names an older child block; the child node
+    // has it on its chain and serves state at its own, newer tip.
     if (url.pathname.startsWith("/api/block/") && url.pathname.endsWith("/children") && url.hostname === "parent.example") {
-      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash }] }));
+      return new Response(JSON.stringify({ children: [{ directory: "testnet", blockHash: "bafycommittedchild" }] }));
+    }
+    if (url.hostname === "child.example" && url.pathname.startsWith("/api/block/")) {
+      const childBlock = (height: string, hash: string) => new Response(JSON.stringify({
+        height, hash, timestamp: "1", transactionCount: 0, childBlockCount: 0, nonce: "0", version: 1, target: "ff", nextTarget: "ff",
+        transactionsCID: "bafytransactions", postStateCID: "bafystate", chain: ["Nexus", "testnet"],
+      }));
+      const tip = withdrawalMined ? spentDepositProof.blockHash : depositProof.blockHash;
+      if (url.pathname === "/api/block/latest") return childBlock("9", tip);
+      if (url.pathname === "/api/block/bafycommittedchild") return childMissesCommitted ? new Response("{}", { status: 404 }) : childBlock("5", "bafycommittedchild");
+      if (url.pathname === "/api/block/5") return childBlock("5", childOnOtherBranch ? "bafyotherbranch" : "bafycommittedchild");
     }
     if (url.pathname === `/api/state/account/${address}`) return new Response(JSON.stringify({ owner: address, balance: "1000", nonce: "1" }));
     if (url.pathname === "/transactions" && init?.method === "POST") {
@@ -487,6 +522,18 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Cancel").click();
   assert.equal(receiptSigns, 0);
   assert.equal(posts, 0);
+  // The child node must have the block its parent commits on its own chain.
+  // One that lacks it, or has a different block at that height, is refused.
+  childMissesCommitted = true;
+  await open([wanted]);
+  assert.match(document.body.textContent ?? "", /node's chain does not contain the block Nexus currently commits/);
+  button("Cancel").click();
+  childMissesCommitted = false; childOnOtherBranch = true;
+  await open([wanted]);
+  assert.match(document.body.textContent ?? "", /node's chain does not contain the block Nexus currently commits/);
+  button("Cancel").click();
+  childOnOtherBranch = false;
+  assert.equal(receiptSigns, 0);
   // A stored cookie for a node that is not on this computer does not make it
   // the user's own: the warning and acknowledgement still apply.
   paired = true;
@@ -518,6 +565,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   trust.dispatchEvent(new window.Event("change"));
   assert.equal(document.querySelector("h1")?.textContent, "Review purchase", document.body.textContent ?? "");
   assert.ok(depositReads > 0, "each named deposit is checked against the proof-bearing deposits endpoint");
+  assert.notEqual(depositProof.blockHash, "bafycommittedchild", "the purchase is reviewed while the child tip is ahead of the parent-committed block");
   assert.match(document.body.textContent ?? "", /You pay50 on Nexus/);
   assert.match(document.body.textContent ?? "", /You receive300 on Nexus\/testnet/);
   assert.doesNotMatch(document.body.textContent ?? "", /5%|Price protection/);

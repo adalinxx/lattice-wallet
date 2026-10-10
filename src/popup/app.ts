@@ -8,7 +8,7 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, ChildTipMismatchError, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
@@ -171,8 +171,7 @@ async function resubmitExact(url: string, authorization: string | undefined, sig
   }
 }
 
-/** Resolve the current child block through its parent commitment. Child state
- * is only final enough to delete recovery data when it matches this anchor. */
+/** The parent's current tip and the child block that tip commits. */
 async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childChain: readonly string[], parentAuth?: string, expectedParentTip?: string) {
   const parent = reader(parentEndpoint.url, [...parentChain], platform.fetch, parentAuth);
   const parentTip = expectedParentTip ?? (await parent.latestBlock()).hash;
@@ -184,6 +183,29 @@ async function adjacentTips(parentEndpoint: ChosenEndpoint, parentChain: readonl
   const child = (await parent.children(parentTip)).find((entry) => entry.directory === directory);
   if (!child) throw new Error(`The current ${parentChain.join("/")} tip does not commit ${childChain.join("/")}.`);
   return { parent: parentTip, child: child.blockHash };
+}
+
+/** The child node's chain must contain the child block the parent tip commits:
+ * the block it serves by that hash is the one it has at that height. A positive
+ * consistency check between the two nodes, never proof of either.
+ *
+ * It is not a comparison of tips. A child advances on grinds that meet its own
+ * target without meeting its parent's, so between parent blocks the child's tip
+ * is ahead of the block its parent last committed, usually by many blocks.
+ * Child state is therefore read and proven at the child node's own tip. */
+async function requireCommittedChild(
+  parentEndpoint: ChosenEndpoint, parentChain: readonly string[], childEndpoint: ChosenEndpoint, childChain: readonly string[],
+  parentAuth?: string, childAuth?: string, expectedParentTip?: string,
+): Promise<void> {
+  const committed = (await adjacentTips(parentEndpoint, parentChain, childChain, parentAuth, expectedParentTip)).child;
+  const child = reader(childEndpoint.url, [...childChain], platform.fetch, childAuth);
+  const mismatch = () => new Error(`The ${childChain.join("/")} node's chain does not contain the block ${parentChain.join("/")} currently commits for it. The two nodes may be on different branches or still synchronizing; try again shortly.`);
+  let height: bigint;
+  try { height = (await child.block(committed)).height; } catch (error) {
+    if (describe(error).startsWith("not found")) throw mismatch();
+    throw error;
+  }
+  if ((await child.block(height)).hash !== committed) throw mismatch();
 }
 
 async function withStableTip<T>(chosen: ChosenEndpoint, chain: readonly string[], authorization: string | undefined, read: (tip: string) => Promise<T>): Promise<T> {
@@ -279,9 +301,10 @@ function reconcileRecovery(): Promise<RecoveryStatuses> {
         )));
         attemptsStatus.forEach((result, index) => statuses.set(attempts[index]!.transactionCID, result.status));
         if (!attemptsStatus.some((result) => result.deep)) return;
-        const tips = await adjacentTips(parent, purchase.parentChain, purchase.childChain, await auth(parent.url));
+        await requireCommittedChild(parent, purchase.parentChain, child, purchase.childChain, await auth(parent.url), childAuth);
         const keys = purchase.offers.map(depositKey);
-        const values = await depositValues(child.url, purchase.childChain, keys, platform.fetch, childAuth, tips.child);
+        const values = await withStableTip(child, purchase.childChain, childAuth,
+          (childTip) => depositValues(child.url, purchase.childChain, keys, platform.fetch, childAuth, childTip));
         if (keys.every((key) => values.has(key) && (values.get(key) === 0n || values.get(key) === null))) {
           completedPurchases.push(purchase.receiptCID);
         }
@@ -1202,11 +1225,11 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
         }
         if (!included && latest && (latest.kind === "replaced" || latest.kind === "nonce advanced") && parentEndpoint) {
           try {
-            const tips = await adjacentTips(parentEndpoint, purchase.parentChain, purchase.childChain, await authorizationFor(parentEndpoint.url));
+            await requireCommittedChild(parentEndpoint, purchase.parentChain, childEndpoint, purchase.childChain, await authorizationFor(parentEndpoint.url), auth);
             const keys = purchase.offers.map(depositKey);
-            const values = await depositValues(childEndpoint.url, purchase.childChain, keys, platform.fetch, auth, tips.child);
-            const childInfo = await reader(childEndpoint.url, purchase.childChain, platform.fetch, auth).chainInfo();
-            if (childInfo.tipCID === tips.child && keys.every((key) => typeof values.get(key) === "bigint" && values.get(key)! > 0n)) {
+            const values = await withStableTip(childEndpoint, purchase.childChain, auth,
+              (childTip) => depositValues(childEndpoint.url, purchase.childChain, keys, platform.fetch, auth, childTip));
+            if (keys.every((key) => typeof values.get(key) === "bigint" && values.get(key)! > 0n)) {
               const restart = h("button", { class: "btn block", onclick: async () => {
                 restart.disabled = true;
                 await update((s) => ({ ...s, openPurchases: s.openPurchases.map((item) => item.receiptCID === purchase.receiptCID
@@ -1369,24 +1392,18 @@ async function reviewBuyOrder(order: BuyOrder) {
   // chain, whether or not a cookie is stored for it.
   const publicNodePurchase = !platform.ownNode && (!isLoopbackNodeURL(parentEndpoint.url) || !isLoopbackNodeURL(childEndpoint.url));
   // The request names the deposits; nothing about them is taken from it on
-  // trust. Each must be proven in the child state the parent tip commits,
-  // with exactly the stated amount, and have no receipt on the parent.
+  // trust. Each must be proven in the child node's current state with exactly
+  // the stated amount, on a chain that contains the block the parent commits,
+  // and have no receipt on the parent.
   const offers: ActiveDeposit[] = order.deposits.map((deposit) => ({
     demander: deposit.demander, amountDemanded: BigInt(deposit.amountDemanded),
     amountDeposited: BigInt(deposit.amountDeposited), depositNonce: BigInt(deposit.depositNonce),
   }));
   let minRelayFee: bigint | undefined, childMinRelayFee: bigint | undefined;
   const verifySelected = () => withStableTip(parentEndpoint, order.parentChain, parentAuth, async (parentTip) => {
-    const tips = await adjacentTips(parentEndpoint, order.parentChain, order.childChain, parentAuth, parentTip);
-    let listed: ActiveDeposit[];
-    try {
-      listed = await activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, tips.child);
-    } catch (error) {
-      if (error instanceof ChildTipMismatchError) {
-        throw new Error("The child node is not at the block currently committed by its parent. Wait for the chains to synchronize, then try again.");
-      }
-      throw error;
-    }
+    await requireCommittedChild(parentEndpoint, order.parentChain, childEndpoint, order.childChain, parentAuth, childAuth, parentTip);
+    const listed = await withStableTip(childEndpoint, order.childChain, childAuth,
+      (childTip) => activeDeposits(childEndpoint.url, order.childChain, platform.fetch, childAuth, childTip));
     const locked = new Map(listed.map((deposit) => [depositKey(deposit), deposit.amountDeposited]));
     const owners = await Promise.all(offers.map((offer) => receiptWithdrawer(
       parentEndpoint.url, order.parentChain, order.childChain, offer, platform.fetch, parentAuth, parentTip,
@@ -1421,6 +1438,7 @@ async function reviewBuyOrder(order: BuyOrder) {
   feeInput.addEventListener("input", checkFee); checkFee();
   const buyButton = h("button", { class: "block" }, "Pay & reserve tokens") as HTMLButtonElement;
   let purchaseSubmitting = false;
+  toast.textContent = ""; // the check is done; the review that follows is its result
   const trustAcknowledgement = h("input", { type: "checkbox", id: "purchase-node-trust" }) as HTMLInputElement;
   buyButton.disabled = publicNodePurchase;
   trustAcknowledgement.addEventListener("change", () => { buyButton.disabled = purchaseSubmitting || !trustAcknowledgement.checked; });
