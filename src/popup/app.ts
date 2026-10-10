@@ -1663,6 +1663,7 @@ async function reviewSellOrder(order: SellOrder) {
     const info = await reads.chainInfo();
     minRelayFee = info.minRelayFee;
   } catch (e) { toast.textContent = describe(e); return; }
+  toast.textContent = ""; // the read is done; the same element reports signing below
   const depositNonce = randomNonce();
   const feeNote = h("div", { class: "warn" });
   const checkFee = () => {
