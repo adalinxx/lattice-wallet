@@ -36,7 +36,7 @@ Follow [store-signed upgrade and funded trade acceptance](release-live-testing.m
 - Merge branding and release preparation; package a reviewed commit from main.
 - Run unit/UI/conformance tests, isolated submission tests, and deployed read/discovery smoke.
 - Drive fresh-install, upgrade with existing recovery records, backup/restore, and funded cross-chain receipt/withdrawal flows in actual Chrome. Include node failures and uncertain submissions. Record the exact browser, node and wallet versions.
-- Obtain an independent security review of keystore, signer messages, imported requests/proofs, chain anchoring, transaction recovery and backups; resolve blocking findings. docs/security-review-scope.md supplies the brief.
+- Record release-owner security sign-off and resolve blocking findings. On October 10, the release owner stated that he reviewed the wallet himself and waived the independent-review requirement. This is owner review, not an independent audit or certification. docs/security-review-scope.md remains a useful scope checklist.
 - Enable private vulnerability reporting or establish a verified private security contact.
 - Publish the privacy policy and verify all listing links; create screenshots from actual UI.
 - Complete the publisher account and accurate store declarations. Upload the ZIP, supply reviewer instructions, and request review with deferred publication.

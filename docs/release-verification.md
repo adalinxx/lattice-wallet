@@ -44,11 +44,11 @@ All three are fixed and now have tests in the shape the live node sends. A read-
 
 An AI-assisted review of the 0.3.0 commit and package was carried out during preparation. Its findings on recovery after refused submissions, offer selection, export re-authentication, cross-page state, backup bounds, lock behaviour, dependency auditing and password derivation were addressed in this candidate. One was accepted rather than fixed: state proofs are checked against the tip the nodes supply, with no independent verification of the chain, so a purchase through a node that is not on the user's computer requires an explicit acknowledgement on each review. See [node trust](node-trust.md).
 
-That review is not the named independent review the release procedure requires, and no certification is claimed.
+That automated review was not an independent review, and no certification is claimed. The release owner subsequently stated on October 10 that he reviewed the wallet himself and does not require an independent reviewer; owner review is the chosen sign-off.
 
 ## Outstanding public-release gates
 
-- A named independent security review and disposition of its findings.
+- Independent-review requirement waived by the release owner on October 10 in favor of his own review; no independent audit is claimed.
 - Paying for and withdrawing a purchase on the deployed network. The purchase review has been reached there; payment and withdrawal have never been executed.
 - Published policy links, the publisher account and final store declarations.
 
@@ -87,17 +87,18 @@ historical evidence, not checks repeated on this candidate. No live signing,
 purchase, withdrawal or transfer was attempted.
 
 Mac Chrome (the release owner's profile) was identified, but opening the Web Store developer
-console was refused by the computer-use tool with “Not allowed”. Publisher
-registration, item status and dashboard declarations therefore remain unverified.
+console was refused by the computer-use tool with “Not allowed”. The release owner subsequently confirmed he has no publisher account and authorized creating one.
+Publisher registration is pending; account identity and dashboard declarations remain unverified.
 Do not infer account readiness or certify declarations from the listing draft.
 
 ### Concrete completion sequence
 
 1. Review and merge this follow-up, then record the final main commit and rebuild;
    compare the package hash. Any subsequent runtime changes require relevant retests.
-2. Obtain the named independent review described in security-review-scope.md,
-   tied to that commit, SDK revision and ZIP; resolve blocking findings. Automated
-   checks and AI review do not satisfy this signoff.
+2. Retain the release owner’s owner-review sign-off and resolve any blocking findings.
+   He explicitly waived independent review on October 10. Record the final
+   commit, SDK revision and ZIP covered by publication approval; do not describe
+   his review or automated checks as an independent audit.
 3. The release owner supplies and executes the approved disposable deployed trade, budgets
    and signing steps in release-live-testing.md. Before payment, leave an eligible
    unpaid testnet offer available and run the new read-only purchase-review test.
