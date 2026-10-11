@@ -7,7 +7,8 @@ body { width: 360px; }
   display: flex; align-items: center; justify-content: space-between;
   padding: var(--s-2) var(--s-3); border-bottom: var(--rule);
 }
-.brand { display: flex; align-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.brand { display: flex; align-items: center; gap: var(--s-2); padding: 2px var(--s-2) 2px 0; border: 0; background: transparent; cursor: pointer; font-size: var(--fs-12); }
+.brand:hover .brand-label, .brand:focus-visible .brand-label { text-decoration: underline; text-underline-offset: 2px; }
 
 .net {
   font-size: var(--fs-12); padding: 2px var(--s-2);
@@ -16,7 +17,8 @@ body { width: 360px; }
 .net.testnet { background: var(--ink); color: var(--paper); }
 .chain-controls { display: flex; align-items: center; gap: var(--s-1); }
 .parent-chain { min-width: 30px; padding-left: var(--s-2); padding-right: var(--s-2); white-space: nowrap; }
-#net-badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A chain's name is its path, and paths are case-sensitive: shown as written. */
+#net-badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }
 
 main { padding: var(--s-4) var(--s-3); }
 
@@ -29,11 +31,17 @@ h1 { font-size: var(--fs-20); margin: 0 0 var(--s-3); }
 .hero .wordmark { font-size: var(--fs-28); display: block; }
 
 button.block, .btn.block { display: block; width: 100%; text-align: center; }
+/* One filled button a screen: the step that moves it forward. Every other
+   button, the way back included, is outlined (.btn). */
+button.block:not(.btn) { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+button:disabled { opacity: 0.45; cursor: default; }
 
 textarea, input, select.picker { width: 100%; font-size: var(--fs-14); }
 textarea { min-height: 84px; resize: vertical; }
 select.picker { border: var(--rule); padding: var(--s-2); }
-label.k { display: block; margin-bottom: var(--s-1); }
+/* A field's label reads like every other label in the app. */
+label.k { display: block; margin-bottom: var(--s-1); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
+.stack > label.k + * { margin-top: 0; }
 
 .mnemonic {
   border: var(--rule); padding: var(--s-3);
@@ -86,6 +94,11 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .transaction-payload { margin: 0; padding: var(--s-3); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-12); max-height: 260px; overflow: auto; }
 .transaction-empty { border: var(--rule); padding: var(--s-4) var(--s-3); }
 .transaction-heading ~ .toast:empty { display: none; }
+.balance-value .unread { font-size: var(--fs-16); line-height: var(--lh-body); }
+.notices:empty { display: none; }
+.notice { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-2) var(--s-3); border: var(--rule); border-left: 3px solid var(--ink); font-size: var(--fs-12); }
+.notice + .notice { margin-top: var(--s-2); }
+.notice .btn { flex: 0 0 auto; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
 .account-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
@@ -93,6 +106,9 @@ label.k { display: block; margin-bottom: var(--s-1); }
 .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
 .primary-actions button { min-height: 48px; }
 .section-label { margin: 0; font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
+/* A label belongs to what follows it: room above, little below. */
+.stack > * + .section-label { margin-top: var(--s-3); }
+.stack > .section-label + * { margin-top: var(--s-1); }
 .advanced { border: var(--rule); }
 .advanced summary { cursor: pointer; padding: var(--s-2) var(--s-3); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .advanced-content { margin: 0 var(--s-3) var(--s-3); }
