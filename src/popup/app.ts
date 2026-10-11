@@ -954,6 +954,7 @@ async function mainScreen() {
   if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
   const notices = h("div", { class: "notices" });
+  let recheck: ReturnType<typeof setTimeout> | undefined;
   const nodeV = endpoint()!;
   const homePath = [...chainPath()];
   nodeAuth = await authorizationFor(nodeV.url);
@@ -1030,6 +1031,14 @@ async function mainScreen() {
     const shown = renderVersion;
     const lines = await platform.notices(homePath.join("/")).catch(() => []);
     if (shown !== renderVersion) return; // another screen was opened meanwhile
+    // While the host has something to say, or the balance is unread, things
+    // are changing: look again shortly, so the screen catches up by itself
+    // (a node that was just started, a sync that finishes) with no Refresh.
+    clearTimeout(recheck);
+    if (lines.length || balanceV.classList.contains("unread")) {
+      recheck = setTimeout(() => { if (shown === renderVersion) void loadBalance(); }, 3000);
+      (recheck as unknown as { unref?: () => void }).unref?.(); // never keeps a test or a headless host running
+    }
     notices.replaceChildren(...lines.map((line) => h("div", { class: "notice", role: "status" },
       h("span", {}, line.text),
       line.action ? h("button", { class: "btn", onclick: async (event: Event) => {
