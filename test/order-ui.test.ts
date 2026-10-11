@@ -272,6 +272,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   document.dispatchEvent(drop);
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Review sell order");
+  assert.doesNotMatch(document.body.textContent ?? "", /reading account/, "the review does not keep saying it is still reading");
   button("Cancel").click();
   button("Cancel").click();
   await settle();
