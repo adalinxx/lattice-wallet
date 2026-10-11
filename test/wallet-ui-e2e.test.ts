@@ -281,7 +281,7 @@ test("wallet UI e2e: fee validation, review, signing, submission, and persistenc
   assert.match(document.body.textContent ?? "", /depends on miners and current demand/);
 
   const recipient = input("recipient address (bafy…)");
-  const amount = input("amount (units)");
+  const amount = (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement);
   recipient.value = "nope";
   amount.value = "10";
   button("Review").click();
@@ -363,7 +363,7 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
   button("Sign & send").click();
@@ -411,7 +411,7 @@ test("wallet UI e2e: a refusal retains recovery bytes and cannot invite another 
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
   button("Sign & send").click();
@@ -449,7 +449,7 @@ test("wallet UI e2e: a signer that locked itself is unlocked in place and the st
     button("Send").click();
     await settle();
     input("recipient address (bafy…)").value = bob;
-    input("amount (units)").value = "10";
+    (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
     button("Review").click();
     await settle();
   };
@@ -600,7 +600,7 @@ test("wallet UI e2e: a background cross-page chain change cannot redirect a revi
   await settle();
   button("Send").click(); await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click(); await settle();
   await store.api.set({ settings: { ...store.value.settings, chain: "Nexus/shop" } });
   release(); await settle();
@@ -622,7 +622,7 @@ test("wallet UI e2e: saved uncertain payments require explicit acknowledgement b
   const wallet = walletFor(openState(), { signTransfer: async (args) => { signatures += 1; return { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; } });
   await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
   button("Send").click(); await settle();
-  input("recipient address (bafy…)").value = bob; input("amount (units)").value = "10";
+  input("recipient address (bafy…)").value = bob; (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click(); await settle();
   button("Sign & send").click(); await settle();
   assert.equal(signatures, 0);
@@ -677,11 +677,11 @@ test("the home screen says what the host says, in words, with the one thing to d
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
   const review = document.querySelector("#view .kv") as HTMLElement;
-  assert.match(review.textContent ?? "", /Amount10 unitsNetwork fee1 unitTotal11 units/);
+  assert.match(review.textContent ?? "", /Amount10 on NexusNetwork fee1 on NexusTotal11 on Nexus/);
   assert.doesNotMatch(review.textContent ?? "", /Nonce/);
   assert.match(document.querySelector("details.advanced")?.textContent ?? "", /Nonce3/);
   // One filled button: the one that sends. The way back is outlined.

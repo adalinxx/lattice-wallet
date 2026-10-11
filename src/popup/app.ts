@@ -115,8 +115,8 @@ function actionIcon(name: ActionIcon): SVGSVGElement {
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
 // Exact: amounts are UInt64, never rounded through a double.
 const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
-/** An amount with what it counts: a chain's own indivisible units. */
-const units = (n: string | bigint) => `${fmt(n)} ${BigInt(n) === 1n ? "unit" : "units"}`;
+/** An amount with what it is an amount of: a chain's coin has no name but the chain's path. */
+const amountOn = (n: string | bigint, chain: string) => `${fmt(n)} on ${chain}`;
 /** Text as a QR code, drawn by our own encoder and parsed as SVG, never as HTML. */
 function qrNode(text: string): El {
   const box = h("div", { class: "qr" });
@@ -1880,7 +1880,7 @@ async function sendFlow() {
   const acct = activeAccount()!;
   const sendContext = { chain: settings.chain, path: [...chainPath()], chosen: { ...endpoint()! }, acct };
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
-  const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
+  const amount = h("input", { type: "text", inputmode: "numeric", placeholder: `amount on ${sendContext.chain}`, "aria-label": "Amount" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
   const feeHelp = h("p", { class: "muted" }, "The wallet never changes your fee. A node minimum is only a warning; confirmation depends on miners and current demand.");
@@ -1955,10 +1955,9 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       h("p", { class: "section-label" }, "Recipient"),
       h("div", { class: "addr mono" }, to),
       h("div", { class: "kv" },
-        h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, units(amount))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, units(fee))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, units(amount + fee))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag chain" }, chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, amountOn(amount, chain))),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, amountOn(fee, chain))),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, amountOn(amount + fee, chain))),
       ),
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
