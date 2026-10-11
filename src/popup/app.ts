@@ -1958,7 +1958,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
         h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, units(amount))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, units(fee))),
         h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, units(amount + fee))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, chain)),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag chain" }, chain)),
       ),
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
