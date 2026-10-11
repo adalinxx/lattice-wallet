@@ -12,3 +12,6 @@ export function seedSvg(payload: string, format: "standard" | "compact"): string
     ? encodeQR(payload, "svg", { ecc: "low", encoding: "numeric", border: 4 })
     : encodeQR(payload, "svg", { ecc: "low", encoding: "byte", textEncoder: latin1Bytes, border: 4 });
 }
+
+/** Plain text (an account address) as SVG, with room for a scratch or a crease. */
+export const textSvg = (text: string): string => encodeQR(text, "svg", { ecc: "medium", border: 4 });

@@ -15,6 +15,7 @@ import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 import { scanner, scannerFileTexts } from "./scanner.ts";
+import { textSvg } from "../lib/qr/render.ts";
 import { isAccountAddress } from "../lib/wallet/session.ts";
 import { replacementTransfer } from "../lib/wallet/replacement.ts";
 
@@ -39,6 +40,13 @@ export interface Platform {
   fetch?: Fetch;
   /** Extra main-screen actions (the desktop's node panel); `back` re-renders the wallet. */
   actions?: { label: string; run(back: () => void): void }[];
+  /**
+   * What the person should know about the host before trusting what the home
+   * screen shows, for the chain in view, each with at most one thing to do
+   * about it (the desktop: its node is stopped, starting, or still syncing).
+   * Read each time the balance is.
+   */
+  notices?(chain: string): Promise<{ text: string; action?: { label: string; run(): Promise<void> } }[]>;
   /** Offer a file picker for CLI key files (an extension popup closes on one). */
   keyFilePicker?: boolean;
   /**
@@ -107,6 +115,14 @@ function actionIcon(name: ActionIcon): SVGSVGElement {
 const short = (s: string) => (s.length <= 22 ? s : `${s.slice(0, 12)}…${s.slice(-8)}`);
 // Exact: amounts are UInt64, never rounded through a double.
 const fmt = (n: string | bigint) => BigInt(n).toLocaleString();
+/** An amount with what it is an amount of: a chain's coin has no name but the chain's path. */
+const amountOn = (n: string | bigint, chain: string) => `${fmt(n)} on ${chain}`;
+/** Text as a QR code, drawn by our own encoder and parsed as SVG, never as HTML. */
+function qrNode(text: string): El {
+  const box = h("div", { class: "qr" });
+  box.append(document.importNode(new DOMParser().parseFromString(textSvg(text), "image/svg+xml").documentElement, true));
+  return box;
+}
 const depositKey = (offer: { demander: string; amountDemanded: string | bigint; depositNonce: string | bigint }) =>
   `${offer.demander}/${offer.amountDemanded}/${offer.depositNonce}`;
 const view = () => document.getElementById("view")!;
@@ -116,11 +132,28 @@ export const render = (node: El) => {
   closeChainMenu();
   view().replaceChildren(node);
   // The top-left button opens Settings, and on Settings it does what Done does.
+  // It says so in words: a mark alone does not read as a button.
   const label = onSettingsScreen() ? "Close settings" : "Open settings";
   const button = document.getElementById("settings-button");
-  button?.setAttribute("aria-label", label);
-  button?.setAttribute("title", label);
+  if (button) {
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    let word = button.querySelector(".brand-label");
+    if (!word) { word = h("span", { class: "brand-label" }); button.append(word); }
+    word.textContent = onSettingsScreen() ? "Close" : "Settings";
+  }
+  showHeaderControls();
 };
+/** The header's controls act only on an open wallet with a node, so they are shown only then. */
+function showHeaderControls() {
+  const usable = !!st?.initialized && !st.locked && !!settings && !!activeAccount() && !!endpoint();
+  for (const id of ["settings-button", "net-badge"]) {
+    const control = document.getElementById(id);
+    if (control) control.style.visibility = usable ? "" : "hidden";
+  }
+  const parent = document.getElementById("parent-chain") as HTMLButtonElement | null;
+  if (parent && !usable) parent.hidden = true;
+}
 const onSettingsScreen = () => !!document.getElementById("settings-screen");
 
 let st: WalletState = { initialized: false, locked: true, accounts: [], active: null };
@@ -920,6 +953,8 @@ async function mainScreen() {
   const acct = activeAccount();
   if (!acct) return render(h("div", { class: "stack" }, h("p", { class: "muted" }, "No active account."), h("button", { class: "btn block", onclick: () => { wallet.lock().then(refresh); } }, "Lock")));
   const balanceV = h("span", { class: "v" }, "…");
+  const notices = h("div", { class: "notices" });
+  let recheck: ReturnType<typeof setTimeout> | undefined;
   const nodeV = endpoint()!;
   const homePath = [...chainPath()];
   nodeAuth = await authorizationFor(nodeV.url);
@@ -941,9 +976,10 @@ async function mainScreen() {
   render(
     h("div", { class: "stack wallet-home" },
       accountPicker,
+      notices,
       h("div", { class: "balance-card" },
         h("div", { class: "balance-heading" },
-          h("span", { class: "balance-label" }, "Balance"),
+          h("span", { class: "balance-label" }, `Balance on ${homePath.join("/")}`),
           h("button", {
             class: "btn icon-action", type: "button", title: "Refresh balance", "aria-label": "Refresh balance",
             onclick: () => loadBalance(),
@@ -982,7 +1018,35 @@ async function mainScreen() {
     try {
       const { balance } = await homeReads.account(acct!.address);
       balanceV.textContent = balance.toLocaleString();
-    } catch (e) { balanceV.textContent = describe(e); }
+      balanceV.classList.remove("unread");
+    } catch (e) {
+      // Not a number, so not in a number's type: say what happened, plainly.
+      balanceV.textContent = describe(e);
+      balanceV.classList.add("unread");
+    }
+    void loadNotices();
+  }
+  async function loadNotices() {
+    if (!platform.notices) return;
+    const shown = renderVersion;
+    const lines = await platform.notices(homePath.join("/")).catch(() => []);
+    if (shown !== renderVersion) return; // another screen was opened meanwhile
+    // While the host has something to say, or the balance is unread, things
+    // are changing: look again shortly, so the screen catches up by itself
+    // (a node that was just started, a sync that finishes) with no Refresh.
+    clearTimeout(recheck);
+    if (lines.length || balanceV.classList.contains("unread")) {
+      recheck = setTimeout(() => { if (shown === renderVersion) void loadBalance(); }, 3000);
+      (recheck as unknown as { unref?: () => void }).unref?.(); // never keeps a test or a headless host running
+    }
+    notices.replaceChildren(...lines.map((line) => h("div", { class: "notice", role: "status" },
+      h("span", {}, line.text),
+      line.action ? h("button", { class: "btn", onclick: async (event: Event) => {
+        const button = event.currentTarget as HTMLButtonElement;
+        button.disabled = true;
+        try { await line.action!.run(); } catch (e) { toast.textContent = (e as Error).message; }
+        void loadBalance();
+      } }, line.action.label) : null)));
   }
   loadBalance();
 }
@@ -995,10 +1059,15 @@ function settingsScreen() {
     h("h1", {}, "Settings"),
     h("div", { class: "kv" },
       h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
-      h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(node.url))),
-      h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, node.acceptsSubmit ? "read + send" : "read only")),
-      h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
+      ...(platform.ownNode
+        ? [h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v" }, "This device's own"))]
+        : [
+            h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(node.url))),
+            h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, node.acceptsSubmit ? "read + send" : "read only")),
+            h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
+          ]),
     ),
+    ...actionButtons(),
     h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
     ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
     ...(platform.openFullPage && !platform.camera
@@ -1753,6 +1822,7 @@ function receiveScreen() {
     h("div", { class: "stack" },
       h("h1", {}, "Receive"),
       h("p", { class: "muted" }, "Share this address to receive funds on " + settings.chain + "."),
+      qrNode(acct.address),
       h("div", { class: "addr mono" }, acct.address),
       h("div", { class: "row-actions" },
         h("button", { class: "btn", onclick: async () => { await navigator.clipboard.writeText(acct.address); toast.textContent = "copied"; setTimeout(() => (toast.textContent = ""), 1500); } }, "Copy"),
@@ -1810,7 +1880,7 @@ async function sendFlow() {
   const acct = activeAccount()!;
   const sendContext = { chain: settings.chain, path: [...chainPath()], chosen: { ...endpoint()! }, acct };
   const to = h("input", { type: "text", placeholder: "recipient address (bafy…)", spellcheck: "false" }) as HTMLInputElement;
-  const amount = h("input", { type: "text", inputmode: "numeric", placeholder: "amount (units)" }) as HTMLInputElement;
+  const amount = h("input", { type: "text", inputmode: "numeric", placeholder: `amount on ${sendContext.chain}`, "aria-label": "Amount" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
   const feeHelp = h("p", { class: "muted" }, "The wallet never changes your fee. A node minimum is only a warning; confirmation depends on miners and current demand.");
@@ -1885,15 +1955,14 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
       h("p", { class: "section-label" }, "Recipient"),
       h("div", { class: "addr mono" }, to),
       h("div", { class: "kv" },
-        h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, fmt(amount.toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, fmt(fee.toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, fmt((amount + fee).toString()))),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Chain"), h("span", { class: "tag" }, chain)),
-        h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Amount"), h("span", { class: "v" }, amountOn(amount, chain))),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Network fee"), h("span", { class: "v" }, amountOn(fee, chain))),
+        h("div", { class: "row" }, h("span", { class: "k" }, "Total"), h("span", { class: "v" }, amountOn(amount + fee, chain))),
       ),
       h("details", { class: "advanced" },
         h("summary", {}, "Transaction details"),
         h("div", { class: "kv advanced-content" },
+          h("div", { class: "row" }, h("span", { class: "k" }, "Nonce"), h("span", { class: "v" }, String(nonce))),
           ...(minRelayFee === undefined ? [] : [h("div", { class: "row" }, h("span", { class: "k" }, "Node minimum"), h("span", { class: "v" }, fmt(minRelayFee.toString())))]),
           h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(chosen.url))),
         ),

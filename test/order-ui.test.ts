@@ -252,7 +252,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.equal(button("Copy account address").textContent, "", "copy is an icon-only action");
   assert.ok(button("Copy account address").querySelector("svg.action-icon"));
   for (const hidden of ["Scan cross-chain order", "Open cross-chain order", "Transactions", "Settings", "Node", "Fee", "Backup", "Lock"]) {
-    assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
+    assert.equal([...document.querySelectorAll("#view button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
   }
   assert.match(document.body.textContent ?? "", new RegExp(address), "the home screen displays the full account address");
   button("Copy account address").click();

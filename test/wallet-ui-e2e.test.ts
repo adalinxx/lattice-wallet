@@ -13,7 +13,7 @@ async function settle() { for (let i = 0; i < 24; i += 1) await tick(); }
 
 function installDOM() {
   const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
-  for (const name of ["window", "document", "navigator", "Node", "HTMLElement", "HTMLButtonElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement", "KeyboardEvent", "Event"]) {
+  for (const name of ["window", "document", "navigator", "Node", "HTMLElement", "HTMLButtonElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement", "KeyboardEvent", "Event", "DOMParser"]) {
     Object.defineProperty(globalThis, name, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[name] });
   }
   return dom;
@@ -281,7 +281,7 @@ test("wallet UI e2e: fee validation, review, signing, submission, and persistenc
   assert.match(document.body.textContent ?? "", /depends on miners and current demand/);
 
   const recipient = input("recipient address (bafy…)");
-  const amount = input("amount (units)");
+  const amount = (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement);
   recipient.value = "nope";
   amount.value = "10";
   button("Review").click();
@@ -363,7 +363,7 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
   button("Sign & send").click();
@@ -411,7 +411,7 @@ test("wallet UI e2e: a refusal retains recovery bytes and cannot invite another 
   button("Send").click();
   await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click();
   await settle();
   button("Sign & send").click();
@@ -449,7 +449,7 @@ test("wallet UI e2e: a signer that locked itself is unlocked in place and the st
     button("Send").click();
     await settle();
     input("recipient address (bafy…)").value = bob;
-    input("amount (units)").value = "10";
+    (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
     button("Review").click();
     await settle();
   };
@@ -600,7 +600,7 @@ test("wallet UI e2e: a background cross-page chain change cannot redirect a revi
   await settle();
   button("Send").click(); await settle();
   input("recipient address (bafy…)").value = bob;
-  input("amount (units)").value = "10";
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click(); await settle();
   await store.api.set({ settings: { ...store.value.settings, chain: "Nexus/shop" } });
   release(); await settle();
@@ -622,11 +622,80 @@ test("wallet UI e2e: saved uncertain payments require explicit acknowledgement b
   const wallet = walletFor(openState(), { signTransfer: async (args) => { signatures += 1; return { ok: true, signedSubmit, summary: { from: args.from, to: args.to, amount: args.amount, fee: args.fee, nonce: args.nonce } }; } });
   await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
   button("Send").click(); await settle();
-  input("recipient address (bafy…)").value = bob; input("amount (units)").value = "10";
+  input("recipient address (bafy…)").value = bob; (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
   button("Review").click(); await settle();
   button("Sign & send").click(); await settle();
   assert.equal(signatures, 0);
   assert.match(document.body.textContent ?? "", /may pay twice/);
   button("Send another payment").click(); await settle();
   assert.equal(signatures, 1);
+});
+
+test("the home screen says what the host says, in words, with the one thing to do about it", async () => {
+  installDOM();
+  let down = true;
+  let started = 0;
+  const fetch = async (raw: string | URL, init?: RequestInit) => {
+    if (down) throw new TypeError("connection refused");
+    return nodeFetch({ balance: 250n })(raw, init);
+  };
+  await startWallet({
+    wallet: walletFor(openState()), store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true,
+    actions: [{ label: "Node", run: () => {} }],
+    notices: async (chain) => down
+      ? [{ text: `Your node is stopped, so ${chain} cannot be read.`, action: { label: "Start node", run: async () => { started += 1; down = false; } } }]
+      : [{ text: "Syncing. Balances may be behind." }],
+  });
+  await settle();
+  // A read that failed is a sentence, not a balance: it is not set in the balance's type.
+  const value = document.querySelector(".balance-value .v") as HTMLElement;
+  assert.equal(value.classList.contains("unread"), true);
+  assert.doesNotMatch(value.textContent ?? "", /^\d/);
+  assert.match(document.querySelector(".balance-label")?.textContent ?? "", /^Balance on Nexus$/);
+  assert.match(document.querySelector(".notice")?.textContent ?? "", /Your node is stopped, so Nexus cannot be read\.Start node/);
+  button("Start node").click();
+  await settle();
+  assert.equal(started, 1);
+  assert.equal(value.textContent, "250");
+  assert.equal(value.classList.contains("unread"), false);
+  // A notice with nothing to do about it has no button.
+  assert.equal(document.querySelector(".notice")?.textContent, "Syncing. Balances may be behind.");
+  assert.equal(document.querySelector(".notice button"), null);
+
+  // The mark says what it does, and Settings carries the host's own screens.
+  const mark = document.getElementById("settings-button") as HTMLButtonElement;
+  assert.equal(mark.textContent, "Settings");
+  mark.click();
+  assert.equal(mark.textContent, "Close");
+  button("Node");
+  assert.match(document.body.textContent ?? "", /NodeThis device's own/);
+  assert.doesNotMatch(document.body.textContent ?? "", /ConnectionAutomatic|read \+ send/);
+  mark.click();
+  await settle();
+
+  // Amounts say what they count; the nonce is a detail; the address can be scanned.
+  button("Send").click();
+  await settle();
+  input("recipient address (bafy…)").value = bob;
+  (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement).value = "10";
+  button("Review").click();
+  await settle();
+  const review = document.querySelector("#view .kv") as HTMLElement;
+  assert.match(review.textContent ?? "", /Amount10 on NexusNetwork fee1 on NexusTotal11 on Nexus/);
+  assert.doesNotMatch(review.textContent ?? "", /Nonce/);
+  assert.match(document.querySelector("details.advanced")?.textContent ?? "", /Nonce3/);
+  // One filled button: the one that sends. The way back is outlined.
+  assert.deepEqual([...document.querySelectorAll("#view button")].filter((item) => item.classList.contains("block") && !item.classList.contains("btn")).map((item) => item.textContent), ["Sign & send"]);
+  button("Cancel").click();
+  await settle();
+  button("Receive").click();
+  assert.ok(document.querySelector(".qr svg"), "the address is shown as a QR code");
+});
+
+test("before there is a wallet, the header offers nothing that would do nothing", async () => {
+  installDOM();
+  const wallet = walletFor({ initialized: false, locked: true, accounts: [], active: null });
+  await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  for (const id of ["settings-button", "net-badge"]) assert.equal(document.getElementById(id)!.style.visibility, "hidden", id);
+  assert.equal((document.getElementById("parent-chain") as HTMLButtonElement).hidden, true);
 });
