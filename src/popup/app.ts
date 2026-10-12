@@ -2521,6 +2521,7 @@ function promptUnlock(): Promise<void> {
       if (!answer.ok) { error.textContent = answer.error === "Wrong password" ? "That password is not right. Try again." : answer.error; password.select(); return; }
       st = answer.state;
       overlay.remove();
+      for (const part of behind) part.removeAttribute("inert");
       unlocking = undefined;
       resolve();
     };
@@ -2531,6 +2532,10 @@ function promptUnlock(): Promise<void> {
       password, error,
       h("button", { class: "block", onclick: () => { void submit(); } }, "Unlock"),
     );
+    // What the cover covers cannot be reached while it is up: not by pointer,
+    // not by Tab, not by a screen reader. The cover is all there is.
+    const behind = [...document.body.children].filter((part) => !part.hasAttribute("inert"));
+    for (const part of behind) part.setAttribute("inert", "");
     document.body.append(overlay);
     password.focus();
   });
