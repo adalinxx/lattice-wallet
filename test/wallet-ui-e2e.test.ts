@@ -511,6 +511,11 @@ test("wallet UI e2e: a signer that locked covers the page until the password is 
   await settle();
   assert.match(cover()?.textContent ?? "", /Wallet locked/);
   assert.ok(cover()!.classList.contains("lock-cover"), "the cover sits over everything");
+  // Nothing under the cover can be reached by keyboard or screen reader: all of it is inert, the cover is not.
+  const under = [...document.body.children].filter((part) => part !== cover());
+  assert.ok(under.length > 0 && under.every((part) => part.hasAttribute("inert")), "everything behind the cover is inert");
+  assert.equal(cover()!.hasAttribute("inert"), false);
+  assert.equal(document.activeElement, cover()!.querySelector("input"), "the password field has the keyboard");
   assert.match(document.getElementById("view")!.textContent ?? "", /Balance/, "the screen underneath is as it was left");
   tellLocked();
   await settle();
@@ -518,6 +523,7 @@ test("wallet UI e2e: a signer that locked covers the page until the password is 
   await unlock();
   assert.equal(unlocked, 1);
   assert.equal(cover(), null);
+  assert.equal([...document.body.children].some((part) => part.hasAttribute("inert")), false, "unlocked, the page is reachable again");
 
   // A signer that stopped without a word is found when the page comes back into view.
   state = { ...state, locked: true, accounts: [] };
