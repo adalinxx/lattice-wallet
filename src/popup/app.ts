@@ -76,7 +76,21 @@ export interface Platform {
    * a chain adds it there (the host may restart its node), instead of
    * keeping a list of its own.
    */
-  chains?: { list(): Promise<string[]>; add(chain: string): Promise<void> };
+  chains?: {
+    list(): Promise<string[]>;
+    add(chain: string): Promise<void>;
+    /**
+     * Every chain the host's node can see, hosted or not. Without it the
+     * chain menu learns of unhosted chains only under the current chain.
+     */
+    seen?(): Promise<string[]>;
+    /**
+     * Open the host's own page for its chains, or for one of them; `back`
+     * returns to the wallet. With it, the chain menu only switches: a chain
+     * the node does not host is taken up there, not from the menu.
+     */
+    manage?(back: () => void, chain?: string): void;
+  };
   /** This page may open the camera (an extension popup cannot hold the permission). */
   camera?: boolean;
   /** Reopen a backup flow in a full page (the extension: a tab, for camera, files and print). */
@@ -166,10 +180,6 @@ function showHeaderControls() {
     const control = document.getElementById(id);
     if (control) control.style.visibility = usable ? "" : "hidden";
   }
-  // The way up is decided here each time, not only hidden: a wallet opened
-  // locked on a child chain must get it back once unlocked.
-  const parent = document.getElementById("parent-chain") as HTMLButtonElement | null;
-  if (parent) parent.hidden = !usable || chainPath().length < 2;
 }
 const onSettingsScreen = () => !!document.getElementById("settings-screen");
 
@@ -416,17 +426,11 @@ export function discoveryOrigins(bootstrap: string): string[] {
 
 function syncBadge() {
   const b = document.getElementById("net-badge")!;
-  b.textContent = `${settings.chain} ▾`;
-  b.title = `${settings.chain} — show child chains`;
-  b.setAttribute("aria-label", `Current chain ${settings.chain}. Show child chains`);
-  const parentButton = document.getElementById("parent-chain") as HTMLButtonElement | null;
-  if (parentButton) {
-    const parent = chainPath().slice(0, -1).join("/");
-    parentButton.hidden = !parent;
-    parentButton.textContent = "↑";
-    parentButton.title = parent ? `Go to ${parent}` : "";
-    parentButton.setAttribute("aria-label", parent ? `Go to parent chain ${parent}` : "No parent chain");
-  }
+  // The whole path, since the chain is part of what is about to be signed.
+  // Too long, it loses its start and keeps its end: the chain's own name.
+  b.replaceChildren(h("span", { class: "chain-path" }, h("bdi", {}, settings.chain)), h("span", { "aria-hidden": "true" }, "▾"));
+  b.title = `${settings.chain} — choose a chain`;
+  b.setAttribute("aria-label", `Current chain ${settings.chain}. Choose a chain`);
 }
 
 function closeChainMenu() {
@@ -514,49 +518,94 @@ async function requestEndpoint(
   return false;
 }
 
+/**
+ * The chain menu is the chains as they are: a tree. Every chain this wallet
+ * has, a child under its parent and named by the last part of its path, with
+ * the one in use marked. One press on any of them goes there.
+ *
+ * A wallet on its own node has the chains that node hosts, and lists the
+ * ones it sees but does not host as such. Any other wallet has the chains it
+ * was given, and learns the children of the chain in use from that chain's
+ * node; those of another chain appear once it is the one in use.
+ */
 async function toggleChainMenu() {
   const existing = document.querySelector(".chain-menu");
   if (existing) { closeChainMenu(); return; }
   document.getElementById("net-badge")?.setAttribute("aria-expanded", "true");
   const status = h("div", { class: "toast" });
-  const items = h("div", { class: "chain-menu-items" });
-  const menu = h("div", { class: "chain-menu", role: "navigation", "aria-label": "Child chains" },
-    h("div", { class: "chain-path", title: settings.chain }, settings.chain),
-    items, status,
+  const tree = h("ul", { class: "chain-menu-items" });
+  const own = platform.chains;
+  const manage = () => { closeChainMenu(); if (own?.manage) own.manage(mainScreen); else void chainScreen(); };
+  const menu = h("div", { class: "chain-menu", role: "navigation", "aria-label": "Chains" },
+    tree, status,
+    h("button", { class: "chain-menu-item chain-menu-manage", onclick: manage },
+      h("span", {}, own?.manage ? "Manage chains on your node" : "Add a chain or change its node"), h("span", { "aria-hidden": "true" }, "›")),
   );
-  const shown = new Set<string>();
-  const add = (chain: string, label: string, hosted = true) => {
-    if (!chain || shown.has(chain)) return;
-    shown.add(chain);
-    items.append(h("button", {
-      class: chain === settings.chain ? "chain-menu-item current" : "chain-menu-item",
-      ...(chain === settings.chain ? { "aria-current": "page", disabled: "true" } : {}),
-      onclick: () => switchToChain(chain, status),
-    }, h("span", { class: "chain-name", title: chain }, label),
-      hosted ? h("span", { "aria-hidden": "true" }, "›")
-        : h("span", { class: "chain-note", title: "Your node does not host this chain yet. Choosing it adds it; a running node restarts." }, "add to node ›")));
-  };
   const current = settings.chain;
-  const childOf = (chain: string) => chain.split("/").slice(0, -1).join("/") === current;
-  // A host with its own node lists its hosted chains itself, below.
-  for (const saved of platform.chains ? [] : settings.chains) {
-    if (childOf(saved)) add(saved, saved.slice(current.length + 1));
-  }
+  /** Each chain shown, and what is said beside it: nothing for one this wallet has. */
+  const shown = new Map<string, "" | "found" | "unhosted">();
+  const have = (chain: string, note: "" | "found" | "unhosted" = "") => {
+    // A chain is listed under its parent, so every chain above it is listed too.
+    const parts = chain.split("/");
+    for (let depth = 1; depth < parts.length; depth += 1) {
+      const above = parts.slice(0, depth).join("/");
+      if (!shown.has(above)) shown.set(above, "");
+    }
+    if (!shown.has(chain) || note === "") shown.set(chain, note);
+  };
+  const draw = () => {
+    const chains = [...shown.keys()];
+    const under = (parent: string) => chains.filter((chain) => chain.split("/").slice(0, -1).join("/") === parent)
+      .sort((x, y) => x.localeCompare(y));
+    const branch = (chain: string, guide: string, inherited: string): El => {
+      const note = shown.get(chain)!;
+      const here = chain === current;
+      const choose = () => {
+        if (here) return closeChainMenu();
+        // What the node does not host is taken up on the host's own page, where that is offered.
+        if (note === "unhosted" && own?.manage) { closeChainMenu(); return own.manage(mainScreen, chain); }
+        void switchToChain(chain, status);
+      };
+      const said = here ? "you are here" : note === "found" ? "found here" : note === "unhosted" ? (own?.manage ? "not hosted" : "add to node") : "";
+      const item = h("button", {
+        class: `chain-menu-item${here ? " current" : ""}${note === "unhosted" ? " unhosted" : ""}`, "data-chain": chain,
+        ...(here ? { "aria-current": "true" } : {}),
+        ...(note === "unhosted" && !own?.manage ? { title: "Your node does not host this chain yet. Choosing it adds it; a running node restarts." } : {}),
+        "aria-label": said ? `${chain}, ${said}` : chain,
+        onclick: choose,
+      },
+        h("span", { class: "chain-name", title: chain }, h("span", { class: "chain-guide", "aria-hidden": "true" }, guide), h("span", {}, chain.split("/").pop()!)),
+        ...(said ? [h("span", { class: "chain-note" }, said)] : []),
+      );
+      const kids = under(chain);
+      return h("li", {}, item, ...(kids.length ? [h("ul", {}, ...kids.map((kid, i) => {
+        const last = i === kids.length - 1;
+        return branch(kid, inherited + (last ? "└ " : "├ "), inherited + (last ? "  " : "│ "));
+      }))] : []));
+    };
+    tree.replaceChildren(...under("").map((chain) => branch(chain, "", "")));
+  };
+  have(ROOT_CHAIN);
+  have(current);
+  for (const saved of own ? [] : settings.chains) have(saved);
+  draw();
   document.body.append(menu);
   status.textContent = "Loading…";
   try {
-    const hosted = await platform.chains?.list();
-    for (const chain of hosted ?? []) {
-      if (childOf(chain)) add(chain, chain.slice(current.length + 1));
-    }
+    const hosted = await own?.list();
+    for (const chain of hosted ?? []) have(chain);
+    for (const chain of (await own?.seen?.().catch(() => [])) ?? []) if (!hosted!.includes(chain)) have(chain, "unhosted");
+    draw();
+    // What the chain in use carries: its children, whoever hosts them.
     const latest = await client().latestBlock();
     for (const child of await client().children(latest.hash)) {
       if (!child.directory || child.directory.includes("/")) continue;
       const chain = `${current}/${child.directory}`;
-      add(chain, child.directory, !hosted || hosted.includes(chain));
+      if (!shown.has(chain)) have(chain, hosted ? "unhosted" : "found");
     }
-    status.textContent = shown.size ? "" : "No child chains.";
-  } catch { status.textContent = shown.size ? "" : "Could not load child chains."; }
+    draw();
+    status.textContent = "";
+  } catch { status.textContent = shown.size > 1 ? "" : "Could not load child chains."; }
 }
 
 const activeAccount = (): AccountView | undefined => st.accounts.find((a) => a.address === st.active);
@@ -1092,7 +1141,6 @@ function settingsScreen() {
           ]),
     ),
     ...actionButtons("settings"),
-    h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
     ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
     ...(platform.openFullPage && !platform.camera
       ? [h("button", { class: "btn block", onclick: () => platform.openFullPage!("wallet") }, "Open wallet in tab")]
@@ -2429,11 +2477,6 @@ export function startWallet(host: Platform) {
   badge.setAttribute("aria-expanded", "false");
   badge.addEventListener("click", () => {
     if (st.initialized && !st.locked && endpoint()) toggleChainMenu();
-  });
-  document.getElementById("parent-chain")?.addEventListener("click", () => {
-    if (!st.initialized || st.locked || !endpoint()) return;
-    const parent = chainPath().slice(0, -1).join("/");
-    if (parent) switchToChain(parent, h("div"));
   });
   document.getElementById("settings-button")?.addEventListener("click", () => {
     if (!(st.initialized && !st.locked && activeAccount() && endpoint())) return;

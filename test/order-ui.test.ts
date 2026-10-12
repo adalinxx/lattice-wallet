@@ -173,7 +173,7 @@ async function openOrder(uri: string) {
 }
 
 test("sell-order UI refuses a stale review and never re-signs after an uncertain submit", async () => {
-  const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="settings-button"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   let copied = "";
   Object.defineProperty(dom.window.navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copied = text; } } });
   for (const [name, value] of Object.entries({
@@ -280,21 +280,18 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
   const earlyMenu = document.querySelector(".chain-menu") as HTMLElement;
-  assert.match(earlyMenu.textContent ?? "", /payments.*›/);
-  assert.match(earlyMenu.querySelector(".chain-path")?.textContent ?? "", /^Nexus\/testnet$/);
-  assert.doesNotMatch(earlyMenu.textContent ?? "", /Parent|Current/);
-  (document.getElementById("net-badge") as HTMLButtonElement).click();
-  const parentButton = document.getElementById("parent-chain") as HTMLButtonElement;
-  assert.equal(parentButton.hidden, false);
-  assert.match(parentButton.title, /Nexus$/);
-  parentButton.click();
+  // The menu is the chains as a tree: the one in use marked, its parent above it, its child below.
+  const chainItem = (chain: string) => document.querySelector(`.chain-menu-item[data-chain="${chain}"]`) as HTMLButtonElement;
+  assert.deepEqual([...earlyMenu.querySelectorAll(".chain-menu-item[data-chain]")].map((item) => item.querySelector(".chain-name")?.textContent),
+    ["Nexus", "└ testnet", "  └ payments"]);
+  assert.equal(earlyMenu.querySelector('[aria-current="true"]')?.getAttribute("data-chain"), "Nexus/testnet");
+  // One press goes to any of them: here, up to the parent.
+  chainItem("Nexus").click();
   await settle();
   assert.equal(stored.settings.chain, "Nexus");
-  assert.equal(parentButton.hidden, true);
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
-  const testnet = [...document.querySelectorAll(".chain-menu-item")].find((item) => item.firstChild?.textContent === "testnet") as HTMLButtonElement;
-  testnet.click();
+  chainItem("Nexus/testnet").click();
   await settle();
   assert.equal(stored.settings.chain, "Nexus/testnet");
 
@@ -354,14 +351,13 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   await settle();
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
-  const child = [...document.querySelectorAll(".chain-menu-item")].find((item) => item.textContent?.startsWith("payments")) as HTMLButtonElement;
+  const child = document.querySelector('.chain-menu-item[data-chain="Nexus/testnet/payments"]') as HTMLButtonElement;
   assert.ok(child, document.body.textContent ?? "child-chain item missing");
-  assert.ok(child);
   child.click();
   await settle();
   assert.equal(stored.settings.chain, "Nexus/testnet/payments");
   const chainBadge = document.getElementById("net-badge");
-  assert.equal(chainBadge?.textContent, "Nexus/testnet/payments ▾");
+  assert.equal(chainBadge?.textContent, "Nexus/testnet/payments▾");
   assert.match(chainBadge?.title ?? "", /Nexus\/testnet\/payments/);
   (document.getElementById("settings-button") as HTMLButtonElement).click();
   assert.equal(document.querySelector("h1")?.textContent, "Settings");
@@ -369,7 +365,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 });
 
 test("a market buy discovers deposits, pays the parent receipt, and withdraws on the child", async () => {
-  const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="settings-button"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => true });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
@@ -625,7 +621,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
 });
 
 test("the optional Lattice.build endpoint is offered but a failed submit probe is not saved", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -666,7 +662,7 @@ test("the optional Lattice.build endpoint is offered but a failed submit probe i
 });
 
 test("Lattice.build selection resumes after Chrome closes the popup for host permission", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -712,7 +708,7 @@ test("Lattice.build selection resumes after Chrome closes the popup for host per
 });
 
 test("a custom node selection resumes after Chrome closes the popup for host permission", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -760,7 +756,7 @@ test("a custom node selection resumes after Chrome closes the popup for host per
 });
 
 test("a child chain automatically discovers and selects a verified submit node through the explorer bootstrap", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -823,7 +819,7 @@ test("a child chain automatically discovers and selects a verified submit node t
 });
 
 test("a chain switch is saved before Chrome's permission prompt can close the popup", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -860,7 +856,7 @@ test("a chain switch is saved before Chrome's permission prompt can close the po
   await settle();
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
-  const pendingChild = [...document.querySelectorAll(".chain-menu-item")].find((item) => item.textContent?.startsWith("payments")) as HTMLButtonElement;
+  const pendingChild = document.querySelector('.chain-menu-item[data-chain="Nexus/testnet/payments"]') as HTMLButtonElement;
   assert.ok(pendingChild, document.body.textContent ?? "child-chain item missing");
   pendingChild.click();
   await settle();
@@ -871,7 +867,7 @@ test("a chain switch is saved before Chrome's permission prompt can close the po
 });
 
 test("a host with its own node hosts a child chain before the menu switches to it", async () => {
-  const dom = new JSDOM('<button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const [name, value] of Object.entries({
     window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     Node: dom.window.Node, HTMLElement: dom.window.HTMLElement, HTMLButtonElement: dom.window.HTMLButtonElement,
@@ -912,8 +908,7 @@ test("a host with its own node hosts a child chain before the menu switches to i
       hosted.push(chain);
     },
   };
-  const item = (name: string) => [...document.querySelectorAll(".chain-menu-item")]
-    .find((entry) => entry.firstChild?.textContent === name) as HTMLButtonElement;
+  const item = (name: string) => document.querySelector(`.chain-menu-item[data-chain="Nexus/${name}"]`) as HTMLButtonElement;
   const openMenu = async () => { (document.getElementById("net-badge") as HTMLButtonElement).click(); await settle(); };
 
   const { startWallet } = await import("../src/popup/app.ts");
@@ -921,8 +916,8 @@ test("a host with its own node hosts a child chain before the menu switches to i
   await settle();
   await openMenu();
   // The hosted child reads as any other; the one the node lacks says what choosing it does.
-  assert.equal(item("testnet").textContent, "testnet›");
-  assert.equal(item("shop").textContent, "shopadd to node ›");
+  assert.equal(item("testnet").textContent, "└ testnet");
+  assert.equal(item("shop").textContent, "├ shopadd to node");
 
   // A node that cannot take the chain leaves the wallet where it was, and says why.
   item("shop").click();
@@ -937,11 +932,28 @@ test("a host with its own node hosts a child chain before the menu switches to i
   assert.equal(stored.settings.chain, "Nexus/shop");
 
   // A chain the node already hosts is switched to without touching the node.
-  (document.getElementById("parent-chain") as HTMLButtonElement).click();
-  await settle();
   await openMenu();
   item("testnet").click();
   await settle();
   assert.equal(stored.settings.chain, "Nexus/testnet");
   assert.deepEqual(added, ["Nexus/shop"]);
+
+  // A host with a page of its own for its chains: the menu only switches. A
+  // chain the node sees and does not host is taken up on that page, and so
+  // is everything else about the node's chains.
+  const managed: (string | undefined)[] = [];
+  Object.assign(chains, {
+    seen: async () => [...hosted, "Nexus/testnet/games"],
+    manage: (_back: () => void, chain?: string) => { managed.push(chain); },
+  });
+  await openMenu();
+  assert.equal(item("testnet/games").querySelector(".chain-note")?.textContent, "not hosted");
+  item("testnet/games").click();
+  await settle();
+  assert.deepEqual([managed, added, stored.settings.chain], [["Nexus/testnet/games"], ["Nexus/shop"], "Nexus/testnet"]);
+  assert.equal(document.querySelector(".chain-menu"), null);
+  await openMenu();
+  assert.equal(document.querySelector(".chain-menu-manage")?.textContent, "Manage chains on your node›");
+  (document.querySelector(".chain-menu-manage") as HTMLButtonElement).click();
+  assert.deepEqual(managed, ["Nexus/testnet/games", undefined]);
 });

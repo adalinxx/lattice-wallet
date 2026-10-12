@@ -37,7 +37,7 @@ test("deployed unpaid offer reaches purchase review without signing or submittin
     if (await receiptWithdrawer(parentURL!, parentChain, childChain, offer, readOnlyFetch) === null) { selected = offer; break; }
   }
   assert.ok(selected, "No eligible unpaid offer in the first 30 deposits; supply a live fixture before claiming this gate passed");
-  const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="settings-button"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   t.after(() => dom.window.close());
   for (const name of ["window", "document", "navigator", "Node", "HTMLElement", "HTMLButtonElement", "HTMLInputElement", "HTMLTextAreaElement"] as const) {
     const original = Object.getOwnPropertyDescriptor(globalThis, name);

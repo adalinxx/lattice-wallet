@@ -15,10 +15,11 @@ body { width: 360px; }
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 .net.testnet { background: var(--ink); color: var(--paper); }
-.chain-controls { display: flex; align-items: center; gap: var(--s-1); }
-.parent-chain { min-width: 30px; padding-left: var(--s-2); padding-right: var(--s-2); white-space: nowrap; }
-/* A chain's name is its path, and paths are case-sensitive: shown as written. */
-#net-badge { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }
+/* A chain's name is its path, and paths are case-sensitive: shown as written.
+   Too long for the bar, the path loses its start and keeps its end. */
+#net-badge { display: inline-flex; align-items: baseline; gap: var(--s-1); max-width: 240px; text-transform: none; letter-spacing: 0; }
+#net-badge .chain-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+#net-badge .chain-path bdi { direction: ltr; unicode-bidi: isolate; }
 
 main { padding: var(--s-4) var(--s-3); }
 
@@ -113,13 +114,21 @@ label.k { display: block; margin-bottom: var(--s-1); font-size: var(--fs-12); te
 .advanced summary { cursor: pointer; padding: var(--s-2) var(--s-3); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .advanced-content { margin: 0 var(--s-3) var(--s-3); }
 .advanced-content.kv { margin-top: 0; }
-.chain-menu { position: fixed; z-index: 20; top: 45px; right: var(--s-2); width: min(260px, calc(100vw - 16px)); max-height: calc(100vh - 55px); overflow: auto; border: var(--rule); background: var(--paper); }
-.chain-path { padding: var(--s-2) var(--s-3); color: var(--muted); font-size: var(--fs-12); overflow-wrap: anywhere; border-bottom: var(--rule); }
+/* The chain menu: the chains as a tree, a child under its parent. */
+.chain-menu { position: fixed; z-index: 20; top: 45px; right: var(--s-2); width: min(280px, calc(100vw - 16px)); max-height: calc(100vh - 55px); overflow: auto; border: var(--rule); background: var(--paper); }
+.chain-menu ul { list-style: none; margin: 0; padding: 0; }
+.chain-menu li { max-width: none; margin: 0; }
+.chain-menu li + li, .chain-menu li > ul { border-top: var(--rule); }
 .chain-menu-items:empty { display: none; }
-.chain-menu-item { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: var(--s-2); border: 0; border-bottom: var(--rule); text-align: left; text-transform: none; }
-.chain-menu-item:last-child { border-bottom: 0; }
-.chain-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chain-note { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-12); }
+.chain-menu-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: var(--s-2); border: 0; text-align: left; text-transform: none; letter-spacing: 0; }
+.chain-name { display: flex; min-width: 0; overflow-wrap: anywhere; }
+.chain-guide { flex: 0 0 auto; white-space: pre; opacity: 0.45; }
+.chain-note { flex: 0 0 auto; font-size: var(--fs-12); opacity: 0.6; }
+/* Where the wallet is: the one inverted row. */
+.chain-menu-item.current { background: var(--ink); color: var(--paper); cursor: default; }
+/* A chain the node sees and does not host. */
+.chain-menu-item.unhosted .chain-name { opacity: 0.55; }
+.chain-menu-manage { border-top: var(--rule); font-size: var(--fs-12); text-transform: uppercase; letter-spacing: var(--track-display); }
 .chain-menu > .toast:not(:empty) { margin: var(--s-2) var(--s-3); }
 .chain-menu > .toast:empty { display: none; }
 
@@ -181,3 +190,5 @@ h2.section-label { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 
 .warn .mono, .kv .v, .addr, .transaction-field .mono { overflow-wrap: anywhere; }
 .kv .row > .k { flex: 0 0 auto; }
 .kv .row > .v { min-width: 0; text-align: right; }
+/* The same row elsewhere in a list (pending purchases) keeps its hairline. */
+.kv .chain-menu-item { align-items: center; border-bottom: var(--rule); }

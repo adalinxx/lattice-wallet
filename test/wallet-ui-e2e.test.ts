@@ -12,7 +12,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 24; i += 1) await tick(); }
 
 function installDOM() {
-  const dom = new JSDOM('<button id="settings-button"></button><button id="parent-chain"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
+  const dom = new JSDOM('<button id="settings-button"></button><button id="net-badge"></button><main id="view"></main>', { url: "https://wallet.test/" });
   for (const name of ["window", "document", "navigator", "Node", "HTMLElement", "HTMLButtonElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLSelectElement", "KeyboardEvent", "Event", "DOMParser"]) {
     Object.defineProperty(globalThis, name, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[name] });
   }
@@ -558,17 +558,21 @@ test("wallet UI e2e: a wallet opened locked on a child chain offers the way up o
   const store = memoryStore({ chain: "Nexus/shop", chains: ["Nexus", "Nexus/shop"] });
   await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
   await settle();
-  const up = document.getElementById("parent-chain") as HTMLButtonElement;
+  const badge = document.getElementById("net-badge") as HTMLButtonElement;
   assert.equal(document.querySelector("h1")?.textContent, "Unlock");
-  assert.equal(up.hidden, true, "nothing to navigate while locked");
+  badge.click();
+  await settle();
+  assert.equal(document.querySelector(".chain-menu"), null, "nothing to navigate while locked");
   input("password").value = "correct horse";
   button("Unlock").click();
   await settle();
-  assert.equal(up.hidden, false, "unlocked on Nexus/shop: Nexus is one press away");
-  up.click();
+  // Unlocked on Nexus/shop: its parent is the row above it in the menu, one press away.
+  badge.click();
+  await settle();
+  assert.equal(document.querySelector('.chain-menu-item[aria-current="true"]')?.getAttribute("data-chain"), "Nexus/shop");
+  (document.querySelector('.chain-menu-item[data-chain="Nexus"]') as HTMLButtonElement).click();
   await settle();
   assert.equal(store.value.settings.chain, "Nexus");
-  assert.equal(up.hidden, true, "Nexus has no parent");
 });
 
 test("the home screen says the node is unreachable only when the host has no better account of it", async () => {
@@ -765,5 +769,4 @@ test("before there is a wallet, the header offers nothing that would do nothing"
   const wallet = walletFor({ initialized: false, locked: true, accounts: [], active: null });
   await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
   for (const id of ["settings-button", "net-badge"]) assert.equal(document.getElementById(id)!.style.visibility, "hidden", id);
-  assert.equal((document.getElementById("parent-chain") as HTMLButtonElement).hidden, true);
 });
