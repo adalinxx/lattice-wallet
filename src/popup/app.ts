@@ -166,8 +166,10 @@ function showHeaderControls() {
     const control = document.getElementById(id);
     if (control) control.style.visibility = usable ? "" : "hidden";
   }
+  // The way up is decided here each time, not only hidden: a wallet opened
+  // locked on a child chain must get it back once unlocked.
   const parent = document.getElementById("parent-chain") as HTMLButtonElement | null;
-  if (parent && !usable) parent.hidden = true;
+  if (parent) parent.hidden = !usable || chainPath().length < 2;
 }
 const onSettingsScreen = () => !!document.getElementById("settings-screen");
 

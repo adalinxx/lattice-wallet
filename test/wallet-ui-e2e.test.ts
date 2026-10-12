@@ -548,6 +548,29 @@ test("wallet UI e2e: a host's own screens are offered where it says: home, Setti
   assert.deepEqual(opened, ["Mining", "Node"]);
 });
 
+test("wallet UI e2e: a wallet opened locked on a child chain offers the way up once unlocked", async () => {
+  installDOM();
+  let state: WalletState = { ...openState(), locked: true, accounts: [], active: null };
+  const wallet = walletFor(state, {
+    getState: async () => ({ ok: true, state }),
+    unlock: async () => { state = openState(); return { ok: true, state }; },
+  });
+  const store = memoryStore({ chain: "Nexus/shop", chains: ["Nexus", "Nexus/shop"] });
+  await startWallet({ wallet, store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  await settle();
+  const up = document.getElementById("parent-chain") as HTMLButtonElement;
+  assert.equal(document.querySelector("h1")?.textContent, "Unlock");
+  assert.equal(up.hidden, true, "nothing to navigate while locked");
+  input("password").value = "correct horse";
+  button("Unlock").click();
+  await settle();
+  assert.equal(up.hidden, false, "unlocked on Nexus/shop: Nexus is one press away");
+  up.click();
+  await settle();
+  assert.equal(store.value.settings.chain, "Nexus");
+  assert.equal(up.hidden, true, "Nexus has no parent");
+});
+
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
   installDOM();
   let lockRequests = 0;
