@@ -63,8 +63,8 @@ test("deployed unpaid offer reaches purchase review without signing or submittin
     const found = [...document.querySelectorAll("button")].find((item) => item.textContent === label);
     assert.ok(found, `Missing ${label}`); return found;
   };
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Open cross-chain order").click();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  button("Open order").click();
   const order = { version: 1, parentChain, childChain, asset: "LAT", expiresAt: new Date(Date.now() + 3600_000).toISOString(), side: "buy_child", orderType: "take", deposits: [{
     demander: selected.demander, amountDemanded: String(selected.amountDemanded), amountDeposited: String(selected.amountDeposited), depositNonce: String(selected.depositNonce),
   }] };

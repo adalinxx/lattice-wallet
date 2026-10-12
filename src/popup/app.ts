@@ -43,7 +43,13 @@ export interface Platform {
    * button on the home screen, in Settings, or on both when `on` is left out.
    * `back` re-renders the wallet.
    */
-  actions?: { label: string; on?: "home" | "settings"; run(back: () => void): void }[];
+  actions?: {
+    label: string;
+    on?: "home" | "settings";
+    run(back: () => void): void;
+    /** In Settings, what the row says beside its label: what the thing is doing now. */
+    summary?(): Promise<string>;
+  }[];
   /**
    * What the person should know about the host before trusting what the home
    * screen shows, for the chain in view, each with at most one thing to do
@@ -554,10 +560,8 @@ async function toggleChainMenu() {
     if (!shown.has(chain) || note === "") shown.set(chain, note);
   };
   const draw = () => {
-    const chains = [...shown.keys()];
-    const under = (parent: string) => chains.filter((chain) => chain.split("/").slice(0, -1).join("/") === parent)
-      .sort((x, y) => x.localeCompare(y));
-    const branch = (chain: string, guide: string, inherited: string): El => {
+    const chains = [...shown.keys()].sort((x, y) => x.localeCompare(y));
+    tree.replaceChildren(...outline(chains, (chain, guide) => {
       const note = shown.get(chain)!;
       const here = chain === current;
       const choose = () => {
@@ -567,23 +571,17 @@ async function toggleChainMenu() {
         void switchToChain(chain, status);
       };
       const said = here ? "you are here" : note === "found" ? "found here" : note === "unhosted" ? (own?.manage ? "not hosted" : "add to node") : "";
-      const item = h("button", {
+      return h("button", {
         class: `chain-menu-item${here ? " current" : ""}${note === "unhosted" ? " unhosted" : ""}`, "data-chain": chain,
         ...(here ? { "aria-current": "true" } : {}),
         ...(note === "unhosted" && !own?.manage ? { title: "Your node does not host this chain yet. Choosing it adds it; a running node restarts." } : {}),
         "aria-label": said ? `${chain}, ${said}` : chain,
         onclick: choose,
       },
-        h("span", { class: "chain-name", title: chain }, h("span", { class: "chain-guide", "aria-hidden": "true" }, guide), h("span", {}, chain.split("/").pop()!)),
+        h("span", { class: "chain-name", title: chain }, h("span", { class: "tree-guide", "aria-hidden": "true" }, guide), h("span", {}, chain.split("/").pop()!)),
         ...(said ? [h("span", { class: "chain-note" }, said)] : []),
       );
-      const kids = under(chain);
-      return h("li", {}, item, ...(kids.length ? [h("ul", {}, ...kids.map((kid, i) => {
-        const last = i === kids.length - 1;
-        return branch(kid, inherited + (last ? "└ " : "├ "), inherited + (last ? "  " : "│ "));
-      }))] : []));
-    };
-    tree.replaceChildren(...under("").map((chain) => branch(chain, "", "")));
+    }));
   };
   have(ROOT_CHAIN);
   have(current);
@@ -773,10 +771,49 @@ function unlockScreen() {
 
 // ---------------- node endpoint (no default) ----------------
 
-function actionButtons(place: "home" | "settings"): El[] {
-  return (platform.actions ?? []).filter((a) => !a.on || a.on === place)
-    .map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
+const hostActions = (place: "home" | "settings") => (platform.actions ?? []).filter((a) => !a.on || a.on === place);
+
+/**
+ * A row of a list that leads somewhere: what it is, what it is set to or
+ * doing now, and that it opens. `leads` false is a row that acts where it
+ * stands (locking the wallet) and so has no mark that it opens.
+ */
+export function navRow(label: string, onclick: () => void, value: string | El = "", leads = true): El {
+  // The mark that a row opens is drawn, not written: the row reads as its label and its value.
+  return h("button", { class: leads ? "nav-row leads" : "nav-row", "data-row": label, onclick },
+    h("span", { class: "nav-what" }, label),
+    h("span", { class: "nav-set" }, value),
+  );
 }
+
+/**
+ * Chains laid out as the tree they are: one item a chain, a child's item
+ * nested under its parent's. `row` draws a chain's row, given the guide that
+ * marks its place (the lines an outline is drawn with). The wallet's chain
+ * menu and a host's own pages draw their chains with this, so a chain sits
+ * in the same place wherever it is listed.
+ */
+export function outline(paths: string[], row: (path: string, guide: string) => El): El[] {
+  const listed = new Set(paths);
+  const parentOf = (path: string) => path.split("/").slice(0, -1).join("/");
+  const under = (parent: string | undefined) => paths.filter((p) => (parent === undefined ? !listed.has(parentOf(p)) : parentOf(p) === parent));
+  const branch = (path: string, guide: string, inherited: string): El => {
+    const kids = under(path);
+    return h("li", {}, row(path, guide), ...(kids.length ? [h("ul", {}, ...kids.map((kid, i) => {
+      const last = i === kids.length - 1;
+      return branch(kid, inherited + (last ? "└ " : "├ "), inherited + (last ? "  " : "│ "));
+    }))] : []));
+  };
+  return under(undefined).map((path) => branch(path, "", ""));
+}
+
+/** Rows that belong together, under what they are about. */
+export function navGroup(label: string, ...rows: El[]): El {
+  return h("div", { class: "nav-group" }, h("h2", { class: "nav-label" }, label), h("div", { class: "nav-list" }, ...rows));
+}
+
+/** Purchases paid for and not yet claimed: what the wallet has that waits on its owner. */
+const purchasesToClaim = () => settings.openPurchases.filter((purchase) => !purchase.withdrawalCID).length;
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
 async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false, permissionGranted = false): Promise<boolean> {
@@ -1075,7 +1112,14 @@ async function mainScreen() {
         h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
       ),
-      ...actionButtons("home"),
+      // What else is done from here: opening an order, and the host's own (the desktop's Mining).
+      h("div", { class: "primary-actions" },
+        h("button", { class: "btn", onclick: orderFlow }, "Open order"),
+        ...hostActions("home").map((a) => h("button", { class: "btn", onclick: () => a.run(route) }, a.label)),
+      ),
+      // What has happened and what is pending, and first of all what waits on its owner.
+      h("div", { class: "nav-list" }, navRow("Activity", activityScreen,
+        purchasesToClaim() ? `${purchasesToClaim()} ${purchasesToClaim() === 1 ? "purchase" : "purchases"} to claim` : "")),
       toast,
     ),
   );
@@ -1124,41 +1168,68 @@ async function mainScreen() {
   loadBalance();
 }
 
+/**
+ * Settings holds what is set, in three groups: the wallet, the chain in use,
+ * the node. A row says what it is set to, so checking a thing needs no second
+ * screen. What is done (orders) is on the home screen, and what has happened
+ * or is pending (purchases, sales, transactions) is in Activity.
+ */
 function settingsScreen() {
-  void reconcileRecovery();
-  const acct = activeAccount()!;
   const node = endpoint()!;
+  const hostRows = hostActions("settings").map((a) => {
+    const now = h("span", {});
+    void a.summary?.().then((text) => { now.textContent = text; }).catch(() => {});
+    return navRow(a.label, () => a.run(route), now);
+  });
   render(h("div", { class: "stack", id: "settings-screen" },
     h("h1", {}, "Settings"),
-    h("div", { class: "kv" },
-      h("div", { class: "row" }, h("span", { class: "k" }, "Account"), h("span", { class: "v mono" }, short(acct.address))),
-      ...(platform.ownNode
-        ? [h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v" }, "This device's own"))]
-        : [
-            h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(node.url))),
-            h("div", { class: "row" }, h("span", { class: "k" }, "Access"), h("span", { class: "tag" }, node.acceptsSubmit ? "read + send" : "read only")),
-            h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
-          ]),
+    navGroup("Wallet",
+      navRow("Backup & recovery", () => openBackup("backup")),
+      ...(platform.openFullPage && !platform.camera ? [navRow("Open wallet in a tab", () => platform.openFullPage!("wallet"))] : []),
+      navRow("Lock wallet", async () => { await wallet.lock(); await refresh(); }, "", false),
     ),
-    ...actionButtons("settings"),
-    ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
-    ...(platform.openFullPage && !platform.camera
-      ? [h("button", { class: "btn block", onclick: () => platform.openFullPage!("wallet") }, "Open wallet in tab")]
-      : []),
-    h("button", { class: "btn block", onclick: orderFlow }, "Open cross-chain order"),
-    ...(settings.openPurchases.length || settings.confirmedPurchases.length
-      ? [h("button", { class: "btn block", onclick: purchasesScreen }, settings.confirmedPurchases.length
-        ? `Purchase recovery (${settings.openPurchases.length} pending, ${settings.confirmedPurchases.length} confirmed)`
-        : `Pending purchases (${settings.openPurchases.length})`)]
-      : []),
-    ...(settings.openDeposits.length
-      ? [h("button", { class: "btn block", onclick: depositsScreen }, `Pending sales (${settings.openDeposits.length})`)]
-      : []),
-    h("button", { class: "btn block", onclick: pendingSubmissionsScreen }, "Transactions"),
-    h("button", { class: "btn block", onclick: feeScreen }, "Default fee"),
-    h("button", { class: "btn block", onclick: () => openBackup("backup") }, "Backup & recovery"),
-    h("button", { class: "btn block", onclick: async () => { await wallet.lock(); await refresh(); } }, "Lock wallet"),
-    h("button", { class: "btn block", onclick: mainScreen }, "Done"),
+    navGroup(`This chain · ${settings.chain}`,
+      navRow("Default fee", feeScreen, fmt(defaultFee(settings, settings.chain))),
+    ),
+    navGroup("Node",
+      ...hostRows,
+      ...(platform.ownNode ? [] : [
+        navRow("Connection", connectionScreen, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes"),
+        navRow(`Node for ${settings.chain}`, endpointScreen, `${short(node.url)} · ${node.acceptsSubmit ? "read + send" : "read only"}`),
+      ]),
+    ),
+    h("button", { class: "btn block", onclick: mainScreen }, "Back"),
+  ));
+}
+
+/**
+ * What has happened and what is pending, in one place: purchases (each one
+ * still to claim by itself, since it waits on its owner), sales, and
+ * transactions. Every row opens the screen that deals with it.
+ */
+function activityScreen() {
+  void reconcileRecovery();
+  const records = settings.openPurchases.length + settings.confirmedPurchases.length;
+  const pending = settings.pendingSubmissions.length;
+  render(h("div", { class: "stack" },
+    h("h1", {}, "Activity"),
+    ...(records ? [navGroup("Purchases",
+      ...settings.openPurchases.map((purchase) => navRow(
+        `${fmt(purchase.offers.reduce((sum, offer) => sum + BigInt(offer.amountDeposited), 0n))} on ${purchase.childChain.join("/")}`,
+        () => purchaseScreen(purchase),
+        purchase.withdrawalCID ? "withdrawal submitted" : "paid · claim it",
+      )),
+      navRow("Purchase records", purchasesScreen, settings.confirmedPurchases.length
+        ? `${settings.openPurchases.length} pending, ${settings.confirmedPurchases.length} confirmed`
+        : `${settings.openPurchases.length} pending`),
+    )] : []),
+    ...(settings.openDeposits.length ? [navGroup("Sales",
+      navRow("Pending sales", depositsScreen, String(settings.openDeposits.length)),
+    )] : []),
+    navGroup("Transactions",
+      navRow("Transactions", pendingSubmissionsScreen, pending ? `${pending} pending` : ""),
+    ),
+    h("button", { class: "btn block", onclick: mainScreen }, "Back"),
   ));
 }
 
@@ -1255,7 +1326,7 @@ function depositsScreen() {
       h("div", { class: "row-actions" }, check, dismiss, toast)));
   }
   render(h("div", { class: "stack" }, h("h1", {}, "Pending sales"), list,
-    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
+    h("button", { class: "btn block", onclick: activityScreen }, "Back")));
 }
 
 function purchasesScreen() {
@@ -1280,7 +1351,7 @@ function purchasesScreen() {
       } }, "Dismiss")));
   }
   render(h("div", { class: "stack" }, h("h1", {}, "Pending purchases"), list,
-    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
+    h("button", { class: "btn block", onclick: activityScreen }, "Back")));
 }
 
 function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
@@ -1306,7 +1377,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
     h("button", { class: "btn block", onclick: async () => {
       if (await dismissRecovery("this pending purchase", (s) => dismissPurchase(s, purchase.receiptCID))) purchasesScreen();
     } }, "Dismiss saved recovery"),
-    h("button", { class: "btn block", onclick: purchasesScreen }, "Back"),
+    h("button", { class: "btn block", onclick: activityScreen }, "Back"),
   ));
   if (!childEndpoint) {
     toast.textContent = `Connect ${childName} to recover this withdrawal.`;
@@ -2226,7 +2297,7 @@ function pendingSubmissionsScreen() {
     ...(pendingList.childElementCount ? [h("h2", { class: "section-label" }, `Pending recovery · ${pendingList.childElementCount}`), pendingList] : []),
     ...(recentList.childElementCount ? [h("h2", { class: "section-label" }, "Recent & archived"), recentList] : []),
     ...(!seen.size ? [h("p", { class: "transaction-empty muted" }, "No transactions yet. Transactions sent from this wallet will appear here.")] : []),
-    h("button", { class: "btn block", onclick: settingsScreen }, "Back")));
+    h("button", { class: "btn block", onclick: activityScreen }, "Back")));
 }
 
 function replacementScreen(original: Parameters<typeof replacementTransfer>[0], chosen: ChosenEndpoint) {
