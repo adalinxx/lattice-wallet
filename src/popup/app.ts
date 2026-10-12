@@ -38,8 +38,12 @@ export interface Platform {
   ownNode?: string;
   /** The fetch every node call uses (default: the browser's). */
   fetch?: Fetch;
-  /** Extra main-screen actions (the desktop's node panel); `back` re-renders the wallet. */
-  actions?: { label: string; run(back: () => void): void }[];
+  /**
+   * The host's own screens (the desktop's mining and node pages), each a
+   * button on the home screen, in Settings, or on both when `on` is left out.
+   * `back` re-renders the wallet.
+   */
+  actions?: { label: string; on?: "home" | "settings"; run(back: () => void): void }[];
   /**
    * What the person should know about the host before trusting what the home
    * screen shows, for the chain in view, each with at most one thing to do
@@ -47,6 +51,17 @@ export interface Platform {
    * Read each time the balance is.
    */
   notices?(chain: string): Promise<{ text: string; action?: { label: string; run(): Promise<void> } }[]>;
+  /**
+   * Have the host say when its signer locks (its idle timer fired, the
+   * computer slept), so the page covers itself at once instead of asking.
+   */
+  onLocked?(tell: () => void): void;
+  /**
+   * The signer runs where the browser stops it when idle (the extension's
+   * worker) and can lose its keys without a word: check in while in view,
+   * which also keeps it running.
+   */
+  signerCanStop?: boolean;
   /** Offer a file picker for CLI key files (an extension popup closes on one). */
   keyFilePicker?: boolean;
   /**
@@ -151,8 +166,10 @@ function showHeaderControls() {
     const control = document.getElementById(id);
     if (control) control.style.visibility = usable ? "" : "hidden";
   }
+  // The way up is decided here each time, not only hidden: a wallet opened
+  // locked on a child chain must get it back once unlocked.
   const parent = document.getElementById("parent-chain") as HTMLButtonElement | null;
-  if (parent && !usable) parent.hidden = true;
+  if (parent) parent.hidden = !usable || chainPath().length < 2;
 }
 const onSettingsScreen = () => !!document.getElementById("settings-screen");
 
@@ -707,8 +724,9 @@ function unlockScreen() {
 
 // ---------------- node endpoint (no default) ----------------
 
-function actionButtons(): El[] {
-  return (platform.actions ?? []).map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
+function actionButtons(place: "home" | "settings"): El[] {
+  return (platform.actions ?? []).filter((a) => !a.on || a.on === place)
+    .map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
 }
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
@@ -1008,7 +1026,7 @@ async function mainScreen() {
         h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
       ),
-      ...actionButtons(),
+      ...actionButtons("home"),
       toast,
     ),
   );
@@ -1020,17 +1038,23 @@ async function mainScreen() {
       balanceV.textContent = balance.toLocaleString();
       balanceV.classList.remove("unread");
     } catch (e) {
-      // Not a number, so not in a number's type: say what happened, plainly.
-      balanceV.textContent = describe(e);
+      // Not a number, so not in a number's type. A host that can say why (its
+      // node is starting, stopped, syncing) says it in a notice, and the
+      // balance is only marked as not read; "node unreachable" is for when
+      // no one has a better account of it.
+      unreadBecause = describe(e);
+      balanceV.textContent = platform.notices ? "—" : unreadBecause;
       balanceV.classList.add("unread");
     }
     void loadNotices();
   }
+  let unreadBecause = "";
   async function loadNotices() {
     if (!platform.notices) return;
     const shown = renderVersion;
     const lines = await platform.notices(homePath.join("/")).catch(() => []);
     if (shown !== renderVersion) return; // another screen was opened meanwhile
+    if (balanceV.classList.contains("unread")) balanceV.textContent = lines.length ? "—" : unreadBecause;
     // While the host has something to say, or the balance is unread, things
     // are changing: look again shortly, so the screen catches up by itself
     // (a node that was just started, a sync that finishes) with no Refresh.
@@ -1067,7 +1091,7 @@ function settingsScreen() {
             h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
           ]),
     ),
-    ...actionButtons(),
+    ...actionButtons("settings"),
     h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
     ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
     ...(platform.openFullPage && !platform.camera
@@ -2315,18 +2339,20 @@ function feeScreen() {
 
 // ---------------- chain switch + boot ----------------
 
-// The signer locks without the page being told: its idle timer fires, the
-// browser stops its worker, or the extension is reloaded. The page finds out
-// in two ways and never answers with a bare "Locked":
-//  - it checks in while it is in view, and says so in a notice with an Unlock
-//    button as soon as the signer is found locked, before any step fails;
+// The signer locks behind the page: its idle timer fires, the computer
+// sleeps, the browser stops its worker, or the extension is reloaded. A locked
+// wallet shows nothing: the page is covered by the password prompt, and what
+// was on it (a half-entered send, the node's screens) is underneath, as it was
+// left, once the password is given. The page finds out in three ways:
+//  - the host says so the moment its signer locks (`onLocked`);
+//  - where the signer can stop without a word, the page checks in while it is
+//    in view (`signerCanStop`), and whenever it comes back into view;
 //  - a request that needs keys and is answered "Locked" asks for the password
-//    over the current screen and is sent again, so nothing entered is lost.
-// Passive reads are left alone: they must never raise a prompt.
+//    and is sent again.
+// Passive reads never raise the prompt themselves.
 const NEEDS_KEYS = ["signTransfer", "signDeposit", "signReceipt", "signWithdrawal", "exportBackup", "exportSeedQR",
   "transferSend", "addAccount", "importKey", "setActive", "setNodeCookie"] as const;
 type KeyCall = (...args: unknown[]) => Promise<{ ok: boolean; error?: string }>;
-const LOCKED_MESSAGE = "The wallet is locked, so this was not signed or sent. Unlock it and try again.";
 let signer: WalletClient; // the platform's own client, without the unlock wrapper
 
 function unlockingWallet(client: WalletClient): WalletClient {
@@ -2337,36 +2363,35 @@ function unlockingWallet(client: WalletClient): WalletClient {
     wrapped[name] = async (...args) => {
       const answer = await call(...args);
       if (answer.ok || answer.error !== "Locked") return answer;
-      if (await promptUnlock()) return call(...args);
-      showLockNotice();
-      return { ok: false, error: LOCKED_MESSAGE };
+      await promptUnlock();
+      return call(...args);
     };
   }
   return wrapped as unknown as WalletClient;
 }
 
-let unlocking: Promise<boolean> | undefined;
-/** Ask for the password over the current screen. Resolves true once unlocked. */
-function promptUnlock(): Promise<boolean> {
-  unlocking ??= new Promise<boolean>((resolve) => {
+let unlocking: Promise<void> | undefined;
+/** Cover the page and ask for the password. Resolves once unlocked; there is no way past it. */
+function promptUnlock(): Promise<void> {
+  unlocking ??= new Promise<void>((resolve) => {
+    closeChainMenu();
     const password = h("input", { type: "password", placeholder: "password", autocomplete: "current-password" }) as HTMLInputElement;
     const error = h("div", { class: "toast", role: "alert" });
-    const finish = (unlocked: boolean) => { overlay.remove(); unlocking = undefined; resolve(unlocked); };
     const submit = async () => {
       error.textContent = "unlocking…";
       const answer = await signer.unlock(password.value);
       if (!answer.ok) { error.textContent = answer.error === "Wrong password" ? "That password is not right. Try again." : answer.error; password.select(); return; }
       st = answer.state;
-      hideLockNotice();
-      finish(true);
+      overlay.remove();
+      unlocking = undefined;
+      resolve();
     };
     password.addEventListener("keydown", (event) => { if ((event as KeyboardEvent).key === "Enter") void submit(); });
-    const overlay = h("div", { class: "secret-overlay", role: "dialog", "aria-modal": "true", "aria-label": "Unlock wallet" },
-      h("h1", {}, "Unlock to continue"),
-      h("p", { class: "muted" }, "The wallet locks itself after ten minutes without use, and whenever the browser stops it in the background. Nothing was signed or sent. Enter your password and this step picks up where you left it; what you entered is still there."),
+    const overlay = h("div", { class: "secret-overlay lock-cover", role: "dialog", "aria-modal": "true", "aria-label": "Unlock wallet" },
+      h("h1", {}, "Wallet locked"),
+      h("p", { class: "muted" }, "The wallet locks itself after ten minutes without use, and when the computer sleeps or the browser stops it in the background. Nothing was signed or sent. Enter your password to pick up where you left off; what you entered is still there."),
       password, error,
       h("button", { class: "block", onclick: () => { void submit(); } }, "Unlock"),
-      h("button", { class: "btn block", onclick: () => finish(false) }, "Not now"),
     );
     document.body.append(overlay);
     password.focus();
@@ -2374,24 +2399,12 @@ function promptUnlock(): Promise<boolean> {
   return unlocking;
 }
 
-let lockNotice: El | undefined;
-function showLockNotice() {
-  if (lockNotice?.isConnected) return;
-  lockNotice = h("div", { class: "lock-notice", role: "status" },
-    h("span", {}, "Wallet locked. You can look around, but signing and paying need your password."),
-    h("button", { class: "btn", onclick: () => { void promptUnlock(); } }, "Unlock"));
-  view().before(lockNotice);
-}
-function hideLockNotice() { lockNotice?.remove(); lockNotice = undefined; }
-
-/** Learn whether the signer locked behind an unlocked-looking page. A status
- * read never postpones the signer's idle lock; in the extension it also keeps
- * the signer's worker running while a wallet page is in view. */
+/** Learn whether the signer locked behind an unlocked-looking page, and cover
+ * the page if it did. A status read never postpones the signer's idle lock. */
 async function checkSigner() {
   if (!st.initialized || st.locked || document.visibilityState === "hidden") return;
   const answer = await signer.getState().catch(() => undefined);
-  if (!answer?.ok) return;
-  if (answer.state.locked) showLockNotice(); else hideLockNotice();
+  if (answer?.ok && answer.state.locked) void promptUnlock();
 }
 
 export function startWallet(host: Platform) {
@@ -2403,9 +2416,11 @@ export function startWallet(host: Platform) {
   signer = host.wallet;
   wallet = unlockingWallet(host.wallet);
   store = host.store;
-  hideLockNotice();
-  const checkIn = setInterval(() => { void checkSigner(); }, 20_000) as unknown as { unref?: () => void };
-  checkIn.unref?.(); // never keeps a test or a headless host running
+  host.onLocked?.(() => { void checkSigner(); });
+  if (host.signerCanStop) {
+    const checkIn = setInterval(() => { void checkSigner(); }, 20_000) as unknown as { unref?: () => void };
+    checkIn.unref?.(); // never keeps a test or a headless host running
+  }
   document.addEventListener("visibilitychange", () => { void checkSigner(); });
   initialView = host.initialView;
   enableOrderDrop();

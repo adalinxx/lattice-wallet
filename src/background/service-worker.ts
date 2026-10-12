@@ -27,7 +27,10 @@ chrome.runtime.onMessage.addListener((msg: Request, sender, sendResponse) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "auto-lock") signer.lock();
+  if (alarm.name !== "auto-lock") return;
+  signer.lock();
+  // Tell any open wallet page, so it covers itself now. No page open is not an error.
+  chrome.runtime.sendMessage({ type: "locked" }).catch(() => {});
 });
 
 export {};

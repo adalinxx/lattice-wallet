@@ -39,6 +39,12 @@ startWallet({
     }
     return fetch(url, init);
   },
+  // The worker says when its idle alarm locks it; a worker the browser stopped
+  // says nothing, so the page also checks in.
+  onLocked: (tell) => chrome.runtime.onMessage.addListener((msg: { type?: string }, sender) => {
+    if (sender.id === chrome.runtime.id && msg?.type === "locked") tell();
+  }),
+  signerCanStop: true,
   // The node sees this extension's requests from this origin.
   pairOrigin: location.origin,
   camera: fullPage,
