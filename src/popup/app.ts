@@ -545,7 +545,7 @@ async function toggleChainMenu() {
   const menu = h("div", { class: "chain-menu", role: "navigation", "aria-label": "Chains" },
     tree, status,
     h("button", { class: "chain-menu-item chain-menu-manage", onclick: manage },
-      h("span", {}, own?.manage ? "Manage chains on your node" : "Add a chain or change its node"), h("span", { "aria-hidden": "true" }, "›")),
+      h("span", {}, own?.manage ? "Manage chains on your node" : own ? "Add a chain" : "Add a chain or change its node"), h("span", { "aria-hidden": "true" }, "›")),
   );
   const current = settings.chain;
   /** Each chain shown, and what is said beside it: nothing for one this wallet has. */
@@ -561,6 +561,11 @@ async function toggleChainMenu() {
   };
   const draw = () => {
     const chains = [...shown.keys()].sort((x, y) => x.localeCompare(y));
+    // Drawn again as more is learned: whoever is on a row stays on it.
+    const focused = (document.activeElement as HTMLElement | null)?.getAttribute?.("data-chain");
+    queueMicrotask(() => {
+      if (focused) ([...tree.querySelectorAll("[data-chain]")].find((item) => item.getAttribute("data-chain") === focused) as HTMLElement | undefined)?.focus();
+    });
     tree.replaceChildren(...outline(chains, (chain, guide) => {
       const note = shown.get(chain)!;
       const here = chain === current;
@@ -593,6 +598,10 @@ async function toggleChainMenu() {
     const hosted = await own?.list();
     for (const chain of hosted ?? []) have(chain);
     for (const chain of (await own?.seen?.().catch(() => [])) ?? []) if (!hosted!.includes(chain)) have(chain, "unhosted");
+    // On a node of its own, a chain is hosted or it is not, however it came
+    // to be listed (as the parent of one that is seen, say).
+    const settle = () => { if (hosted) for (const chain of shown.keys()) if (chain !== ROOT_CHAIN && !hosted.includes(chain)) shown.set(chain, "unhosted"); };
+    settle();
     draw();
     // What the chain in use carries: its children, whoever hosts them.
     const latest = await client().latestBlock();
@@ -601,9 +610,11 @@ async function toggleChainMenu() {
       const chain = `${current}/${child.directory}`;
       if (!shown.has(chain)) have(chain, hosted ? "unhosted" : "found");
     }
+    settle();
     draw();
-    status.textContent = "";
-  } catch { status.textContent = shown.size > 1 ? "" : "Could not load child chains."; }
+    // Only this function's own word is cleared: a switch may have said something since.
+    if (status.textContent === "Loading…") status.textContent = "";
+  } catch { if (status.textContent === "Loading…") status.textContent = "Could not load every chain."; }
 }
 
 const activeAccount = (): AccountView | undefined => st.accounts.find((a) => a.address === st.active);
@@ -814,6 +825,14 @@ export function navGroup(label: string, ...rows: El[]): El {
 
 /** Purchases paid for and not yet claimed: what the wallet has that waits on its owner. */
 const purchasesToClaim = () => settings.openPurchases.filter((purchase) => !purchase.withdrawalCID).length;
+
+/** What the home screen says of Activity: what waits on its owner, or else how much is pending. */
+function activityNow(): string {
+  const claim = purchasesToClaim();
+  if (claim) return `${claim} ${claim === 1 ? "purchase" : "purchases"} to claim`;
+  const pending = settings.pendingSubmissions.length + settings.openDeposits.length + settings.openPurchases.length;
+  return pending ? `${pending} pending` : "";
+}
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
 async function chooseEndpoint(url: string, source: ChosenEndpoint["source"], err: El, declaredSubmit = true, cookie?: string, requireSubmit = false, permissionGranted = false): Promise<boolean> {
@@ -1118,8 +1137,7 @@ async function mainScreen() {
         ...hostActions("home").map((a) => h("button", { class: "btn", onclick: () => a.run(route) }, a.label)),
       ),
       // What has happened and what is pending, and first of all what waits on its owner.
-      h("div", { class: "nav-list" }, navRow("Activity", activityScreen,
-        purchasesToClaim() ? `${purchasesToClaim()} ${purchasesToClaim() === 1 ? "purchase" : "purchases"} to claim` : "")),
+      h("div", { class: "nav-list" }, navRow("Activity", activityScreen, activityNow())),
       toast,
     ),
   );
@@ -1191,13 +1209,14 @@ function settingsScreen() {
     navGroup(`This chain · ${settings.chain}`,
       navRow("Default fee", feeScreen, fmt(defaultFee(settings, settings.chain))),
     ),
-    navGroup("Node",
+    // A wallet on its own node with no page for it has nothing to set here.
+    ...(hostRows.length || !platform.ownNode ? [navGroup("Node",
       ...hostRows,
       ...(platform.ownNode ? [] : [
         navRow("Connection", connectionScreen, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes"),
         navRow(`Node for ${settings.chain}`, endpointScreen, `${short(node.url)} · ${node.acceptsSubmit ? "read + send" : "read only"}`),
       ]),
-    ),
+    )] : []),
     h("button", { class: "btn block", onclick: mainScreen }, "Back"),
   ));
 }

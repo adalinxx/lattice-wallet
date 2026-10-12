@@ -202,6 +202,6 @@ h2.section-label { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 
 .nav-row + .nav-row { border-top: var(--rule); }
 .nav-what { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .nav-set { display: flex; align-items: baseline; justify-content: flex-end; gap: var(--s-2); min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.nav-row.leads .nav-set::after { content: "›"; flex: 0 0 auto; opacity: 0.45; }
+.nav-row.leads .nav-set::after { content: "›"; content: "›" / ""; flex: 0 0 auto; opacity: 0.45; }
 /* A row of home actions with one button in it: the button takes the row. */
 .primary-actions > :only-child { grid-column: 1 / -1; }
