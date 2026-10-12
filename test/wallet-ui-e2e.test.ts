@@ -20,7 +20,7 @@ function installDOM() {
 }
 
 function button(text: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text);
+  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text || item.getAttribute("data-row") === text);
   assert.ok(found, `button ${text} exists; page was: ${document.body.textContent}`);
   return found as HTMLButtonElement;
 }
@@ -39,17 +39,17 @@ const openState = (): WalletState => ({
   active: alice,
 });
 
-test("transactions UI: empty history is accessible from settings", async () => {
+test("transactions UI: empty history is accessible from Activity", async () => {
   installDOM();
   const store = memoryStore();
   await startWallet({ wallet: walletFor(openState()), store: store.api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  await settle(); button("Activity").click();
   button("Transactions").click();
   assert.equal(document.querySelector("h1")?.textContent, "Transactions");
   assert.match(document.body.textContent ?? "", /No transactions yet/);
   assert.match(document.body.textContent ?? "", /Not a complete on-chain history/);
   button("Back").click();
-  assert.equal(document.querySelector("h1")?.textContent, "Settings");
+  assert.equal(document.querySelector("h1")?.textContent, "Activity");
 });
 
 test("transactions RBF: higher fee, same payment and nonce, both attempts saved before a refusal", async () => {
@@ -68,7 +68,7 @@ test("transactions RBF: higher fee, same payment and nonce, both attempts saved 
     posts += 1;
     assert.equal(store.value.settings.pendingSubmissions.length, 2, "save occurs before broadcast");
   } }), requestOrigins: async () => true });
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  await settle(); button("Activity").click();
   button("Transactions").click(); await settle();
   button("Increase fee").click();
   const fee = document.querySelector('[aria-label="Replacement fee"]') as HTMLInputElement;
@@ -97,7 +97,7 @@ test("transactions UI: included rows show confirmations and accessible signed de
     return normal(raw, init);
   };
   await startWallet({ wallet: walletFor(openState()), store: store.api, fetch, requestOrigins: async () => true });
-  (document.getElementById("settings-button") as HTMLButtonElement).click(); button("Transactions").click(); await settle();
+  await settle(); button("Activity").click(); button("Transactions").click(); await settle();
   assert.match(document.body.textContent ?? "", /2 confirmations/);
   assert.match(document.body.textContent ?? "", /Confirmations \(node-reported\)/);
   assert.equal([...document.querySelectorAll("button")].some((b) => b.textContent === "Increase fee"), false);
@@ -121,7 +121,7 @@ test("transactions RBF: advanced nonce and failed recovery save prevent broadcas
       return { ok: true, summary: args, signedSubmit: signTestTransfer(account, { to: args.to, amount: BigInt(args.amount), fee: BigInt(args.fee), nonce: BigInt(args.nonce), chainPath: args.chainPath }) };
     } });
     await startWallet({ wallet, store: store.api, fetch, requestOrigins: async () => true });
-    (document.getElementById("settings-button") as HTMLButtonElement).click(); button("Transactions").click(); await settle();
+    await settle(); button("Activity").click(); button("Transactions").click(); await settle();
     button("Increase fee").click();
     advanced = failure === "nonce";
     button("Sign replacement").click(); await settle();
@@ -145,7 +145,7 @@ test("transactions UI: disconnected recovery remains visible, archived rows dedu
   const failedStatus = async (raw: string | URL, init?: RequestInit) => new URL(raw).pathname.includes("bafyarchived")
     ? json({ error: { message: "temporary status failure" } }, 500) : normalFetch(raw, init);
   await startWallet({ wallet: walletFor(openState()), store: store.api, fetch: failedStatus, requestOrigins: async () => true });
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  await settle(); button("Activity").click();
   button("Transactions").click();
   await settle();
   const rows = [...document.querySelectorAll(".transaction-item")] as HTMLDetailsElement[];
@@ -378,7 +378,7 @@ test("wallet UI e2e: an ambiguous send is saved before submit and cannot be re-s
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Sign & send"), false);
   button("Done").click();
   await settle();
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
+  button("Activity").click();
   button("Transactions").click();
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Transactions");
@@ -538,7 +538,7 @@ test("wallet UI e2e: a host's own screens are offered where it says: home, Setti
     actions: [action("Mining", "home"), action("Node", "settings"), action("Help")],
   });
   await settle();
-  const offered = () => [...document.querySelectorAll("#view button")].map((item) => item.textContent).filter((text) => ["Mining", "Node", "Help"].includes(text ?? ""));
+  const offered = () => [...document.querySelectorAll("#view button")].map((item) => item.getAttribute("data-row") ?? item.textContent).filter((text) => ["Mining", "Node", "Help"].includes(text ?? ""));
   assert.deepEqual(offered(), ["Mining", "Help"], "beside Send and Receive");
   button("Mining").click();
   document.getElementById("settings-button")!.click();
@@ -739,8 +739,9 @@ test("the home screen says what the host says, in words, with the one thing to d
   assert.equal(mark.textContent, "Settings");
   mark.click();
   assert.equal(mark.textContent, "Close");
-  button("Node");
-  assert.match(document.body.textContent ?? "", /NodeThis device's own/);
+  // The host's screen is a row in the Node group; a wallet on its own node has no connection to choose.
+  assert.deepEqual([...document.querySelectorAll(".nav-label")].map((label) => label.textContent), ["Wallet", "This chain · Nexus", "Node"]);
+  assert.equal(button("Node").closest(".nav-group")?.querySelector(".nav-label")?.textContent, "Node");
   assert.doesNotMatch(document.body.textContent ?? "", /ConnectionAutomatic|read \+ send/);
   mark.click();
   await settle();

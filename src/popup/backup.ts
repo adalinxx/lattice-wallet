@@ -4,7 +4,7 @@
 // for the password again. The one exception is the SeedQR picture, which is
 // the phrase by design: it lives in the DOM only while shown or printing.
 
-import { h, render } from "./app.ts";
+import { h, navGroup, navRow, render } from "./app.ts";
 import { scanner } from "./scanner.ts";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
@@ -113,11 +113,17 @@ export function backupMenu(b: BackupHost) {
   const hasPhrase = host.state().accounts.some((a) => a.kind === "hd");
   render(h("div", { class: "stack" },
     h("h1", {}, "Backup & transfer"),
-    h("button", { class: "btn block", onclick: encryptedBackup }, "Encrypted backup (QR or file)"),
-    ...(hasPhrase ? [h("button", { class: "btn block", onclick: seedQRWarning }, "SeedQR paper backup")] : []),
-    h("button", { class: "btn block", onclick: sendToDevice }, "Send to another device"),
-    h("button", { class: "btn block", onclick: receiveFromDevice }, "Receive from another device"),
-    h("button", { class: "btn block", onclick: importBackup }, "Merge or restore a backup"),
+    navGroup("Back up",
+      navRow("Encrypted backup (QR or file)", encryptedBackup),
+      ...(hasPhrase ? [navRow("SeedQR paper backup", seedQRWarning)] : []),
+    ),
+    navGroup("Another device",
+      navRow("Send to another device", sendToDevice),
+      navRow("Receive from another device", receiveFromDevice),
+    ),
+    navGroup("Bring in",
+      navRow("Merge or restore a backup", importBackup),
+    ),
     h("button", { class: "btn block", onclick: () => host.back() }, "Back"),
   ));
 }
@@ -127,9 +133,11 @@ export function restoreMenu(b: BackupHost) {
   host = b;
   render(h("div", { class: "stack" },
     h("h1", {}, "Restore"),
-    h("button", { class: "btn block", onclick: importBackup }, "Encrypted backup (QR or file)"),
-    h("button", { class: "btn block", onclick: importSeedQR }, "SeedQR"),
-    h("button", { class: "btn block", onclick: receiveFromDevice }, "From another device"),
+    h("div", { class: "nav-list" },
+      navRow("Encrypted backup (QR or file)", importBackup),
+      navRow("SeedQR", importSeedQR),
+      navRow("From another device", receiveFromDevice),
+    ),
     h("button", { class: "btn block", onclick: () => host.back() }, "Back"),
   ));
 }

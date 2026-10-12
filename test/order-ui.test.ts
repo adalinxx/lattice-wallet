@@ -154,14 +154,13 @@ function buyOrderURI(deposits: Selected[], expiresAt = new Date(Date.now() + 600
 }
 
 function button(text: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text);
+  const found = [...document.querySelectorAll("button")].find((item) => item.textContent === text || item.getAttribute("aria-label") === text || item.getAttribute("data-row") === text);
   assert.ok(found, `button ${text} exists`);
   return found as HTMLButtonElement;
 }
 
 async function openOrder(uri: string) {
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Open cross-chain order").click();
+  await settle(); button("Open order").click();
   assert.equal(document.querySelector("h1")?.textContent, "Open order", document.body.textContent ?? "");
   const paste = document.querySelector("textarea") as HTMLTextAreaElement;
   assert.ok(paste);
@@ -251,7 +250,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.ok(button("Refresh balance").querySelector("svg.action-icon"));
   assert.equal(button("Copy account address").textContent, "", "copy is an icon-only action");
   assert.ok(button("Copy account address").querySelector("svg.action-icon"));
-  for (const hidden of ["Scan cross-chain order", "Open cross-chain order", "Transactions", "Settings", "Node", "Fee", "Backup", "Lock"]) {
+  for (const hidden of ["Scan cross-chain order", "Transactions", "Settings", "Node", "Fee", "Backup", "Lock"]) {
     assert.equal([...document.querySelectorAll("#view button")].some((item) => item.textContent === hidden), false, `${hidden} stays off the home screen`);
   }
   assert.match(document.body.textContent ?? "", new RegExp(address), "the home screen displays the full account address");
@@ -338,16 +337,18 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.equal([...document.querySelectorAll("button")].some((item) => item.textContent === "Lock funds & create order"), false);
   button("Done").click();
   await settle();
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Pending sales (1)").click();
+  button("Activity").click();
+  button("Pending sales").click();
   button("Check payment").click();
   await settle();
   assert.equal(signCalls, 1, "a proof-backed active deposit is not reconstructed or resubmitted when transaction history is pruned");
   assert.equal(stored.settings.openDeposits.length, 1, "a pruned transaction cannot discard a live deposit key");
   button("Resubmit exact deposit");
   assert.equal(stored.settings.openDeposits.length, 1, "exact transaction recovery does not depend on a discovery listing");
+  // Back to Activity, where the sale was opened from, and from there home.
   button("Back").click();
-  button("Done").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Activity");
+  button("Back").click();
   await settle();
   (document.getElementById("net-badge") as HTMLButtonElement).click();
   await settle();
@@ -361,7 +362,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
   assert.match(chainBadge?.title ?? "", /Nexus\/testnet\/payments/);
   (document.getElementById("settings-button") as HTMLButtonElement).click();
   assert.equal(document.querySelector("h1")?.textContent, "Settings");
-  button("Open cross-chain order");
+  button("Default fee");
 });
 
 test("a market buy discovers deposits, pays the parent receipt, and withdraws on the child", async () => {
@@ -483,15 +484,14 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   const { startWallet } = await import("../src/popup/app.ts");
   await startWallet({ wallet, store, fetch, requestOrigins: async () => true });
   (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Connection & nodes").click();
+  button("Connection").click();
   button("Use a custom node").click();
   await settle();
   button("Use Lattice.build testnet");
   button("Find node automatically");
   button("Use this node");
   button("Back").click();
-  (document.getElementById("settings-button") as HTMLButtonElement).click();
-  button("Open cross-chain order").click();
+  await settle(); button("Open order").click();
   assert.equal(document.querySelector("h1")?.textContent, "Open order", document.body.textContent ?? "");
   const wanted: Selected = { demander: seller, amountDemanded: "50", amountDeposited: "300", depositNonce: "42" };
   const open = async (deposits: Selected[]) => {
@@ -584,7 +584,9 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   await settle();
   assert.equal(stored.settings.openPurchases.length, 0, "an irreversible purchase record is deleted only by explicit dismissal");
   button("Back").click();
-  button("Open cross-chain order").click();
+  await settle();
+  if (document.querySelector("h1")?.textContent === "Activity") button("Back").click();
+  await settle(); button("Open order").click();
   await open([wanted]);
   acknowledge();
   button("Pay & reserve tokens").click();
@@ -592,9 +594,13 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.equal(receiptSigns, 2);
   assert.equal(document.querySelector("h1")?.textContent, "Complete purchase");
   assert.equal(stored.settings.openPurchases.length, 1, "an ambiguous first attempt remains recoverable");
+  // A purchase paid for and not yet claimed is said on the home screen, on the way to it.
   button("Back").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Activity");
   button("Back").click();
-  button("Open cross-chain order").click();
+  await settle();
+  assert.equal(button("Activity").textContent, "Activity1 purchase to claim");
+  button("Open order").click();
   await open([wanted]);
   acknowledge();
   button("Pay & reserve tokens").click();
@@ -613,8 +619,11 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   assert.equal(stored.settings.openPurchases[0]?.withdrawalCID, "bafywithdraw");
   assert.deepEqual(stored.settings.openPurchases[0]?.withdrawalAttempts?.map((attempt) => attempt.transactionCID), ["bafywithdraw"]);
   assert.equal(posts, 5);
+  // Back to Activity, where the purchase is a row of its own, saying where it stands.
   button("Back").click();
-  (document.querySelector(".chain-menu-item") as HTMLButtonElement).click();
+  const purchaseRow = document.querySelector(".nav-group .nav-row") as HTMLButtonElement;
+  assert.match(purchaseRow.textContent ?? "", /on Nexus\/testnet.*withdrawal submitted/);
+  purchaseRow.click();
   await settle();
   assert.equal(stored.settings.openPurchases.length, 1,
     "a spent marker alone does not identify this buyer as the withdrawer, so recovery is retained");
