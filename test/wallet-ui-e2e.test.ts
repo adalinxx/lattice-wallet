@@ -571,6 +571,24 @@ test("wallet UI e2e: a wallet opened locked on a child chain offers the way up o
   assert.equal(up.hidden, true, "Nexus has no parent");
 });
 
+test("the home screen says the node is unreachable only when the host has no better account of it", async () => {
+  installDOM();
+  const fetch = async () => { throw new TypeError("connection refused"); };
+  let lines: { text: string }[] = [];
+  await startWallet({
+    wallet: walletFor(openState()), store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch, requestOrigins: async () => true,
+    notices: async () => lines,
+  });
+  await settle();
+  const value = document.querySelector(".balance-value .v") as HTMLElement;
+  assert.equal(value.textContent, "node unreachable", "the host has nothing to say");
+  lines = [{ text: "Your node is starting." }];
+  button("Refresh balance").click();
+  await settle();
+  assert.equal(value.textContent, "—");
+  assert.equal(document.querySelector(".notice")?.textContent, "Your node is starting.");
+});
+
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
   installDOM();
   let lockRequests = 0;
@@ -699,7 +717,8 @@ test("the home screen says what the host says, in words, with the one thing to d
   // A read that failed is a sentence, not a balance: it is not set in the balance's type.
   const value = document.querySelector(".balance-value .v") as HTMLElement;
   assert.equal(value.classList.contains("unread"), true);
-  assert.doesNotMatch(value.textContent ?? "", /^\d/);
+  // The host has said why, so the balance does not also guess ("node unreachable").
+  assert.equal(value.textContent, "—");
   assert.match(document.querySelector(".balance-label")?.textContent ?? "", /^Balance on Nexus$/);
   assert.match(document.querySelector(".notice")?.textContent ?? "", /Your node is stopped, so Nexus cannot be read\.Start node/);
   button("Start node").click();

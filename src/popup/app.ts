@@ -1038,17 +1038,23 @@ async function mainScreen() {
       balanceV.textContent = balance.toLocaleString();
       balanceV.classList.remove("unread");
     } catch (e) {
-      // Not a number, so not in a number's type: say what happened, plainly.
-      balanceV.textContent = describe(e);
+      // Not a number, so not in a number's type. A host that can say why (its
+      // node is starting, stopped, syncing) says it in a notice, and the
+      // balance is only marked as not read; "node unreachable" is for when
+      // no one has a better account of it.
+      unreadBecause = describe(e);
+      balanceV.textContent = platform.notices ? "—" : unreadBecause;
       balanceV.classList.add("unread");
     }
     void loadNotices();
   }
+  let unreadBecause = "";
   async function loadNotices() {
     if (!platform.notices) return;
     const shown = renderVersion;
     const lines = await platform.notices(homePath.join("/")).catch(() => []);
     if (shown !== renderVersion) return; // another screen was opened meanwhile
+    if (balanceV.classList.contains("unread")) balanceV.textContent = lines.length ? "—" : unreadBecause;
     // While the host has something to say, or the balance is unread, things
     // are changing: look again shortly, so the screen catches up by itself
     // (a node that was just started, a sync that finishes) with no Refresh.
