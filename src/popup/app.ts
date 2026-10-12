@@ -38,8 +38,12 @@ export interface Platform {
   ownNode?: string;
   /** The fetch every node call uses (default: the browser's). */
   fetch?: Fetch;
-  /** Extra main-screen actions (the desktop's node panel); `back` re-renders the wallet. */
-  actions?: { label: string; run(back: () => void): void }[];
+  /**
+   * The host's own screens (the desktop's mining and node pages), each a
+   * button on the home screen, in Settings, or on both when `on` is left out.
+   * `back` re-renders the wallet.
+   */
+  actions?: { label: string; on?: "home" | "settings"; run(back: () => void): void }[];
   /**
    * What the person should know about the host before trusting what the home
    * screen shows, for the chain in view, each with at most one thing to do
@@ -718,8 +722,9 @@ function unlockScreen() {
 
 // ---------------- node endpoint (no default) ----------------
 
-function actionButtons(): El[] {
-  return (platform.actions ?? []).map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
+function actionButtons(place: "home" | "settings"): El[] {
+  return (platform.actions ?? []).filter((a) => !a.on || a.on === place)
+    .map((a) => h("button", { class: "btn block", onclick: () => a.run(route) }, a.label));
 }
 
 /** Ask for host permission (must run inside the click), then check the node serves this chain. */
@@ -1019,7 +1024,7 @@ async function mainScreen() {
         h("button", { class: "btn btn--primary", onclick: sendFlow }, "Send"),
         h("button", { class: "btn", onclick: receiveScreen }, "Receive"),
       ),
-      ...actionButtons(),
+      ...actionButtons("home"),
       toast,
     ),
   );
@@ -1078,7 +1083,7 @@ function settingsScreen() {
             h("div", { class: "row" }, h("span", { class: "k" }, "Connection"), h("span", { class: "v" }, settings.nodeMode === "automatic" ? "Automatic" : "Custom nodes")),
           ]),
     ),
-    ...actionButtons(),
+    ...actionButtons("settings"),
     h("button", { class: "btn block", onclick: chainScreen }, "Change chain"),
     ...(platform.ownNode ? [] : [h("button", { class: "btn block", onclick: connectionScreen }, "Connection & nodes")]),
     ...(platform.openFullPage && !platform.camera

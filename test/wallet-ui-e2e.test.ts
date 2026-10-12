@@ -529,6 +529,25 @@ test("wallet UI e2e: a signer that locked covers the page until the password is 
   assert.equal(cover(), null);
 });
 
+test("wallet UI e2e: a host's own screens are offered where it says: home, Settings, or both", async () => {
+  installDOM();
+  const opened: string[] = [];
+  const action = (label: string, on?: "home" | "settings") => ({ label, on, run: () => { opened.push(label); } });
+  await startWallet({
+    wallet: walletFor(openState(), {}), store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true,
+    actions: [action("Mining", "home"), action("Node", "settings"), action("Help")],
+  });
+  await settle();
+  const offered = () => [...document.querySelectorAll("#view button")].map((item) => item.textContent).filter((text) => ["Mining", "Node", "Help"].includes(text ?? ""));
+  assert.deepEqual(offered(), ["Mining", "Help"], "beside Send and Receive");
+  button("Mining").click();
+  document.getElementById("settings-button")!.click();
+  await settle();
+  assert.deepEqual(offered(), ["Node", "Help"], "in Settings");
+  button("Node").click();
+  assert.deepEqual(opened, ["Mining", "Node"]);
+});
+
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
   installDOM();
   let lockRequests = 0;
