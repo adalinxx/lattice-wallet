@@ -456,26 +456,17 @@ test("wallet UI e2e: a signer that locked itself is unlocked in place and the st
   const dialog = () => document.querySelector('[role="dialog"][aria-label="Unlock wallet"]');
   const inDialog = (text: string) => [...dialog()!.querySelectorAll("button")].find((item) => item.textContent === text) as HTMLButtonElement;
 
-  // Cancel: the request's own answer is shown and nothing is sent.
+  // The password is asked for over the review, and there is no way past it.
   await review();
   button("Sign & send").click();
   await settle();
   assert.ok(dialog(), "the password is asked for over the review");
   assert.equal(document.querySelector("h1")?.textContent, "Review", "the review underneath is kept");
   assert.match(dialog()!.textContent ?? "", /Nothing was signed or sent/);
-  inDialog("Not now").click();
-  await settle();
-  assert.equal(dialog(), null);
-  // Not a bare "Locked": what happened, that nothing went out, and what to do.
-  assert.match(document.body.textContent ?? "", /The wallet is locked, so this was not signed or sent\. Unlock it and try again\./);
-  const notice = document.querySelector(".lock-notice");
-  assert.match(notice?.textContent ?? "", /Wallet locked\..*signing and paying need your password/, "a standing notice says the wallet is locked");
-  assert.equal(document.querySelector("h1")?.textContent, "Review", "the review is still there to retry from");
+  assert.deepEqual([...dialog()!.querySelectorAll("button")].map((item) => item.textContent), ["Unlock"], "a locked wallet offers only to unlock");
   assert.equal(submitted, 0);
 
   // Wrong, then right: the same request is sent again and the transfer goes out.
-  button("Sign & send").click();
-  await settle();
   const password = dialog()!.querySelector("input") as HTMLInputElement;
   password.value = "wrong";
   inDialog("Unlock").click();
@@ -487,39 +478,55 @@ test("wallet UI e2e: a signer that locked itself is unlocked in place and the st
   await settle();
   assert.equal(dialog(), null);
   assert.deepEqual(unlocks, ["wrong", "correct horse"]);
-  assert.equal(signs, 3, "locked, locked again after cancel, then signed once unlocked");
+  assert.equal(signs, 2, "locked, then signed once unlocked");
   assert.equal(submitted, 1);
   assert.equal(store.value.settings.pendingSubmissions[0]?.cid, "bafysent");
-  assert.equal(document.querySelector(".lock-notice"), null, "unlocking clears the notice");
 });
 
-test("wallet UI e2e: a page in view learns that the signer locked and offers to unlock before anything fails", async () => {
+test("wallet UI e2e: a signer that locked covers the page until the password is given", async () => {
   const dom = installDOM();
   let state = openState();
   let unlocked = 0;
+  let tellLocked = () => {};
   const wallet = walletFor(state, {
     getState: async () => ({ ok: true, state }),
     unlock: async () => { unlocked += 1; state = openState(); return { ok: true, state }; },
   });
-  await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
+  await startWallet({
+    wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true,
+    onLocked: (tell) => { tellLocked = tell; },
+  });
   await settle();
-  assert.equal(document.querySelector(".lock-notice"), null);
-  // The signer locks on its own; the page is told nothing.
+  const cover = () => document.querySelector('[role="dialog"][aria-label="Unlock wallet"]');
+  const unlock = async () => {
+    (cover()!.querySelector("input") as HTMLInputElement).value = "correct horse";
+    ([...cover()!.querySelectorAll("button")].find((item) => item.textContent === "Unlock") as HTMLButtonElement).click();
+    await settle();
+  };
+  assert.equal(cover(), null);
+
+  // The host says its signer locked: the page is covered at once, not at the next check.
   state = { ...state, locked: true, accounts: [] };
-  document.dispatchEvent(new dom.window.Event("visibilitychange")); // the page comes back into view and checks in
+  tellLocked();
   await settle();
-  const notice = document.querySelector(".lock-notice");
-  assert.match(notice?.textContent ?? "", /Wallet locked/);
-  assert.match(document.body.textContent ?? "", /Balance/, "the screen the user was on is left alone");
-  (notice!.querySelector("button") as HTMLButtonElement).click();
+  assert.match(cover()?.textContent ?? "", /Wallet locked/);
+  assert.ok(cover()!.classList.contains("lock-cover"), "the cover sits over everything");
+  assert.match(document.getElementById("view")!.textContent ?? "", /Balance/, "the screen underneath is as it was left");
+  tellLocked();
   await settle();
-  const dialog = document.querySelector('[role="dialog"][aria-label="Unlock wallet"]')!;
-  (dialog.querySelector("input") as HTMLInputElement).value = "correct horse";
-  ([...dialog.querySelectorAll("button")].find((item) => item.textContent === "Unlock") as HTMLButtonElement).click();
-  await settle();
+  assert.equal(document.querySelectorAll('[role="dialog"]').length, 1, "told twice, covered once");
+  await unlock();
   assert.equal(unlocked, 1);
-  assert.equal(document.querySelector(".lock-notice"), null);
-  assert.equal(document.querySelector('[role="dialog"]'), null);
+  assert.equal(cover(), null);
+
+  // A signer that stopped without a word is found when the page comes back into view.
+  state = { ...state, locked: true, accounts: [] };
+  document.dispatchEvent(new dom.window.Event("visibilitychange"));
+  await settle();
+  assert.ok(cover(), "covered on return");
+  await unlock();
+  assert.equal(unlocked, 2);
+  assert.equal(cover(), null);
 });
 
 test("wallet UI e2e: a locked update re-reads storage and preserves another page's recovery bytes", async () => {
