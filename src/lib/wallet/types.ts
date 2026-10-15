@@ -87,6 +87,14 @@ export type Request =
       chainPath: string[];
     }
   | {
+      type: "signRecords";
+      from: string;
+      actions: { key: string; oldValue?: string; newValue?: string }[];
+      fee: string;
+      nonce: string;
+      chainPath: string[];
+    }
+  | {
       type: "signReceipt" | "signWithdrawal";
       from: string;
       offers: { demander: string; amountDemanded: string; amountDeposited: string; depositNonce: string }[];

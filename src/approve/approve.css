@@ -1,0 +1,7 @@
+.origin { font-weight: 600; word-break: break-all; }
+.records { list-style: none; padding: 0; margin: 0; max-height: 260px; overflow: auto; }
+.records li { padding: 6px 0; border-top: 1px solid var(--border, #ddd); }
+.records .key { font-family: var(--mono, monospace); font-size: 12px; word-break: break-all; }
+.records .value { font-family: var(--mono, monospace); font-size: 12px; word-break: break-all; white-space: pre-wrap; }
+.actions-row { display: flex; gap: 8px; }
+.actions-row > * { flex: 1; }

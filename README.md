@@ -119,6 +119,35 @@ chain scanning.
 
 > one proof. every chain.
 
+## Web pages: `window.lattice`
+
+A web page can ask the wallet for an address and ask it to sign writes of
+records. The wallet adds `window.lattice` to every http(s) page:
+
+```js
+const address = await lattice.connect(); // asks the person once per site
+const signedSubmit = await lattice.writeRecords({
+  chainPath: ["Nexus", "stoa"],
+  actions: [{ key: "profile/<address>", newValue: "{\"name\":\"Alice\"}" }],
+  fee: "1", nonce: "0", // decimal strings
+});
+await fetch(`${node}/transactions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(signedSubmit.payload) });
+```
+
+`lattice.address()` returns the site's address without asking (or null), and
+`lattice.disconnect()` forgets the site.
+
+- **Every write is approved.** Each `writeRecords` opens the wallet's own
+  window with the site, account, chain, fee and every record. There are no
+  standing allowances.
+- **Records and a fee, nothing else.** The wallet builds the transaction: the
+  records, the fee debited from the connected account, and that account as
+  the only signer. A page cannot ask it to move coins.
+- **The site is the one Chrome reports.** The worker takes the origin from
+  the tab's top frame, not from the page; iframes are not answered.
+- **The page submits.** The signed transaction goes back to the page, which
+  sends it to the node it reads from.
+
 ## Why an extension (not a web page)
 
 A static web wallet re-fetches its code on every load, so a host/DNS/supply-chain

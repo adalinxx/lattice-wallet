@@ -5,9 +5,10 @@
 // on every key-touching event; the host calls `lock()` when it fires.
 
 import { encryptVault, decryptVault, deriveForVault, encryptWithVaultKey, type Vault } from "../crypto/keystore.ts";
-import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
+import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
+import { parseProviderCall } from "./provider.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import { backupContents, encryptBackup, decryptBackup, mergeWalletData } from "./backup.ts";
 import { newOffer, encodeOffer, decodeOffer, decodeEnvelope, encodeEnvelope, seal, open, type Offer } from "./pairing.ts";
@@ -304,6 +305,21 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
           return { ok: false, error: (e as Error).message };
         } finally {
           current.secret.fill(0);
+        }
+      }
+
+      case "signRecords": {
+        if (!session) return { ok: false, error: "Locked" };
+        const acct = findAccount(msg.from);
+        if (!acct) return { ok: false, error: "Unknown sender" };
+        const call = parseProviderCall({ method: "writeRecords", params: msg });
+        if ("error" in call) return { ok: false, error: call.error };
+        if (call.method !== "writeRecords") return { ok: false, error: "Malformed request" };
+        const { chainPath, actions, fee, nonce } = call.params;
+        try {
+          return { ok: true, signedSubmit: signRecords(acct, { actions, fee: BigInt(fee), nonce: BigInt(nonce), chainPath }) } as Response;
+        } catch (e) {
+          return { ok: false, error: (e as Error).message };
         }
       }
 

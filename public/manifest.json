@@ -36,5 +36,30 @@
     "http://127.0.0.1/*",
     "http://localhost/*",
     "http://[::1]/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "page/inpage.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "page/content.js"
+      ],
+      "run_at": "document_start"
+    }
   ]
 }

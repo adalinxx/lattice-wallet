@@ -152,3 +152,22 @@ export function signWithdrawal(
     signers: [acct.address], nonce, chainPath,
   });
 }
+
+/**
+ * Sign a page's records write: key/value actions on one chain, paid for by a
+ * fee from the signer. The body is built here, so a page can ask for writes
+ * and a fee and nothing else: no coins move but the fee.
+ */
+export function signRecords(
+  acct: Account,
+  args: { actions: { key: string; oldValue?: string; newValue?: string }[]; fee: bigint; nonce: bigint; chainPath: string[] },
+): SignedSubmit {
+  const { actions, fee, nonce, chainPath } = args;
+  if (!actions.length) throw new Error("nothing to write");
+  if (fee < 0n || fee > (1n << 63n) - 1n) throw new Error("fee is out of range");
+  return signBody(acct, {
+    accountActions: fee > 0n ? [{ owner: acct.address, delta: -fee }] : [],
+    actions, depositActions: [], receiptActions: [], withdrawalActions: [],
+    signers: [acct.address], nonce, chainPath,
+  });
+}

@@ -11,6 +11,7 @@ test("background accepts only its own wallet page and passive reads do not exten
       onMessage: { addListener: (fn: typeof listener) => { listener = fn; } } },
     storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
     alarms: { create: () => { alarms += 1; }, onAlarm: { addListener: () => {} } },
+    windows: { onRemoved: { addListener: () => {} } },
   } });
   await import("../src/background/service-worker.ts");
   const passive = { type: "getState" } as const;
