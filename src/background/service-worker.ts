@@ -62,7 +62,9 @@ async function ask(origin: string, call: ProviderCall, address: string | null): 
   return new Promise((settle) => {
     const request: Pending = { origin, call, address, settle: (r) => { pending.delete(id); settle(r); } };
     pending.set(id, request);
-    chrome.windows.create({ url: chrome.runtime.getURL(`approve/index.html?id=${id}`), type: "popup", width: 380, height: 600 })
+    // Tall enough that a payment with one payee and a record fits above the
+    // decision bar: what does not fit must be scrolled to before approving.
+    chrome.windows.create({ url: chrome.runtime.getURL(`approve/index.html?id=${id}`), type: "popup", width: 380, height: 640 })
       .then((w) => { request.window = w?.id; })
       .catch((e) => request.settle({ ok: false, error: String(e?.message ?? e) }));
   });
@@ -84,7 +86,11 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
     case "connect":
       return address ? { ok: true, address } as Response : ask(origin, call, null);
     case "writeRecords":
+    case "signMessage":
       if (!address) return { ok: false, error: "Not connected: call connect() first" };
+      if (call.method === "writeRecords" && call.params.payments?.some((p) => p.to === address)) {
+        return { ok: false, error: "A write cannot pay the account that signs it" };
+      }
       return ask(origin, call, address);
   }
 }
@@ -124,13 +130,21 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     request.settle({ ok: true, address: chosen.address } as Response);
     return { ok: true };
   }
-  if (request.call.method !== "writeRecords" || !request.address) return { ok: false, error: "Not connected" };
+  if (!request.address) return { ok: false, error: "Not connected" };
   // Sign only as the account the person was shown, and only while the site
   // is still connected to it.
   if ((await connections())[request.origin] !== request.address) {
     request.settle({ ok: false, error: "The site's connection changed; ask again" });
     return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
   }
+  if (request.call.method === "signMessage") {
+    const signed = await signer.handle({ type: "signMessage", from: request.address, origin: request.origin, text: request.call.params.text });
+    if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+    const { publicKey, signature } = signed as unknown as { publicKey: string; signature: string };
+    request.settle({ ok: true, publicKey, signature } as Response);
+    return { ok: true };
+  }
+  if (request.call.method !== "writeRecords") return { ok: false, error: "Unknown request" };
   // The nonce the window read from the person's node (nonce.ts); never the page's.
   if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce) || typeof msg.node !== "string") {
     return { ok: false, error: "The wallet has not read this account's nonce" };

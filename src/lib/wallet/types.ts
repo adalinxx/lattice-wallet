@@ -90,10 +90,12 @@ export type Request =
       type: "signRecords";
       from: string;
       actions: { key: string; oldValue?: string; newValue?: string }[];
+      payments?: { to: string; amount: string }[];
       fee: string;
       nonce: string;
       chainPath: string[];
     }
+  | { type: "signMessage"; from: string; origin: string; text: string }
   | {
       type: "signReceipt" | "signWithdrawal";
       from: string;

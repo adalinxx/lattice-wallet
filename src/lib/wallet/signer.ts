@@ -5,10 +5,10 @@
 // on every key-touching event; the host calls `lock()` when it fires.
 
 import { encryptVault, decryptVault, deriveForVault, encryptWithVaultKey, type Vault } from "../crypto/keystore.ts";
-import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
+import { deriveAccounts, toView, nextHdLabel, signDeposit, signMessage, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
-import { isNonce, parseRecordsWrite } from "./provider.ts";
+import { isNonce, messageError, parseRecordsWrite } from "./provider.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import { backupContents, encryptBackup, decryptBackup, mergeWalletData } from "./backup.ts";
 import { newOffer, encodeOffer, decodeOffer, decodeEnvelope, encodeEnvelope, seal, open, type Offer } from "./pairing.ts";
@@ -315,13 +315,27 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         const write = parseRecordsWrite(msg);
         if ("error" in write) return { ok: false, error: write.error };
         if (!isNonce(msg.nonce)) return { ok: false, error: "nonce must be a decimal integer" };
-        const { chainPath, actions, fee } = write;
+        const { chainPath, actions, payments, fee } = write;
         const nonce = msg.nonce;
         try {
-          return { ok: true, signedSubmit: signRecords(acct, { actions, fee: BigInt(fee), nonce: BigInt(nonce), chainPath }) } as Response;
+          return { ok: true, signedSubmit: signRecords(acct, {
+            actions, payments: payments?.map(({ to, amount }) => ({ to, amount: BigInt(amount) })), fee: BigInt(fee), nonce: BigInt(nonce), chainPath,
+          }) } as Response;
         } catch (e) {
           return { ok: false, error: (e as Error).message };
         }
+      }
+
+      case "signMessage": {
+        if (!session) return { ok: false, error: "Locked" };
+        const acct = findAccount(msg.from);
+        if (!acct) return { ok: false, error: "Unknown sender" };
+        const refused = messageError(msg.text);
+        if (refused) return { ok: false, error: refused };
+        let origin: URL | null = null;
+        try { origin = new URL(msg.origin); } catch { /* refused below */ }
+        if (!origin || (origin.protocol !== "https:" && origin.protocol !== "http:") || origin.origin !== msg.origin) return { ok: false, error: "A message is signed for a web origin" };
+        return { ok: true, ...signMessage(acct, msg.origin, msg.text) } as Response;
       }
 
       case "signTransfer": {

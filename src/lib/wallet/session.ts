@@ -6,6 +6,9 @@ import { deriveAccountFromSeed, importPrivateKey, type Account } from "../crypto
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { buildTransfer, parseCID, signTransactionBody, signedTransactionCID, transactionPayload, type TransactionBody } from "@adalinxx/lattice-core";
 import type { WalletData, AccountView, SignedSubmit } from "./types.ts";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { messageBytes } from "./provider.ts";
 
 export interface LiveAccount extends Account {
   label: string;
@@ -154,20 +157,41 @@ export function signWithdrawal(
 }
 
 /**
- * Sign a page's records write: key/value actions on one chain, paid for by a
- * fee from the signer. The body is built here, so a page can ask for writes
- * and a fee and nothing else: no coins move but the fee.
+ * Sign a page's records write: key/value actions on one chain, payments from
+ * the signer, and a fee. The body is built here, so a page can ask for writes,
+ * payments and a fee and nothing else: coin leaves only the signer's account,
+ * which is debited the payments plus the fee.
  */
 export function signRecords(
   acct: Account,
-  args: { actions: { key: string; oldValue?: string; newValue?: string }[]; fee: bigint; nonce: bigint; chainPath: string[] },
+  args: { actions: { key: string; oldValue?: string; newValue?: string }[]; payments?: { to: string; amount: bigint }[]; fee: bigint; nonce: bigint; chainPath: string[] },
 ): SignedSubmit {
-  const { actions, fee, nonce, chainPath } = args;
+  const { actions, payments = [], fee, nonce, chainPath } = args;
   if (!actions.length) throw new Error("nothing to write");
-  if (fee < 0n || fee > (1n << 63n) - 1n) throw new Error("fee is out of range");
+  const int64Max = (1n << 63n) - 1n;
+  if (fee < 0n || fee > int64Max) throw new Error("fee is out of range");
+  let debit = fee;
+  const seen = new Set<string>();
+  for (const { to, amount } of payments) {
+    if (!isAccountAddress(to)) throw new Error("a payee must be a canonical Lattice account address");
+    if (to === acct.address) throw new Error("a write cannot pay the account that signs it");
+    if (seen.has(to)) throw new Error("each payee may appear once");
+    if (amount <= 0n) throw new Error("a payment must be above zero");
+    seen.add(to);
+    debit += amount;
+    if (debit > int64Max) throw new Error("the payments and fee together are too large");
+  }
   return signBody(acct, {
-    accountActions: fee > 0n ? [{ owner: acct.address, delta: -fee }] : [],
+    accountActions: [
+      ...(debit > 0n ? [{ owner: acct.address, delta: -debit }] : []),
+      ...payments.map(({ to, amount }) => ({ owner: to, delta: amount })),
+    ],
     actions, depositActions: [], receiptActions: [], withdrawalActions: [],
     signers: [acct.address], nonce, chainPath,
   });
+}
+
+/** Sign a page's message (provider.ts `messageBytes`): never a transaction preimage. */
+export function signMessage(acct: Account, origin: string, text: string): { publicKey: string; signature: string } {
+  return { publicKey: acct.publicKey, signature: bytesToHex(ed25519.sign(messageBytes(origin, text), acct.privateKey)) };
 }
