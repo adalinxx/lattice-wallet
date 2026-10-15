@@ -5,6 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { signedTransactionCID, type TransactionBody } from "@adalinxx/lattice-core";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import { deriveAccount } from "../src/lib/crypto/accounts.ts";
+import { messageBytes } from "../src/lib/wallet/provider.ts";
 
 const MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const prefix = "chrome-extension://wallet-id/";
@@ -177,6 +181,38 @@ test("pages connect and write only through the person's approval", async () => {
   await new Promise((r) => setTimeout(r, 10));
   await approval({ type: "decide", id: requestId(), approve: true, address });
   assert.equal((await reconnecting).address, address);
+
+  // A write that pays: the node receives the payee's credit and the
+  // signer's debit of payments plus fee; paying the connected account is
+  // refused before any window opens.
+  const holder = deriveAccount(MNEMONIC, 1).address;
+  const before = opened.length;
+  assert.equal((await page({ ...writeCall, params: { ...writeCall.params, payments: [{ to: address, amount: "5" }] } })).error, "A write cannot pay the account that signs it");
+  assert.equal(opened.length, before);
+  const buying = page({ ...writeCall, params: { ...writeCall.params, payments: [{ to: holder, amount: "250" }] } });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "6" }), { ok: true });
+  assert.ok((await buying).ok);
+  assert.deepEqual(submitted.at(-1)!.body.transaction.body.accountActions, [{ owner: address, delta: "-251" }, { owner: holder, delta: "250" }]);
+
+  // A message: approved in the window, answered with the key and signature only.
+  const text = "fanfare-door band berlin/A12 7f3c";
+  const signing = page({ method: "signMessage", params: { text } });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual((await approval({ type: "pending", id: requestId() })).call, { method: "signMessage", params: { text } });
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true }), { ok: true });
+  const message = await signing;
+  assert.deepEqual(Object.keys(message).sort(), ["ok", "publicKey", "signature"]);
+  assert.ok(ed25519.verify(hexToBytes(message.signature as string), messageBytes("https://stoa.example", text), hexToBytes((message.publicKey as string).slice(4))),
+    "signed for the origin Chrome reported");
+  const sent = submitted.length;
+  const declinedMessage = page({ method: "signMessage", params: { text } });
+  await new Promise((r) => setTimeout(r, 10));
+  onWindowClosed(opened.length);
+  assert.deepEqual(await declinedMessage, { ok: false, error: "The person declined" });
+  assert.equal(submitted.length, sent, "a message is never sent anywhere");
+  skew += 6000;
+  assert.equal((await page({ method: "signMessage", params: { text: "a\u202eb" } })).error, "A message may hold only printable text and line breaks");
 
   // Disconnect forgets the site.
   assert.deepEqual(await page({ method: "disconnect" }), { ok: true, address: null });

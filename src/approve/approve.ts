@@ -1,8 +1,14 @@
 // The wallet's own window for one request from a web page: connect (give the
-// site an address) or write records (sign, once the person approves). What
-// the page sent is only ever shown as text.
+// site an address), write records (sign, once the person approves), or sign
+// a message. A write is shown as what it does to the person: what they pay,
+// to whom, and what their balance becomes; then each record it changes.
+// Everything secondary (full addresses, records as sent, the nonce) is
+// behind one Details disclosure. What the page sent is only ever shown as
+// text, and an address the wallet knows is shown as its name in an inverted
+// tag, which no text a page sends can look like.
 
-import type { ProviderCall } from "../lib/wallet/provider.ts";
+import { totalDebit, type ProviderCall } from "../lib/wallet/provider.ts";
+import { addressGroups, addressNames, nameAddresses, otherHosts, payeeRecords, paymentsToShow, shortAddress } from "../lib/wallet/review.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
@@ -19,20 +25,51 @@ function el(tag: string, props: Record<string, unknown> = {}, ...children: (Node
   node.append(...children);
   return node;
 }
-const field = (label: string, value: string) => el("div", { className: "row" }, el("span", { className: "k", textContent: label }), el("span", { className: "v addr", textContent: value }));
 // Characters that print as nothing, or reorder what follows, are shown as
 // their code points, so a key cannot pass for another.
 // A backslash is escaped too, so an escape shown is never text that looks like one.
 const visible = (text: string) => text.replace(/\\|[^\S ]|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}\u115f\u1160\u2800\u3164\uffa0]/gu,
   (ch) => ch === "\\" ? "\\\\" : ch === " " ? ch : `\\u{${ch.codePointAt(0)!.toString(16)}}`);
-/** A value as text: the first 400 characters, the rest a click away. */
+/** A value as sent: the first 400 characters, the rest a click away. */
 function valueNode(label: string, value: string | undefined): HTMLElement {
-  if (value === undefined) return el("div", { className: "value muted", textContent: `${label}: (none)` });
+  if (value === undefined) return el("div", { className: "value", textContent: `${label}: (none)` });
   const text = visible(value);
-  if (text.length <= 400) return el("div", { className: "value muted", textContent: `${label}: ${text}` });
-  return el("details", { className: "value muted" }, el("summary", { textContent: `${label}: ${text.slice(0, 400)}… (${text.length} characters)` }), text);
+  if (text.length <= 400) return el("div", { className: "value", textContent: `${label}: ${text}` });
+  return el("details", { className: "value" }, el("summary", { textContent: `${label}: ${text.slice(0, 400)}… (${text.length} characters)` }), text);
 }
-const grouped = (decimal: string) => BigInt(decimal).toLocaleString("en-US");
+// Exact: amounts are UInt64, never rounded through a double.
+const fmt = (n: string | bigint) => BigInt(n).toLocaleString("en-US");
+const label = (text: string) => el("p", { className: "section-label", textContent: text });
+const row = (key: string, ...value: (Node | string)[]) => el("div", { className: "row" }, el("span", { className: "k", textContent: key }), el("span", { className: "v" }, ...value));
+
+/** A site as people check it: the host, whole and in bold; the scheme only when it is not https. */
+function site(origin: string): HTMLElement {
+  const url = new URL(origin);
+  return el("span", { className: "origin" }, ...(url.protocol === "https:" ? [] : [el("span", { className: "scheme", textContent: `${url.protocol}//` })]), el("strong", { textContent: url.host }));
+}
+/** A whole address, four characters to a group, to compare a group at a time. Copied, it is unbroken. */
+const fullAddress = (address: string) => el("span", { className: "groups" }, ...addressGroups(address).map((g) => el("span", { textContent: g })));
+
+/**
+ * Text with every address the wallet knows shown as its name, cut to about
+ * `limit` characters (Details shows it all).
+ */
+function named(text: string, names: ReadonlyMap<string, string>, limit = Infinity): HTMLElement {
+  const out = el("span", { className: "named" });
+  let room = limit;
+  for (const segment of nameAddresses(text, names)) {
+    if (room <= 0) break;
+    if ("name" in segment) {
+      out.append(el("span", { className: "name", title: segment.address, textContent: segment.name }));
+      room -= segment.name.length;
+    } else {
+      const shown = visible(segment.text);
+      out.append(shown.length > room ? `${shown.slice(0, room)}…` : shown);
+      room -= shown.length;
+    }
+  }
+  return out;
+}
 
 function fail(message: string) {
   view.replaceChildren(el("p", { className: "warn", textContent: message }), el("button", { className: "btn block", textContent: "Close", onclick: () => window.close() }));
@@ -41,7 +78,7 @@ function fail(message: string) {
 // ---- the nonce, read from the person's own node choices ----
 
 /** `stale`: page writes the node's pool no longer holds (never admitted, or dropped). */
-type NonceRead = { nonce: bigint; stateNonce: bigint; node: string; stale: string[] } | { missing: string[] } | { error: string };
+type NonceRead = { nonce: bigint; stateNonce: bigint; balance: bigint; node: string; stale: string[] } | { missing: string[] } | { error: string };
 const permitted = (origin: string) => chrome.permissions.contains({ origins: [origin] });
 
 /** The next free nonce for `address` on `chainPath`, from a node the person chose or allowed. */
@@ -83,7 +120,7 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       const state = await node.account(address);
       const live = livePageWrites(pageWrites, chain, state.nonce, dead);
       const stale = [...dead];
-      return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, node: url, stale };
+      return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, balance: state.balance, node: url, stale };
     } catch { /* not this node */ }
   }
   return missing.size ? { missing: [...missing] }
@@ -98,30 +135,96 @@ async function decide(approve: boolean, address?: string, nonce?: { nonce: bigin
 }
 
 // The approving button wakes up a moment after the window is seen, so a
-// click aimed at something else cannot land on it.
+// click aimed at something else cannot land on it. A bar fills across it
+// meanwhile, so a button that waits is not mistaken for a broken one.
 const ARM_MS = 800;
-/** Decline and approve; approve also waits for `ready` (re-checked by calling the returned arm). */
-function buttons(approveLabel: string, onApprove: () => void, ready: () => boolean = () => true) {
-  const approve = el("button", { className: "btn primary", type: "button", textContent: approveLabel, onclick: onApprove, disabled: true }) as HTMLButtonElement;
+/**
+ * The decision, kept at the foot of the window so it is never scrolled away
+ * from what it decides: a line saying why the approving button waits, when
+ * it does, then Decline and the one filled button, named for what it does.
+ * The approving button also waits for `ready`; calling `arm` checks again.
+ */
+function decision(approveLabel: string, onApprove: () => void, ready: () => boolean = () => true) {
+  const status = el("div", { className: "status", role: "status", id: "decision-status" });
+  const approve = el("button", { className: "btn btn--primary", type: "button", textContent: approveLabel, onclick: onApprove, disabled: true }) as HTMLButtonElement;
+  // A button that is off says why to a screen reader too.
+  approve.setAttribute("aria-describedby", status.id);
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   const arm = () => {
     approve.disabled = true;
+    approve.classList.remove("arming");
     clearTimeout(timer);
-    if (document.visibilityState === "visible" && document.hasFocus()) timer = setTimeout(() => { approve.disabled = !ready(); }, ARM_MS);
+    if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+    if (ready()) approve.classList.add("arming");
+    timer = setTimeout(() => { approve.classList.remove("arming"); approve.disabled = !ready(); }, ARM_MS);
   };
   window.addEventListener("focus", arm);
   window.addEventListener("blur", arm);
   document.addEventListener("visibilitychange", arm);
   arm();
-  const row = el("div", { className: "actions-row" },
-    el("button", { className: "btn", type: "button", textContent: "Decline", onclick: () => decide(false) }), approve);
-  return Object.assign(row, { arm });
+  const bar = el("div", { className: "decision" }, status, el("div", { className: "actions-row" },
+    el("button", { className: "btn", type: "button", textContent: "Decline", onclick: () => decide(false) }), approve));
+  return Object.assign(bar, { arm, status, approve });
+}
+
+/**
+ * Whether the person has had everything that decides the request in front of
+ * them: down to `last` (the end of what matters; Details is behind its own
+ * toggle) above the decision bar, and each box that scrolls inside, scrolled
+ * to its end, at least once. What fits counts as seen. Until then the
+ * approving button stays off, as a hardware wallet shows every field before
+ * its sign step: what a page puts below the fold is what someone would
+ * approve unseen. Meanwhile the bar shows `below()`, a way down.
+ * `changed` runs on every change; `watch` starts once all is on the page.
+ */
+function reviewGate(changed: () => void) {
+  const boxes: Element[] = [];
+  let last: Element | null = null;
+  let bar: Element | null = null;
+  let seen = false;
+  const atEnd = (box: Element) => box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+  const lastShown = () => !last || !bar || last.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top + 2;
+  // Only a change of `seen` matters: re-arming on every scroll would restart
+  // the button's wait each time.
+  const update = () => {
+    if (seen || !lastShown() || !boxes.every(atEnd)) return;
+    seen = true;
+    changed();
+  };
+  const down = () => {
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const behavior = reduced ? "auto" : "smooth";
+    const box = boxes.find((b) => !atEnd(b));
+    if (lastShown() && box) box.scrollTo({ top: box.scrollHeight, behavior });
+    // Down until the end of what matters clears the bar, which covers the window's foot.
+    else if (last && bar) window.scrollBy({ top: last.getBoundingClientRect().bottom - bar.getBoundingClientRect().top + 8, behavior });
+    // Check again once there, not only on scroll events: a smooth scroll ends after they stop.
+    update();
+    setTimeout(update, 600);
+  };
+  return {
+    seen: () => seen,
+    /** The bar's way down while something is unseen, else null. */
+    below: (unseen: string): HTMLElement | null =>
+      seen ? null : el("button", { className: "text-action", type: "button", textContent: `${unseen} ↓`, onclick: down }),
+    watch: (end: Element, decisionBar: Element, ...inside: Element[]) => {
+      last = end;
+      bar = decisionBar;
+      for (const box of inside) { boxes.push(box); box.addEventListener("scroll", update, { passive: true }); }
+      window.addEventListener("scroll", update, { passive: true });
+      window.addEventListener("resize", update);
+      update();
+      if (!seen) changed(); // show the way down
+    },
+  };
 }
 
 async function render() {
   const request = await send({ type: "pending", id });
   if (!request.ok) return fail(request.error ?? "This request is gone.");
   const origin = request.origin as string;
+  const host = new URL(origin).host;
   const call = request.call as ProviderCall;
   const stateAnswer = await send({ type: "getState" });
   const state = stateAnswer.state as WalletState;
@@ -134,69 +237,162 @@ async function render() {
       const answer = await send({ type: "unlock", password: password.value });
       if (answer.ok) render();
       else { error.textContent = answer.error ?? "Could not unlock"; error.hidden = false; }
-    } }, el("p", {}, el("span", { className: "origin", textContent: origin }), " is asking. Unlock to see what."), password, error,
-      el("button", { className: "btn block primary", type: "submit", textContent: "Unlock" }));
+    } }, el("p", {}, site(origin), " is asking. Unlock to see what."), password, error,
+      el("button", { className: "btn block btn--primary", type: "submit", textContent: "Unlock" }));
     view.replaceChildren(form, el("button", { className: "btn block", type: "button", textContent: "Decline", onclick: () => decide(false) }));
     password.focus();
     return;
   }
   if (call.method === "connect") {
-    const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${a.address.slice(0, 10)}…${a.address.slice(-4)}`, selected: a.address === state.active }))) as HTMLSelectElement;
+    const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${shortAddress(a.address)}`, selected: a.address === state.active }))) as HTMLSelectElement;
     view.replaceChildren(
       el("h1", { textContent: "Connect" }),
-      el("p", {}, el("span", { className: "origin", textContent: origin }), " wants to know your address. It can then ask you to sign writes; you approve each one here."),
+      el("p", {}, site(origin), " wants to know your address. It can then ask you to sign writes and messages; you approve each one here."),
       el("label", { className: "k", textContent: "Account" }), picker,
-      buttons("Connect", () => decide(true, picker.value)));
+      decision("Connect", () => decide(true, picker.value)));
+    return;
+  }
+  const address = String(request.address);
+  const account = state.accounts.find((a) => a.address === address);
+  const who = account?.label ?? shortAddress(address);
+  const accountDetail = row("Account", ...(account ? [`${account.label} `] : []), fullAddress(address));
+  if (call.method === "signMessage") {
+    const { text } = call.params;
+    const elsewhere = otherHosts(text, origin);
+    const message = el("pre", { className: "message", textContent: text.split("\n").map(visible).join("\n") });
+    const explanation = el("p", { className: "meta", textContent: `Signing proves to ${host} that you hold this account. It cannot move coins or approve a transaction.` });
+    const gate = reviewGate(() => {
+      const below = gate.below("Read the whole message to sign it");
+      bar.status.replaceChildren(...(below ? [below] : []));
+      bar.arm();
+    });
+    const bar = decision("Sign message", () => decide(true), () => gate.seen());
+    view.replaceChildren(
+      el("h1", { textContent: "Review message" }),
+      el("p", { className: "from" }, "from ", site(origin), ` · signing as ${who}`),
+      label("Message"),
+      message,
+      ...(elsewhere.length ? [el("p", { className: "notice", textContent: `This message names ${elsewhere.join(", ")}, but ${host} is asking. Sign only if you expect that.` })] : []),
+      explanation,
+      el("details", { className: "advanced" }, el("summary", { textContent: "Details" }), el("div", { className: "advanced-content kv" },
+        accountDetail,
+        row("Signed", `lattice-message:${origin}, a line break, then the message`))),
+      bar);
+    gate.watch(explanation, bar, message);
     return;
   }
   if (call.method !== "writeRecords") return fail("Unknown request");
-  const { chainPath, actions, fee } = call.params;
-  const address = String(request.address);
-  const account = state.accounts.find((a) => a.address === address);
-  const nonceShown = el("span", { className: "v addr", textContent: "checking…" });
-  const nonceHelp = el("div", { className: "stack" });
+
+  const { chainPath, actions, payments = [], fee } = call.params;
+  const chain = chainPath.join("/");
+  const debit = totalDebit(call.params);
+  // Payments no record names first: those are the ones to check.
+  const shown = paymentsToShow(actions, payments);
+  const names = addressNames(address, shown, state.accounts);
+  const namedBy = payeeRecords(actions, shown);
+  const approveLabel = payments.length ? `Pay ${fmt(debit)}` : "Sign write";
+
+  // ---- the account, read from the person's node: balance and nonce ----
+  const balanceAfter = el("p", { className: "meta", textContent: "Balance: checking…" });
+  const nonceShown = el("span", { textContent: "checking…" });
   let nonceRead: NonceRead = { missing: [] };
-  const ready = () => "nonce" in nonceRead;
+  const covered = (read: NonceRead) => "nonce" in read && read.balance >= debit;
   const sign = async () => {
     // Read again at the moment of signing: the account may have moved.
     const now = await readNonce(chainPath, address);
-    if (!("nonce" in now)) { nonceRead = now; showNonce(); return; }
-    decide(true, undefined, now);
+    if (!covered(now)) { nonceRead = now; showRead(); return; }
+    decide(true, undefined, now as Extract<NonceRead, { nonce: bigint }>);
   };
-  const row = buttons("Sign", () => { sign().catch((e) => fail(String(e?.message ?? e))); }, ready);
-  function showNonce() {
+  const gate = reviewGate(() => explain());
+  const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => covered(nonceRead) && gate.seen());
+  /** The one line the bar shows: why the account stops it (showRead), else what is left to see. */
+  function explain() {
+    if ("nonce" in nonceRead && nonceRead.balance >= debit) {
+      const below = gate.below(`See the rest to ${payments.length ? "pay" : "sign"}`);
+      bar.status.replaceChildren(...(below ? [below] : []));
+    }
+    bar.arm();
+  }
+  bar.status.textContent = `Checking your account on ${chain}…`;
+  function showRead() {
+    bar.approve.textContent = approveLabel;
     if ("nonce" in nonceRead) {
-      nonceShown.textContent = `${nonceRead.nonce} (from ${new URL(nonceRead.node).host})`;
-      nonceHelp.replaceChildren();
+      const { balance } = nonceRead;
+      nonceShown.textContent = `${nonceRead.nonce} · account read from ${new URL(nonceRead.node).host}`;
+      if (balance >= debit) {
+        balanceAfter.textContent = `Balance: ${fmt(balance)} → ${fmt(balance - debit)}`;
+      } else {
+        balanceAfter.textContent = `Balance: ${fmt(balance)}, not enough`;
+        bar.status.textContent = `Needs ${fmt(debit - balance)} more.`;
+        bar.approve.textContent = "Not enough";
+      }
+      return explain();
     } else if ("missing" in nonceRead && nonceRead.missing.length) {
       const hosts = nonceRead.missing;
       nonceShown.textContent = "needs your permission";
-      nonceHelp.replaceChildren(
-        el("p", { className: "muted", textContent: `To check your account on this chain, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}.` }),
+      bar.status.replaceChildren(
+        el("p", { textContent: `To check your account on ${chain}, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}.` }),
         el("button", { className: "btn block", type: "button", textContent: "Allow", onclick: async () => {
           if (await chrome.permissions.request({ origins: hosts }).catch(() => false)) check();
         } }));
     } else if ("error" in nonceRead) {
       nonceShown.textContent = "unknown";
-      nonceHelp.replaceChildren(el("p", { className: "warn", textContent: nonceRead.error }));
+      bar.status.textContent = nonceRead.error;
     }
-    row.arm();
+    bar.arm();
   }
-  const check = () => readNonce(chainPath, address).then((r) => { nonceRead = r; showNonce(); }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showNonce(); });
+  const check = () => readNonce(chainPath, address).then((r) => { nonceRead = r; showRead(); }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showRead(); });
+
+  // ---- what the person pays: each payment, then the fee, adding up to the total ----
+  const line = (amount: string, ...to: (Node | string)[]) => el("li", {}, el("span", { className: "amount", textContent: fmt(amount) }), el("div", { className: "to" }, ...to));
+  // Without payments the fee is all there is to pay: one figure, nothing to break down.
+  const breakdown = [
+    ...shown.map((p, i) => {
+      const record = namedBy[i];
+      const payee = el("span", { className: "name", title: p.to, textContent: names.get(p.to)! });
+      return record
+        ? line(p.amount, el("div", {}, "to ", payee), el("div", { className: "meta" }, "in record ", named(record, names, 60)), el("div", { className: "meta", textContent: shortAddress(p.to) }))
+        : line(p.amount, el("div", {}, "to ", payee, ", an address the page chose"), el("div", { className: "meta" }, fullAddress(p.to)),
+          el("p", { className: "notice", textContent: "No record in this write names this address. Check every group of it before you pay." }));
+    }),
+    ...(payments.length && BigInt(fee) > 0n ? [line(fee, "network fee")] : []),
+  ];
+  const summary = el("section", { className: "balance-card summary" },
+    label(payments.length ? "You pay" : debit > 0n ? "Network fee" : "No coins move"),
+    ...(debit > 0n ? [el("span", { className: "balance-value", textContent: fmt(debit) })] : []),
+    el("p", { className: "meta", textContent: `on ${chain} · from ${who}` }),
+    balanceAfter,
+    ...(breakdown.length ? [el("ul", { className: "breakdown" }, ...breakdown)] : []));
+
+  // ---- what the write changes: each record, was → now ----
+  const change = (a: (typeof actions)[number]) =>
+    a.newValue === undefined ? el("div", { className: "meta" }, "deleted · was ", named(a.oldValue ?? "", names, 80))
+    : a.oldValue === undefined ? el("div", { className: "meta" }, "new · ", named(a.newValue, names, 80))
+    : el("div", { className: "meta" }, named(a.oldValue, names, 40), " → ", named(a.newValue, names, 40));
+
+  const recordList = el("ul", { className: "records" }, ...actions.map((a) => el("li", {}, el("div", { className: "key" }, named(a.key, names, 80)), change(a))));
   view.replaceChildren(
-    el("h1", { textContent: "Sign a write" }),
-    el("p", {}, el("span", { className: "origin", textContent: origin }), ` asks to write ${actions.length} ${actions.length === 1 ? "record" : "records"}. No coins move except the fee.`),
-    el("div", { className: "kv" },
-      field("Account", account ? `${account.label} · ${account.address}` : address),
-      field("Chain", chainPath.join("/")), field("Fee", grouped(fee)),
-      el("div", { className: "row" }, el("span", { className: "k", textContent: "Nonce" }), nonceShown)),
-    nonceHelp,
-    el("ul", { className: "records" }, ...actions.map((a) => el("li", {},
-      el("div", { className: "key", textContent: visible(a.key) }),
-      ...(a.newValue === undefined ? [valueNode("delete, was", a.oldValue)]
-        : a.oldValue === undefined ? [valueNode("new", a.newValue)]
-        : [valueNode("was", a.oldValue), valueNode("now", a.newValue)])))),
-    row);
+    el("h1", { textContent: payments.length ? "Review payment" : "Review write" }),
+    el("p", { className: "from" }, "from ", site(origin)),
+    summary,
+    label(`Records · ${actions.length}`),
+    recordList,
+    el("details", { className: "advanced" },
+      el("summary", { textContent: "Details" }),
+      el("div", { className: "advanced-content" },
+        el("div", { className: "kv" },
+          accountDetail,
+          row("Chain", chain),
+          ...shown.map((p) => row(names.get(p.to)!, fullAddress(p.to))),
+          row("Nonce", nonceShown)),
+        label("Records as sent"),
+        el("ul", { className: "records raw" }, ...actions.map((a) => el("li", {},
+          el("div", { className: "key", textContent: visible(a.key) }),
+          ...(a.newValue === undefined ? [valueNode("delete, was", a.oldValue)]
+            : a.oldValue === undefined ? [valueNode("new", a.newValue)]
+            : [valueNode("was", a.oldValue), valueNode("now", a.newValue)])))))),
+    bar);
+  gate.watch(recordList, bar);
   check();
 }
 
