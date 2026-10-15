@@ -145,17 +145,29 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     return { ok: false, error: "That nonce was just taken; check again" };
   }
   request.approved = true;
+  try {
+    return await signAndSend(request, from, chain, nonce, msg.node, BigInt(msg.stateNonce));
+  } catch (e) {
+    // Never leave an approved request unanswered: the site could ask nothing again.
+    const reason = String((e as Error)?.message ?? e);
+    request.settle({ ok: false, error: `The wallet could not finish: ${reason}` });
+    return { ok: false, error: reason };
+  }
+}
+
+async function signAndSend(request: Pending, from: string, chain: string, nonce: string, nodeURL: string, passed: bigint): Promise<Response> {
+  if (request.call.method !== "writeRecords") return { ok: false, error: "Not a write" };
   const signed = await signer.handle({ type: "signRecords", from, ...request.call.params, nonce });
   if (!signed.ok) { request.approved = false; return signed; } // e.g. locked: the window unlocks and tries again
   const signedSubmit = (signed as unknown as { signedSubmit: SignedSubmit }).signedSubmit;
   // The wallet submits, to the node it read the nonce from: a page never
   // holds a signed write it could send later, against the person's next
   // transaction at that nonce.
-  const auth = await signer.handle({ type: "nodeAuthorization", url: msg.node });
+  const auth = await signer.handle({ type: "nodeAuthorization", url: nodeURL });
   let delivered: "yes" | "uncertain" = "yes";
   let failure = "";
   try {
-    await submitChecked(submitter(msg.node, browserFetch, auth.ok ? (auth as unknown as { authorization?: string }).authorization : undefined), signedSubmit);
+    await submitChecked(submitter(nodeURL, browserFetch, auth.ok ? (auth as unknown as { authorization?: string }).authorization : undefined), signedSubmit);
   } catch (e) {
     if (isDefiniteSubmissionRefusal(e)) {
       request.settle({ ok: false, error: `The node refused it: ${describe(e)}` });
@@ -166,10 +178,9 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   }
   // Pending until the chain's nonce passes it, even if delivery is uncertain:
   // it may have been admitted.
-  const passed = BigInt(msg.stateNonce);
   await store.set({ pageWrites: [
     ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
-    { chain, from, nonce, cid: signedSubmit.transactionCID },
+    { chain, from, nonce, cid: signedSubmit.transactionCID, node: nodeURL },
   ] });
   request.settle(delivered === "yes"
     ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later

@@ -47,14 +47,14 @@ test("every transaction the wallet knows may be pending takes its nonce: sends, 
   assert.equal(nextNonce(4n, "Nexus/x", "a", pending), 7n, "withdrawals 4, 5 and page write 6 taken");
 });
 
-test("a page write keeps its nonce only while the node's pool holds it", () => {
+test("a page write keeps its nonce unless the node it was sent to does not know it", () => {
   const writes = [
-    { chain: "Nexus/s", from: "a", nonce: "4", cid: "in-pool" },
-    { chain: "Nexus/s", from: "a", nonce: "5", cid: "never-admitted" },
+    { chain: "Nexus/s", from: "a", nonce: "4", cid: "pending-but-not-listed" },
+    { chain: "Nexus/s", from: "a", nonce: "5", cid: "unknown-to-its-node" },
     { chain: "Nexus/s", from: "a", nonce: "2", cid: "landed" },
     { chain: "Nexus/t", from: "a", nonce: "9", cid: "other-chain" },
   ];
-  const live = livePageWrites(writes, "Nexus/s", 4n, new Set(["in-pool"]));
-  assert.deepEqual(live.map((w) => w.cid), ["in-pool", "other-chain"]);
-  assert.equal(nextNonce(4n, "Nexus/s", "a", live), 5n, "5 is free again: its write never reached the pool");
+  const live = livePageWrites(writes, "Nexus/s", 4n, new Set(["unknown-to-its-node"]));
+  assert.deepEqual(live.map((w) => w.cid), ["pending-but-not-listed", "other-chain"], "absent from a listing is still live");
+  assert.equal(nextNonce(4n, "Nexus/s", "a", live), 5n, "5 is free again: its node does not know its write");
 });

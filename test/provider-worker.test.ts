@@ -114,7 +114,7 @@ test("pages connect and write only through the person's approval", async () => {
   assert.equal(submitted.length, 1, "the wallet submitted it, to the node it read the nonce from");
   assert.equal(submitted[0].url, "https://node.example/transactions");
   assert.equal(typeof signed.transactionCID, "string");
-  assert.deepEqual(data.pageWrites, [{ chain: "Nexus/other", from: address, nonce: "0" }, { chain: "Nexus/stoa", from: address, nonce: "3", cid: signed.transactionCID }],
+  assert.deepEqual(data.pageWrites, [{ chain: "Nexus/other", from: address, nonce: "0" }, { chain: "Nexus/stoa", from: address, nonce: "3", cid: signed.transactionCID, node: "https://node.example" }],
     "the write is remembered as pending; one the chain has passed is forgotten");
 
   // A nonce already taken by a page write is refused before signing; a
@@ -148,6 +148,19 @@ test("pages connect and write only through the person's approval", async () => {
   slow = null;
   assert.deepEqual(await deciding, { ok: true });
   assert.equal((await sending).ok, true);
+
+  // An approved request whose sending throws is still answered, so the site
+  // can ask again.
+  const original = data.pageWrites;
+  const store = (globalThis as unknown as { chrome: { storage: { local: { set: (i: object) => Promise<void> } } } }).chrome.storage.local;
+  const realSet = store.set;
+  store.set = async (items: object) => { if ("pageWrites" in items) throw new Error("quota"); return realSet(items); };
+  const failing = page(writeCall);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.match(String((await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "5" })).error), /quota/);
+  assert.match(String((await failing).error), /could not finish: quota/);
+  store.set = realSet;
+  data.pageWrites = original;
 
   // One waiting request per site; and a write signs only as the account it
   // showed, while the site is still connected to it.

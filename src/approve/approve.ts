@@ -6,7 +6,7 @@ import type { ProviderCall } from "../lib/wallet/provider.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
-import { browserFetch, discover, reader } from "../lib/wallet/node.ts";
+import { browserFetch, discover, reader, sentStatus } from "../lib/wallet/node.ts";
 import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
@@ -69,10 +69,18 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     try {
       const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
       const node = reader(url, chainPath, allowedFetch, auth);
+      // Ask the node each write went to whether it knows it, before reading the
+      // account (a block landing in between then only makes the write look live).
+      const dead = new Set<string>();
+      for (const write of pageWrites) {
+        if (write.chain !== chain || write.from !== address || !write.cid) continue;
+        const at = write.node && write.node !== url ? reader(write.node, chainPath, allowedFetch) : node;
+        const status = await sentStatus(at, write.cid, { from: address, nonce: BigInt(write.nonce) }).catch(() => null);
+        if (status?.kind === "unknown to node") dead.add(write.cid);
+      }
       const state = await node.account(address);
-      const pool = new Set((await node.mempool()).transactions);
-      const live = livePageWrites(pageWrites, chain, state.nonce, pool);
-      const stale = pageWrites.filter((p) => p.chain === chain && p.cid && !live.includes(p)).map((p) => p.cid!);
+      const live = livePageWrites(pageWrites, chain, state.nonce, dead);
+      const stale = [...dead];
       return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, node: url, stale };
     } catch { /* not this node */ }
   }

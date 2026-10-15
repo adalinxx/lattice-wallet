@@ -9,16 +9,17 @@ import type { SignedSubmit } from "./types.ts";
 /** A transaction this wallet signed whose outcome it has not seen yet. */
 export interface KnownPending { chain: string; from: string; nonce: string }
 
-/** A page write the wallet sent (or may have: delivery can be uncertain). */
-export interface PageWrite extends KnownPending { cid?: string }
+/** A page write the wallet sent (or may have: delivery can be uncertain), and where. */
+export interface PageWrite extends KnownPending { cid?: string; node?: string }
 
 /**
  * The page writes still pending on `chain`: those at or above the chain's
- * nonce that the node's pool holds. One the pool does not hold was never
- * admitted (or was dropped), and must not keep its nonce forever.
+ * nonce, except the ones the node they were sent to does not know (`dead`:
+ * never admitted, or dropped). Absence from a pool listing is not enough:
+ * listings are bounded, and other nodes may not have it.
  */
-export function livePageWrites(pageWrites: readonly PageWrite[], chain: string, stateNonce: bigint, pool: ReadonlySet<string>): PageWrite[] {
-  return pageWrites.filter((p) => p.chain !== chain || (BigInt(p.nonce) >= stateNonce && (p.cid === undefined || pool.has(p.cid))));
+export function livePageWrites(pageWrites: readonly PageWrite[], chain: string, stateNonce: bigint, dead: ReadonlySet<string>): PageWrite[] {
+  return pageWrites.filter((p) => p.chain !== chain || (BigInt(p.nonce) >= stateNonce && !(p.cid !== undefined && dead.has(p.cid))));
 }
 
 const fromSigned = (signed: SignedSubmit | undefined): KnownPending[] => {
