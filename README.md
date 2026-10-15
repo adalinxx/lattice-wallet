@@ -125,13 +125,12 @@ A web page can ask the wallet for an address and ask it to sign writes of
 records. The wallet adds `window.lattice` to every http(s) page:
 
 ```js
-const address = await lattice.connect(); // asks the person once per site
-const signedSubmit = await lattice.writeRecords({
+const address = await lattice.connect(); // from a click; asks the person once per site
+const { transactionCID } = await lattice.writeRecords({
   chainPath: ["Nexus", "stoa"],
   actions: [{ key: "profile/<address>", newValue: "{\"name\":\"Alice\"}" }],
   fee: "1", // decimal string
 });
-await fetch(`${node}/transactions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(signedSubmit.payload) });
 ```
 
 `lattice.address()` returns the site's address without asking (or null), and
@@ -146,14 +145,19 @@ await fetch(`${node}/transactions`, { method: "POST", headers: { "Content-Type":
 - **The wallet chooses the nonce.** The approval window reads the account
   from the person's own nodes (the one chosen for the chain or an ancestor,
   else one discovered from their Nexus node, once they allow it) and moves
-  past every transaction the wallet knows is pending there, so a page cannot
+  past every transaction the wallet knows is pending there (sends, deposits,
+  receipts, withdrawals, page writes), so a page cannot
   take the nonce of a pending transaction and cancel it.
 - **One request at a time per site**, and the approving button wakes a moment
   after the window is seen, so a click aimed elsewhere cannot land on it.
 - **The site is the one Chrome reports.** The worker takes the origin from
   the tab's top frame, not from the page; iframes are not answered.
-- **The page submits.** The signed transaction goes back to the page, which
-  sends it to the node it reads from.
+- **The wallet submits.** It sends the write to the node it read the nonce
+  from, so a page never holds a signed write it could send later against
+  the person's next transaction. The page gets the transaction's CID.
+- **Connecting needs a click.** `connect()` is answered only during a click
+  or key press the person just made (pages call `address()` on load), and a
+  site whose request was declined waits a few seconds before asking again.
 
 ## Why an extension (not a web page)
 

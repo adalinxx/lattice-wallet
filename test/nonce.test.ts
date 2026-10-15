@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chosenNodes, nextNonce } from "../src/lib/wallet/nonce.ts";
+import { chosenNodes, knownPending, nextNonce } from "../src/lib/wallet/nonce.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 
 test("the next nonce skips every transaction this wallet knows is pending on that chain, from that account", () => {
@@ -28,4 +28,21 @@ test("nodes are the person's choices: the chain's, then its ancestors', deepest 
   assert.deepEqual(chosenNodes(settings, ["Nexus", "stoa", "bitcoin"]), ["https://nexus.example", "https://stoa.example"]);
   assert.deepEqual(chosenNodes(settings, ["Nexus", "stoa", "rust"]), ["https://stoa.example", "https://nexus.example"]);
   assert.deepEqual(chosenNodes(DEFAULT_SETTINGS, ["Nexus", "x"]), []);
+});
+
+test("every transaction the wallet knows may be pending takes its nonce: sends, deposits, receipts, withdrawals, page writes", () => {
+  const signed = (chainPath: string[], signer: string, nonce: string) =>
+    ({ payload: { transaction: { signatures: {}, body: { chainPath, signers: [signer], nonce } } } }) as never;
+  const settings = {
+    ...DEFAULT_SETTINGS,
+    pendingSubmissions: [{ chain: "Nexus", from: "a", nonce: "1", cid: "c", to: "b", amount: "1", fee: "1", at: 0, signedSubmit: signed(["Nexus"], "a", "1") }],
+    openDeposits: [{ childChain: ["Nexus", "x"], parentChain: ["Nexus"], demander: "a", transactionNonce: "2" } as never],
+    openPurchases: [{ receiptSubmit: signed(["Nexus"], "a", "3"), withdrawalAttempts: [signed(["Nexus", "x"], "a", "4"), signed(["Nexus", "x"], "a", "5")] } as never],
+  };
+  const pending = knownPending(settings, [{ chain: "Nexus/x", from: "a", nonce: "6" }]);
+  assert.equal(nextNonce(1n, "Nexus", "a", pending), 2n, "send 1 taken");
+  assert.equal(nextNonce(2n, "Nexus", "a", pending), 2n);
+  assert.equal(nextNonce(3n, "Nexus", "a", pending), 4n, "receipt 3 taken");
+  assert.equal(nextNonce(2n, "Nexus/x", "a", pending), 3n, "deposit 2 taken");
+  assert.equal(nextNonce(4n, "Nexus/x", "a", pending), 7n, "withdrawals 4, 5 and page write 6 taken");
 });

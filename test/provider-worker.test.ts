@@ -4,6 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { signedTransactionCID, type TransactionBody } from "@adalinxx/lattice-core";
 
 const MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const prefix = "chrome-extension://wallet-id/";
@@ -25,6 +26,18 @@ test("pages connect and write only through the person's approval", async () => {
     alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
     windows: { create: async ({ url }: { url: string }) => { opened.push(url); return { id: opened.length }; }, onRemoved: { addListener: (fn: typeof onWindowClosed) => { onWindowClosed = fn; } } },
   } });
+  // The node the window read the nonce from: it takes what it is sent, or
+  // refuses it when `refuse` is set.
+  const submitted: { url: string; body: { transaction: { signatures: Record<string, string>; body: Record<string, any> } } }[] = [];
+  let refuse = false;
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (url: string, init: { body: string }) => {
+    const payload = JSON.parse(init.body);
+    if (refuse) return new Response(JSON.stringify({ error: "belowMinRelayFee" }), { status: 400 });
+    submitted.push({ url: String(url), body: payload });
+    const wire = payload.transaction.body;
+    const body: TransactionBody = { ...wire, nonce: BigInt(wire.nonce), accountActions: wire.accountActions.map((a: { owner: string; delta: string }) => ({ owner: a.owner, delta: BigInt(a.delta) })) };
+    return new Response(JSON.stringify({ transactionCID: signedTransactionCID(payload.transaction.signatures, body) }), { status: 200 });
+  } });
   await import("../src/background/service-worker.ts");
 
   const send = (msg: unknown, sender: Sender) => new Promise<Answer>((resolve, reject) => {
@@ -37,7 +50,7 @@ test("pages connect and write only through the person's approval", async () => {
   const requestId = () => new URL(opened.at(-1)!).searchParams.get("id");
   const writeCall = { method: "writeRecords", params: { chainPath: ["Nexus", "stoa"], actions: [{ key: "k", newValue: "v" }], fee: "1" } };
   // The window read these from the person's node (approve.ts); the page never sends one.
-  const read = { nonce: "3", stateNonce: "2" };
+  const read = { nonce: "3", stateNonce: "2", node: "https://node.example" };
 
   const created = await popup({ type: "createWallet", password: "pw", mnemonic: MNEMONIC });
   const address = (created.state as { accounts: { address: string }[] }).accounts[0].address;
@@ -71,6 +84,13 @@ test("pages connect and write only through the person's approval", async () => {
   assert.deepEqual(await closed, { ok: false, error: "The person declined" });
   assert.equal((await approval({ type: "pending", id: requestId() })).ok, false, "the request is gone");
 
+  // A site just declined waits before it can ask again.
+  assert.equal((await page(writeCall)).error, "The person just declined; ask again in a moment");
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  skew = 6000;
+
   // A write the person signs: locked first, so the window unlocks and signs.
   await popup({ type: "lock" });
   const writing = page(writeCall);
@@ -88,8 +108,23 @@ test("pages connect and write only through the person's approval", async () => {
   assert.deepEqual(body.signers, [address]);
   assert.deepEqual(body.accountActions, [{ owner: address, delta: "-1" }]);
   assert.equal(body.nonce, "3", "signed with the nonce the wallet read");
+  assert.equal(submitted.length, 1, "the wallet submitted it, to the node it read the nonce from");
+  assert.equal(submitted[0].url, "https://node.example/transactions");
+  assert.equal(signed.transactionCID, (signed.signedSubmit as { transactionCID: string }).transactionCID);
   assert.deepEqual(data.pageWrites, [{ chain: "Nexus/other", from: address, nonce: "0" }, { chain: "Nexus/stoa", from: address, nonce: "3" }],
     "the write is remembered as pending; one the chain has passed is forgotten");
+
+  // A nonce already taken by a page write is refused before signing; a
+  // write the node refuses reaches the page as refused and is not recorded.
+  const taken = page(writeCall);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await approval({ type: "decide", id: requestId(), approve: true, ...read })).error, "That nonce was just taken; check again");
+  refuse = true;
+  assert.match(String((await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "4" })).error), /refused/);
+  assert.match(String((await taken).error), /The node refused it/);
+  assert.equal(submitted.length, 1);
+  assert.deepEqual((data.pageWrites as { nonce: string }[]).map((p) => p.nonce), ["0", "3"], "a refused write is not pending");
+  refuse = false;
 
   // One waiting request per site; and a write signs only as the account it
   // showed, while the site is still connected to it.

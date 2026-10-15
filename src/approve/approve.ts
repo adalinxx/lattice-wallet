@@ -5,7 +5,7 @@
 import type { ProviderCall } from "../lib/wallet/provider.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
-import { chosenNodes, discoveryStart, nextNonce, type KnownPending } from "../lib/wallet/nonce.ts";
+import { chosenNodes, discoveryStart, knownPending, nextNonce, type KnownPending } from "../lib/wallet/nonce.ts";
 import { browserFetch, discover, reader } from "../lib/wallet/node.ts";
 import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
@@ -22,7 +22,9 @@ function el(tag: string, props: Record<string, unknown> = {}, ...children: (Node
 const field = (label: string, value: string) => el("div", { className: "row" }, el("span", { className: "k", textContent: label }), el("span", { className: "v addr", textContent: value }));
 // Characters that print as nothing, or reorder what follows, are shown as
 // their code points, so a key cannot pass for another.
-const visible = (text: string) => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (ch) => `\\u{${ch.codePointAt(0)!.toString(16)}}`);
+// A backslash is escaped too, so an escape shown is never text that looks like one.
+const visible = (text: string) => text.replace(/\\|[^\S ]|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}\u115f\u1160\u2800\u3164\uffa0]/gu,
+  (ch) => ch === "\\" ? "\\\\" : ch === " " ? ch : `\\u{${ch.codePointAt(0)!.toString(16)}}`);
 /** A value as text: the first 400 characters, the rest a click away. */
 function valueNode(label: string, value: string | undefined): HTMLElement {
   if (value === undefined) return el("div", { className: "value muted", textContent: `${label}: (none)` });
@@ -60,7 +62,7 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       for (const endpoint of await discover(discoveryStart(settings, LATTICE_EXPLORER_RPC), chainPath, allowedFetch)) candidates.push(endpoint.url);
     } catch { /* what it could not reach is in `missing` */ }
   }
-  const pending: KnownPending[] = [...settings.pendingSubmissions, ...(((await chrome.storage.local.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? [])];
+  const pending = knownPending(settings, ((await chrome.storage.local.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? []);
   for (const url of new Set(candidates)) {
     try {
       const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
@@ -72,8 +74,8 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
-async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint }) {
-  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce) }) });
+async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string }) {
+  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node }) });
   if (answer.ok) window.close();
   else if (answer.error === "Locked") render();
   else fail(answer.error ?? "Could not finish");

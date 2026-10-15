@@ -4,9 +4,30 @@
 
 import { ROOT_CHAIN } from "../config.ts";
 import type { Settings } from "./settings.ts";
+import type { SignedSubmit } from "./types.ts";
 
 /** A transaction this wallet signed whose outcome it has not seen yet. */
 export interface KnownPending { chain: string; from: string; nonce: string }
+
+const fromSigned = (signed: SignedSubmit | undefined): KnownPending[] => {
+  const body = signed?.payload.transaction.body;
+  return body?.signers.length ? [{ chain: body.chainPath.join("/"), from: body.signers[0], nonce: body.nonce }] : [];
+};
+
+/**
+ * Every transaction this wallet knows may still be pending: its sends, its
+ * deposits, receipts and withdrawal attempts, and the page writes it
+ * submitted. A nonce among them is not free.
+ */
+export function knownPending(settings: Settings, pageWrites: readonly KnownPending[]): KnownPending[] {
+  return [
+    ...settings.pendingSubmissions.map(({ chain, from, nonce }) => ({ chain, from, nonce })),
+    ...settings.openDeposits.map((d) => ({ chain: d.childChain.join("/"), from: d.demander, nonce: d.transactionNonce })),
+    ...settings.openDeposits.flatMap((d) => fromSigned(d.signedSubmit)),
+    ...settings.openPurchases.flatMap((p) => [p.receiptSubmit, ...(p.withdrawalAttempts ?? [])].flatMap(fromSigned)),
+    ...pageWrites,
+  ];
+}
 
 /**
  * The next nonce free for `from` on `chain`: the account's nonce on chain,

@@ -5,7 +5,8 @@
 
 import { createSigner } from "../lib/wallet/signer.ts";
 import type { Vault } from "../lib/crypto/keystore.ts";
-import type { Request, Response, WalletState } from "../lib/wallet/types.ts";
+import type { Request, Response, SignedSubmit, WalletState } from "../lib/wallet/types.ts";
+import { browserFetch, describe, isDefiniteSubmissionRefusal, submitChecked, submitter } from "../lib/wallet/node.ts";
 import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
 import type { KnownPending } from "../lib/wallet/nonce.ts";
 
@@ -35,6 +36,14 @@ interface Pending {
   settle: (r: Response) => void;
 }
 const pending = new Map<string, Pending>();
+// A site whose request was just declined waits before asking again, so a
+// page cannot reopen the window the moment it is closed.
+const DECLINE_PAUSE_MS = 5000;
+const declinedAt = new Map<string, number>();
+function declined(request: Pending) {
+  declinedAt.set(request.origin, Date.now());
+  request.settle({ ok: false, error: "The person declined" });
+}
 const connections = async (): Promise<Record<string, string>> =>
   ((await store.get("connections")).connections as Record<string, string> | undefined) ?? {};
 
@@ -43,6 +52,9 @@ async function ask(origin: string, call: ProviderCall, address: string | null): 
   // second request under a click meant for the first.
   if ([...pending.values()].some((request) => request.origin === origin)) {
     return { ok: false, error: "A request from this site is already waiting in the wallet" };
+  }
+  if (Date.now() - (declinedAt.get(origin) ?? -Infinity) < DECLINE_PAUSE_MS) {
+    return { ok: false, error: "The person just declined; ask again in a moment" };
   }
   const id = crypto.randomUUID();
   return new Promise((settle) => {
@@ -80,12 +92,26 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
 const pageWrites = async (): Promise<KnownPending[]> =>
   ((await store.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? [];
 
-async function fromApproval(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown }): Promise<Response> {
+// Decisions run one at a time: two windows signing for one account must not
+// both take a nonce, or both rewrite pageWrites.
+let deciding: Promise<unknown> = Promise.resolve();
+function serialized(msg: Parameters<typeof decideNow>[0]): Promise<Response> {
+  const next = deciding.then(() => decideNow(msg));
+  deciding = next.catch(() => {});
+  return next;
+}
+
+async function fromApproval(msg: Parameters<typeof decideNow>[0]): Promise<Response> {
+  if (msg.type === "decide") return serialized(msg);
+  return decideNow(msg);
+}
+
+async function decideNow(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown; node?: unknown }): Promise<Response> {
   const request = msg.id ? pending.get(msg.id) : undefined;
   if (!request) return { ok: false, error: "This request is gone (answered, or the page went away)." };
   if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address: request.address } as Response;
   if (!msg.approve) {
-    request.settle({ ok: false, error: "The person declined" });
+    declined(request);
     return { ok: true };
   }
   if (request.call.method === "connect") {
@@ -104,23 +130,50 @@ async function fromApproval(msg: { type: string; id?: string; approve?: boolean;
     return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
   }
   // The nonce the window read from the person's node (nonce.ts); never the page's.
-  if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce)) return { ok: false, error: "The wallet has not read this account's nonce" };
-  const signed = await signer.handle({ type: "signRecords", from: request.address, ...request.call.params, nonce: msg.nonce });
-  if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+  if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce) || typeof msg.node !== "string") {
+    return { ok: false, error: "The wallet has not read this account's nonce" };
+  }
   const chain = request.call.params.chainPath.join("/");
   const from = request.address;
+  const nonce = msg.nonce;
+  if ((await pageWrites()).some((p) => p.chain === chain && p.from === from && p.nonce === nonce)) {
+    return { ok: false, error: "That nonce was just taken; check again" };
+  }
+  const signed = await signer.handle({ type: "signRecords", from, ...request.call.params, nonce });
+  if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+  const signedSubmit = (signed as unknown as { signedSubmit: SignedSubmit }).signedSubmit;
+  // The wallet submits, to the node it read the nonce from: a page never
+  // holds a signed write it could send later, against the person's next
+  // transaction at that nonce.
+  const auth = await signer.handle({ type: "nodeAuthorization", url: msg.node });
+  let delivered: "yes" | "uncertain" = "yes";
+  let failure = "";
+  try {
+    await submitChecked(submitter(msg.node, browserFetch, auth.ok ? (auth as unknown as { authorization?: string }).authorization : undefined), signedSubmit);
+  } catch (e) {
+    if (isDefiniteSubmissionRefusal(e)) {
+      request.settle({ ok: false, error: `The node refused it: ${describe(e)}` });
+      return { ok: false, error: `The node refused it: ${describe(e)}. Nothing was sent.` };
+    }
+    delivered = "uncertain";
+    failure = describe(e);
+  }
+  // Pending until the chain's nonce passes it, even if delivery is uncertain:
+  // it may have been admitted.
   const passed = BigInt(msg.stateNonce);
   await store.set({ pageWrites: [
     ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
-    { chain, from, nonce: msg.nonce },
+    { chain, from, nonce },
   ] });
-  request.settle(signed);
+  request.settle(delivered === "yes"
+    ? { ok: true, signedSubmit, transactionCID: signedSubmit.transactionCID } as Response
+    : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response);
   return { ok: true };
 }
 
 chrome.windows.onRemoved.addListener((closed) => {
   for (const request of pending.values()) {
-    if (request.window === closed) request.settle({ ok: false, error: "The person declined" });
+    if (request.window === closed) declined(request);
   }
 });
 
