@@ -84,6 +84,22 @@ test("pages connect and write only through the person's approval", async () => {
   assert.deepEqual(body.signers, [address]);
   assert.deepEqual(body.accountActions, [{ owner: address, delta: "-1" }]);
 
+  // One waiting request per site; and a write signs only as the account it
+  // showed, while the site is still connected to it.
+  const first = page(writeCall);
+  await new Promise((r) => setTimeout(r, 10));
+  const firstId = requestId();
+  assert.equal((await page(writeCall)).error, "A request from this site is already waiting in the wallet");
+  assert.equal((await page({ method: "connect" })).ok, true, "a connected site's connect() opens nothing");
+  assert.equal((await approval({ type: "pending", id: firstId })).address, address);
+  await page({ method: "disconnect" });
+  assert.match(String((await approval({ type: "decide", id: firstId, approve: true })).error), /connection changed/);
+  assert.deepEqual(await first, { ok: false, error: "The site's connection changed; ask again" });
+  const reconnecting = page({ method: "connect" });
+  await new Promise((r) => setTimeout(r, 10));
+  await approval({ type: "decide", id: requestId(), approve: true, address });
+  assert.equal((await reconnecting).address, address);
+
   // Disconnect forgets the site.
   assert.deepEqual(await page({ method: "disconnect" }), { ok: true, address: null });
   assert.equal((await page(writeCall)).error, "Not connected: call connect() first");

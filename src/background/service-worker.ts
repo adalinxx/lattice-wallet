@@ -28,6 +28,8 @@ const signer = createSigner(
 interface Pending {
   origin: string;
   call: ProviderCall;
+  /** For a write: the account shown to the person, the only one that may sign it. */
+  address: string | null;
   window?: number;
   settle: (r: Response) => void;
 }
@@ -35,10 +37,15 @@ const pending = new Map<string, Pending>();
 const connections = async (): Promise<Record<string, string>> =>
   ((await store.get("connections")).connections as Record<string, string> | undefined) ?? {};
 
-async function ask(origin: string, call: ProviderCall): Promise<Response> {
+async function ask(origin: string, call: ProviderCall, address: string | null): Promise<Response> {
+  // One waiting request per site: a page cannot stack windows, or slip a
+  // second request under a click meant for the first.
+  if ([...pending.values()].some((request) => request.origin === origin)) {
+    return { ok: false, error: "A request from this site is already waiting in the wallet" };
+  }
   const id = crypto.randomUUID();
   return new Promise((settle) => {
-    const request: Pending = { origin, call, settle: (r) => { pending.delete(id); settle(r); } };
+    const request: Pending = { origin, call, address, settle: (r) => { pending.delete(id); settle(r); } };
     pending.set(id, request);
     chrome.windows.create({ url: chrome.runtime.getURL(`approve/index.html?id=${id}`), type: "popup", width: 380, height: 600 })
       .then((w) => { request.window = w?.id; })
@@ -60,10 +67,10 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
       return { ok: true, address: null } as Response;
     }
     case "connect":
-      return address ? { ok: true, address } as Response : ask(origin, call);
+      return address ? { ok: true, address } as Response : ask(origin, call, null);
     case "writeRecords":
       if (!address) return { ok: false, error: "Not connected: call connect() first" };
-      return ask(origin, call);
+      return ask(origin, call, address);
   }
 }
 
@@ -71,8 +78,7 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
 async function fromApproval(msg: { type: string; id?: string; approve?: boolean; address?: string }): Promise<Response> {
   const request = msg.id ? pending.get(msg.id) : undefined;
   if (!request) return { ok: false, error: "This request is gone (answered, or the page went away)." };
-  const address = (await connections())[request.origin] ?? null;
-  if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address } as Response;
+  if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address: request.address } as Response;
   if (!msg.approve) {
     request.settle({ ok: false, error: "The person declined" });
     return { ok: true };
@@ -85,8 +91,14 @@ async function fromApproval(msg: { type: string; id?: string; approve?: boolean;
     request.settle({ ok: true, address: chosen.address } as Response);
     return { ok: true };
   }
-  if (request.call.method !== "writeRecords" || !address) return { ok: false, error: "Not connected" };
-  const signed = await signer.handle({ type: "signRecords", from: address, ...request.call.params });
+  if (request.call.method !== "writeRecords" || !request.address) return { ok: false, error: "Not connected" };
+  // Sign only as the account the person was shown, and only while the site
+  // is still connected to it.
+  if ((await connections())[request.origin] !== request.address) {
+    request.settle({ ok: false, error: "The site's connection changed; ask again" });
+    return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
+  }
+  const signed = await signer.handle({ type: "signRecords", from: request.address, ...request.call.params });
   if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
   request.settle(signed);
   return { ok: true };

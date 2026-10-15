@@ -16,7 +16,17 @@ function el(tag: string, props: Record<string, unknown> = {}, ...children: (Node
   return node;
 }
 const field = (label: string, value: string) => el("div", { className: "row" }, el("span", { className: "k", textContent: label }), el("span", { className: "v addr", textContent: value }));
-const shown = (value: string | undefined) => value === undefined ? "(none)" : value.length > 400 ? `${value.slice(0, 400)}…` : value;
+// Characters that print as nothing, or reorder what follows, are shown as
+// their code points, so a key cannot pass for another.
+const visible = (text: string) => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (ch) => `\\u{${ch.codePointAt(0)!.toString(16)}}`);
+/** A value as text: the first 400 characters, the rest a click away. */
+function valueNode(label: string, value: string | undefined): HTMLElement {
+  if (value === undefined) return el("div", { className: "value muted", textContent: `${label}: (none)` });
+  const text = visible(value);
+  if (text.length <= 400) return el("div", { className: "value muted", textContent: `${label}: ${text}` });
+  return el("details", { className: "value muted" }, el("summary", { textContent: `${label}: ${text.slice(0, 400)}… (${text.length} characters)` }), text);
+}
+const grouped = (decimal: string) => BigInt(decimal).toLocaleString("en-US");
 
 function fail(message: string) {
   view.replaceChildren(el("p", { className: "warn", textContent: message }), el("button", { className: "btn block", textContent: "Close", onclick: () => window.close() }));
@@ -29,10 +39,23 @@ async function decide(approve: boolean, address?: string) {
   else fail(answer.error ?? "Could not finish");
 }
 
+// The approving button wakes up a moment after the window is seen, so a
+// click aimed at something else cannot land on it.
+const ARM_MS = 800;
 function buttons(approveLabel: string, onApprove: () => void) {
+  const approve = el("button", { className: "btn primary", type: "button", textContent: approveLabel, onclick: onApprove, disabled: true }) as HTMLButtonElement;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    approve.disabled = true;
+    clearTimeout(timer);
+    if (document.visibilityState === "visible" && document.hasFocus()) timer = setTimeout(() => { approve.disabled = false; }, ARM_MS);
+  };
+  window.addEventListener("focus", arm);
+  window.addEventListener("blur", arm);
+  document.addEventListener("visibilitychange", arm);
+  arm();
   return el("div", { className: "actions-row" },
-    el("button", { className: "btn", type: "button", textContent: "Decline", onclick: () => decide(false) }),
-    el("button", { className: "btn primary", type: "button", textContent: approveLabel, onclick: onApprove }));
+    el("button", { className: "btn", type: "button", textContent: "Decline", onclick: () => decide(false) }), approve);
 }
 
 async function render() {
@@ -74,10 +97,12 @@ async function render() {
     el("p", {}, el("span", { className: "origin", textContent: origin }), ` asks to write ${actions.length} ${actions.length === 1 ? "record" : "records"}. No coins move except the fee.`),
     el("div", { className: "kv" },
       field("Account", account ? `${account.label} · ${account.address}` : String(request.address)),
-      field("Chain", chainPath.join("/")), field("Fee", fee), field("Nonce", nonce)),
+      field("Chain", chainPath.join("/")), field("Fee", grouped(fee)), field("Nonce", nonce)),
     el("ul", { className: "records" }, ...actions.map((a) => el("li", {},
-      el("div", { className: "key", textContent: a.key }),
-      el("div", { className: "value muted", textContent: a.newValue === undefined ? `delete (was ${shown(a.oldValue)})` : `${a.oldValue === undefined ? "new" : "replaces"}: ${shown(a.newValue)}` })))),
+      el("div", { className: "key", textContent: visible(a.key) }),
+      ...(a.newValue === undefined ? [valueNode("delete, was", a.oldValue)]
+        : a.oldValue === undefined ? [valueNode("new", a.newValue)]
+        : [valueNode("was", a.oldValue), valueNode("now", a.newValue)])))),
     buttons("Sign", () => decide(true)));
 }
 
