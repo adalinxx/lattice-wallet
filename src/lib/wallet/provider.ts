@@ -6,12 +6,14 @@ import { parseChainPath } from "../config.ts";
 
 export interface RecordAction { key: string; oldValue?: string; newValue?: string }
 
-/** A page's request to write records: approved by a person, every time. */
+/**
+ * A page's request to write records: approved by a person, every time. No
+ * nonce: the wallet chooses it (see nonce.ts).
+ */
 export interface WriteRequest {
   chainPath: string[];
   actions: RecordAction[];
   fee: string; // decimal
-  nonce: string; // decimal
 }
 
 export type ProviderCall =
@@ -31,7 +33,7 @@ export function parseProviderCall(raw: unknown): ProviderCall | { error: string 
   if (method === "connect" || method === "address" || method === "disconnect") return { method };
   if (method !== "writeRecords") return { error: `Unknown method: ${String(method)}` };
   if (typeof params !== "object" || params === null) return { error: "writeRecords needs params" };
-  const { chainPath, actions, fee, nonce } = params as Record<string, unknown>;
+  const { chainPath, actions, fee } = params as Record<string, unknown>;
   // Each part on its own: joined, a part holding "/" would pass as two.
   const path = Array.isArray(chainPath) && chainPath.every((part) => typeof part === "string" && !part.includes("/"))
     ? parseChainPath(chainPath.join("/")) : null;
@@ -46,8 +48,15 @@ export function parseProviderCall(raw: unknown): ProviderCall | { error: string 
     clean.push({ key, ...(oldValue === undefined ? {} : { oldValue: oldValue as string }), ...(newValue === undefined ? {} : { newValue: newValue as string }) });
   }
   if (!decimal(fee, (1n << 63n) - 1n)) return { error: "fee must be a decimal integer" };
-  if (!decimal(nonce, (1n << 64n) - 1n)) return { error: "nonce must be a decimal integer" };
-  return { method, params: { chainPath: path, actions: clean, fee, nonce } };
+  return { method, params: { chainPath: path, actions: clean, fee } };
+}
+
+/** A nonce as the signer takes it: a decimal UInt64. */
+export const isNonce = (value: unknown): value is string => decimal(value, (1n << 64n) - 1n);
+
+export function parseRecordsWrite(params: unknown): WriteRequest | { error: string } {
+  const call = parseProviderCall({ method: "writeRecords", params });
+  return "error" in call ? call : call.method === "writeRecords" ? call.params : { error: "Malformed request" };
 }
 
 /** The origin a request comes from: only a top-level http(s) page. */

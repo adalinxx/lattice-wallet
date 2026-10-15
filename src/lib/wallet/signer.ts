@@ -8,7 +8,7 @@ import { encryptVault, decryptVault, deriveForVault, encryptWithVaultKey, type V
 import { deriveAccounts, toView, nextHdLabel, signDeposit, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
-import { parseProviderCall } from "./provider.ts";
+import { isNonce, parseRecordsWrite } from "./provider.ts";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import { backupContents, encryptBackup, decryptBackup, mergeWalletData } from "./backup.ts";
 import { newOffer, encodeOffer, decodeOffer, decodeEnvelope, encodeEnvelope, seal, open, type Offer } from "./pairing.ts";
@@ -312,10 +312,11 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if (!session) return { ok: false, error: "Locked" };
         const acct = findAccount(msg.from);
         if (!acct) return { ok: false, error: "Unknown sender" };
-        const call = parseProviderCall({ method: "writeRecords", params: msg });
-        if ("error" in call) return { ok: false, error: call.error };
-        if (call.method !== "writeRecords") return { ok: false, error: "Malformed request" };
-        const { chainPath, actions, fee, nonce } = call.params;
+        const write = parseRecordsWrite(msg);
+        if ("error" in write) return { ok: false, error: write.error };
+        if (!isNonce(msg.nonce)) return { ok: false, error: "nonce must be a decimal integer" };
+        const { chainPath, actions, fee } = write;
+        const nonce = msg.nonce;
         try {
           return { ok: true, signedSubmit: signRecords(acct, { actions, fee: BigInt(fee), nonce: BigInt(nonce), chainPath }) } as Response;
         } catch (e) {

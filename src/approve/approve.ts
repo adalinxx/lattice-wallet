@@ -4,6 +4,10 @@
 
 import type { ProviderCall } from "../lib/wallet/provider.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
+import { loadSettings } from "../lib/wallet/settings.ts";
+import { chosenNodes, discoveryStart, nextNonce, type KnownPending } from "../lib/wallet/nonce.ts";
+import { browserFetch, discover, reader } from "../lib/wallet/node.ts";
+import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
 const view = document.getElementById("view")!;
@@ -32,8 +36,44 @@ function fail(message: string) {
   view.replaceChildren(el("p", { className: "warn", textContent: message }), el("button", { className: "btn block", textContent: "Close", onclick: () => window.close() }));
 }
 
-async function decide(approve: boolean, address?: string) {
-  const answer = await send({ type: "decide", id, approve, address });
+// ---- the nonce, read from the person's own node choices ----
+
+type NonceRead = { nonce: bigint; stateNonce: bigint; node: string } | { missing: string[] } | { error: string };
+const permitted = (origin: string) => chrome.permissions.contains({ origins: [origin] });
+
+/** The next free nonce for `address` on `chainPath`, from a node the person chose or allowed. */
+async function readNonce(chainPath: string[], address: string): Promise<NonceRead> {
+  const settings = await loadSettings(chrome.storage.local);
+  const missing = new Set<string>();
+  // Only nodes the person allowed are asked; the others are named to them.
+  const allowedFetch: typeof browserFetch = async (input, init) => {
+    const origin = originPattern(String(input instanceof Request ? input.url : input));
+    if (!(await permitted(origin))) {
+      missing.add(origin);
+      throw new Error(`no access to ${origin}`);
+    }
+    return browserFetch(input, init);
+  };
+  const candidates = chosenNodes(settings, chainPath);
+  if (settings.nodeMode === "automatic") {
+    try {
+      for (const endpoint of await discover(discoveryStart(settings, LATTICE_EXPLORER_RPC), chainPath, allowedFetch)) candidates.push(endpoint.url);
+    } catch { /* what it could not reach is in `missing` */ }
+  }
+  const pending: KnownPending[] = [...settings.pendingSubmissions, ...(((await chrome.storage.local.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? [])];
+  for (const url of new Set(candidates)) {
+    try {
+      const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
+      const state = await reader(url, chainPath, allowedFetch, auth).account(address);
+      return { nonce: nextNonce(state.nonce, chainPath.join("/"), address, pending), stateNonce: state.nonce, node: url };
+    } catch { /* not this node */ }
+  }
+  return missing.size ? { missing: [...missing] }
+    : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
+}
+
+async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint }) {
+  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce) }) });
   if (answer.ok) window.close();
   else if (answer.error === "Locked") render();
   else fail(answer.error ?? "Could not finish");
@@ -42,20 +82,22 @@ async function decide(approve: boolean, address?: string) {
 // The approving button wakes up a moment after the window is seen, so a
 // click aimed at something else cannot land on it.
 const ARM_MS = 800;
-function buttons(approveLabel: string, onApprove: () => void) {
+/** Decline and approve; approve also waits for `ready` (re-checked by calling the returned arm). */
+function buttons(approveLabel: string, onApprove: () => void, ready: () => boolean = () => true) {
   const approve = el("button", { className: "btn primary", type: "button", textContent: approveLabel, onclick: onApprove, disabled: true }) as HTMLButtonElement;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const arm = () => {
     approve.disabled = true;
     clearTimeout(timer);
-    if (document.visibilityState === "visible" && document.hasFocus()) timer = setTimeout(() => { approve.disabled = false; }, ARM_MS);
+    if (document.visibilityState === "visible" && document.hasFocus()) timer = setTimeout(() => { approve.disabled = !ready(); }, ARM_MS);
   };
   window.addEventListener("focus", arm);
   window.addEventListener("blur", arm);
   document.addEventListener("visibilitychange", arm);
   arm();
-  return el("div", { className: "actions-row" },
+  const row = el("div", { className: "actions-row" },
     el("button", { className: "btn", type: "button", textContent: "Decline", onclick: () => decide(false) }), approve);
+  return Object.assign(row, { arm });
 }
 
 async function render() {
@@ -90,20 +132,54 @@ async function render() {
     return;
   }
   if (call.method !== "writeRecords") return fail("Unknown request");
-  const { chainPath, actions, fee, nonce } = call.params;
-  const account = state.accounts.find((a) => a.address === request.address);
+  const { chainPath, actions, fee } = call.params;
+  const address = String(request.address);
+  const account = state.accounts.find((a) => a.address === address);
+  const nonceShown = el("span", { className: "v addr", textContent: "checking…" });
+  const nonceHelp = el("div", { className: "stack" });
+  let nonceRead: NonceRead = { missing: [] };
+  const ready = () => "nonce" in nonceRead;
+  const sign = async () => {
+    // Read again at the moment of signing: the account may have moved.
+    const now = await readNonce(chainPath, address);
+    if (!("nonce" in now)) { nonceRead = now; showNonce(); return; }
+    decide(true, undefined, now);
+  };
+  const row = buttons("Sign", () => { sign().catch((e) => fail(String(e?.message ?? e))); }, ready);
+  function showNonce() {
+    if ("nonce" in nonceRead) {
+      nonceShown.textContent = `${nonceRead.nonce} (from ${new URL(nonceRead.node).host})`;
+      nonceHelp.replaceChildren();
+    } else if ("missing" in nonceRead && nonceRead.missing.length) {
+      const hosts = nonceRead.missing;
+      nonceShown.textContent = "needs your permission";
+      nonceHelp.replaceChildren(
+        el("p", { className: "muted", textContent: `To check your account on this chain, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}.` }),
+        el("button", { className: "btn block", type: "button", textContent: "Allow", onclick: async () => {
+          if (await chrome.permissions.request({ origins: hosts }).catch(() => false)) check();
+        } }));
+    } else if ("error" in nonceRead) {
+      nonceShown.textContent = "unknown";
+      nonceHelp.replaceChildren(el("p", { className: "warn", textContent: nonceRead.error }));
+    }
+    row.arm();
+  }
+  const check = () => readNonce(chainPath, address).then((r) => { nonceRead = r; showNonce(); }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showNonce(); });
   view.replaceChildren(
     el("h1", { textContent: "Sign a write" }),
     el("p", {}, el("span", { className: "origin", textContent: origin }), ` asks to write ${actions.length} ${actions.length === 1 ? "record" : "records"}. No coins move except the fee.`),
     el("div", { className: "kv" },
-      field("Account", account ? `${account.label} · ${account.address}` : String(request.address)),
-      field("Chain", chainPath.join("/")), field("Fee", grouped(fee)), field("Nonce", nonce)),
+      field("Account", account ? `${account.label} · ${account.address}` : address),
+      field("Chain", chainPath.join("/")), field("Fee", grouped(fee)),
+      el("div", { className: "row" }, el("span", { className: "k", textContent: "Nonce" }), nonceShown)),
+    nonceHelp,
     el("ul", { className: "records" }, ...actions.map((a) => el("li", {},
       el("div", { className: "key", textContent: visible(a.key) }),
       ...(a.newValue === undefined ? [valueNode("delete, was", a.oldValue)]
         : a.oldValue === undefined ? [valueNode("new", a.newValue)]
         : [valueNode("was", a.oldValue), valueNode("now", a.newValue)])))),
-    buttons("Sign", () => decide(true)));
+    row);
+  check();
 }
 
 // The worker keeps this request only while it runs; checking in keeps it awake.

@@ -6,7 +6,8 @@
 import { createSigner } from "../lib/wallet/signer.ts";
 import type { Vault } from "../lib/crypto/keystore.ts";
 import type { Request, Response, WalletState } from "../lib/wallet/types.ts";
-import { pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
+import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
+import type { KnownPending } from "../lib/wallet/nonce.ts";
 
 const AUTO_LOCK_MINUTES = 10;
 const store = chrome.storage.local;
@@ -75,7 +76,11 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
 }
 
 /** The approval window's view of its request, and the person's answer. */
-async function fromApproval(msg: { type: string; id?: string; approve?: boolean; address?: string }): Promise<Response> {
+/** Page writes this wallet signed, until the chain's nonce passes them (nonce.ts). */
+const pageWrites = async (): Promise<KnownPending[]> =>
+  ((await store.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? [];
+
+async function fromApproval(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown }): Promise<Response> {
   const request = msg.id ? pending.get(msg.id) : undefined;
   if (!request) return { ok: false, error: "This request is gone (answered, or the page went away)." };
   if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address: request.address } as Response;
@@ -98,8 +103,17 @@ async function fromApproval(msg: { type: string; id?: string; approve?: boolean;
     request.settle({ ok: false, error: "The site's connection changed; ask again" });
     return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
   }
-  const signed = await signer.handle({ type: "signRecords", from: request.address, ...request.call.params });
+  // The nonce the window read from the person's node (nonce.ts); never the page's.
+  if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce)) return { ok: false, error: "The wallet has not read this account's nonce" };
+  const signed = await signer.handle({ type: "signRecords", from: request.address, ...request.call.params, nonce: msg.nonce });
   if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+  const chain = request.call.params.chainPath.join("/");
+  const from = request.address;
+  const passed = BigInt(msg.stateNonce);
+  await store.set({ pageWrites: [
+    ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
+    { chain, from, nonce: msg.nonce },
+  ] });
   request.settle(signed);
   return { ok: true };
 }
@@ -127,7 +141,7 @@ chrome.runtime.onMessage.addListener((message: { type?: unknown }, sender, sendR
     // The approval window answers its request, and may read state and unlock.
     const kind = message?.type;
     const answer = kind === "pending" || kind === "decide" ? fromApproval(message as never)
-      : msg.type === "getState" || msg.type === "unlock" ? signer.handle(msg)
+      : msg.type === "getState" || msg.type === "unlock" || msg.type === "nodeAuthorization" ? signer.handle(msg)
       : Promise.resolve({ ok: false, error: "Not allowed here" } as Response);
     if (kind === "unlock" || kind === "decide") chrome.alarms.create("auto-lock", { delayInMinutes: AUTO_LOCK_MINUTES });
     answer.then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));

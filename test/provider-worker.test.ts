@@ -35,7 +35,9 @@ test("pages connect and write only through the person's approval", async () => {
   const popup = (msg: unknown) => send(msg, { id: "wallet-id", url: prefix + "popup/index.html" });
   const approval = (msg: unknown) => send(msg, { id: "wallet-id", url: opened.at(-1) });
   const requestId = () => new URL(opened.at(-1)!).searchParams.get("id");
-  const writeCall = { method: "writeRecords", params: { chainPath: ["Nexus", "stoa"], actions: [{ key: "k", newValue: "v" }], fee: "1", nonce: "0" } };
+  const writeCall = { method: "writeRecords", params: { chainPath: ["Nexus", "stoa"], actions: [{ key: "k", newValue: "v" }], fee: "1" } };
+  // The window read these from the person's node (approve.ts); the page never sends one.
+  const read = { nonce: "3", stateNonce: "2" };
 
   const created = await popup({ type: "createWallet", password: "pw", mnemonic: MNEMONIC });
   const address = (created.state as { accounts: { address: string }[] }).accounts[0].address;
@@ -75,14 +77,19 @@ test("pages connect and write only through the person's approval", async () => {
   await new Promise((r) => setTimeout(r, 10));
   const id = requestId();
   assert.deepEqual((await approval({ type: "pending", id })).call, writeCall);
-  assert.equal((await approval({ type: "decide", id, approve: true })).error, "Locked");
+  assert.equal((await approval({ type: "decide", id, approve: true, ...read })).error, "Locked");
   assert.equal((await approval({ type: "unlock", password: "pw" })).ok, true);
-  assert.deepEqual(await approval({ type: "decide", id, approve: true }), { ok: true });
+  assert.equal((await approval({ type: "decide", id, approve: true })).error, "The wallet has not read this account's nonce");
+  data.pageWrites = [{ chain: "Nexus/stoa", from: address, nonce: "1" }, { chain: "Nexus/other", from: address, nonce: "0" }];
+  assert.deepEqual(await approval({ type: "decide", id, approve: true, ...read }), { ok: true });
   const signed = await writing;
   assert.ok(signed.ok);
-  const body = (signed.signedSubmit as { payload: { transaction: { body: { signers: string[]; accountActions: unknown[] } } } }).payload.transaction.body;
+  const body = (signed.signedSubmit as { payload: { transaction: { body: { signers: string[]; accountActions: unknown[]; nonce: string } } } }).payload.transaction.body;
   assert.deepEqual(body.signers, [address]);
   assert.deepEqual(body.accountActions, [{ owner: address, delta: "-1" }]);
+  assert.equal(body.nonce, "3", "signed with the nonce the wallet read");
+  assert.deepEqual(data.pageWrites, [{ chain: "Nexus/other", from: address, nonce: "0" }, { chain: "Nexus/stoa", from: address, nonce: "3" }],
+    "the write is remembered as pending; one the chain has passed is forgotten");
 
   // One waiting request per site; and a write signs only as the account it
   // showed, while the site is still connected to it.
