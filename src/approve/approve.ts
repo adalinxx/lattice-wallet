@@ -72,12 +72,14 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       // Ask the node each write went to whether it knows it, before reading the
       // account (a block landing in between then only makes the write look live).
       const dead = new Set<string>();
-      for (const write of pageWrites) {
-        if (write.chain !== chain || write.from !== address || !write.cid) continue;
-        const at = write.node && write.node !== url ? reader(write.node, chainPath, allowedFetch) : node;
-        const status = await sentStatus(at, write.cid, { from: address, nonce: BigInt(write.nonce) }).catch(() => null);
-        if (status?.kind === "unknown to node") dead.add(write.cid);
-      }
+      await Promise.all(pageWrites.filter((w) => w.chain === chain && w.from === address && w.cid).map(async (write) => {
+        const elsewhere = write.node && write.node !== url;
+        const at = elsewhere
+          ? reader(write.node!, chainPath, allowedFetch, (await send({ type: "nodeAuthorization", url: write.node })).authorization as string | undefined)
+          : node;
+        const status = await sentStatus(at, write.cid!, { from: address, nonce: BigInt(write.nonce) }).catch(() => null);
+        if (status?.kind === "unknown to node") dead.add(write.cid!);
+      }));
       const state = await node.account(address);
       const live = livePageWrites(pageWrites, chain, state.nonce, dead);
       const stale = [...dead];
