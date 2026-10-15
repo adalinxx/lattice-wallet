@@ -14,11 +14,17 @@ cpSync("public", outdir, { recursive: true });
 mkdirSync(`${outdir}/popup`, { recursive: true });
 cpSync("src/popup/index.html", `${outdir}/popup/index.html`);
 cpSync("src/popup/popup.css", `${outdir}/popup/popup.css`);
+mkdirSync(`${outdir}/approve`, { recursive: true });
+cpSync("src/approve/index.html", `${outdir}/approve/index.html`);
+cpSync("src/approve/approve.css", `${outdir}/approve/approve.css`);
 
 const ctx = await esbuild.context({
   entryPoints: {
     "popup/popup": "src/popup/popup.ts",
     "background/service-worker": "src/background/service-worker.ts",
+    "approve/approve": "src/approve/approve.ts",
+    "page/inpage": "src/page/inpage.ts",
+    "page/content": "src/page/content.ts",
   },
   outdir,
   bundle: true,

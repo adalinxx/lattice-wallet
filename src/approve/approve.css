@@ -1,0 +1,52 @@
+/* The approval window, over the popup's styles (popup.css) and the same
+   system: monochrome, monospace, hairlines. What decides the request is
+   largest and first; the decision itself stays at the foot of the window. */
+
+.origin strong { font-weight: 600; overflow-wrap: anywhere; }
+.origin .scheme { opacity: 0.6; }
+p.meta, div.meta { margin-bottom: 0; overflow-wrap: anywhere; }
+
+/* What the person pays: the total, large; then each part of it. */
+.summary { padding: var(--s-3); }
+.summary > * + * { margin-top: var(--s-1); }
+.summary .balance-value { font-size: var(--fs-28); }
+/* One grid for every line, so the amounts align and add up down the column. */
+.breakdown { list-style: none; display: grid; grid-template-columns: auto 1fr; gap: var(--s-2) var(--s-3); margin: var(--s-3) 0 0; padding: var(--s-3) 0 0; border-top: var(--rule); }
+.breakdown li { display: contents; }
+.breakdown .amount { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.breakdown .to { min-width: 0; }
+.breakdown .notice { margin: var(--s-2) 0 0; }
+
+/* An address the wallet knows, shown as its name: inverted, as no text a page sends can be. */
+.name { background: var(--ink); color: var(--paper); padding: 0 var(--s-1); white-space: nowrap; }
+/* A whole address, four characters to a group. */
+.groups { display: inline-flex; flex-wrap: wrap; column-gap: 0.6ch; }
+
+.records { list-style: none; padding: 0; margin: 0; }
+.records li { max-width: none; margin: 0; padding: var(--s-2) 0; border-top: var(--rule); }
+.records .key { font-size: var(--fs-14); overflow-wrap: anywhere; }
+.records .value { font-size: var(--fs-12); overflow-wrap: anywhere; white-space: pre-wrap; }
+.records.raw { max-height: 260px; overflow: auto; }
+.advanced-content > * + * { margin-top: var(--s-3); }
+/* In Details each value sits under its label, left-aligned, so a whole address reads group by group. */
+.advanced-content .kv .row { flex-direction: column; gap: 2px; }
+.advanced-content .kv .v { min-width: 0; text-align: left; overflow-wrap: anywhere; font-size: var(--fs-12); }
+.records.raw .key { font-size: var(--fs-12); }
+
+.message { font-size: var(--fs-12); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow: auto; margin: 0; padding: var(--s-2) var(--s-3); border: var(--rule); }
+
+/* The decision: at the foot of the window, whatever is scrolled above it. */
+.decision { position: sticky; bottom: 0; margin-top: var(--s-4); padding: var(--s-2) 0 var(--s-3); border-top: var(--rule); background: var(--paper); }
+.decision .status { font-size: var(--fs-12); margin-bottom: var(--s-2); }
+.decision .status:empty { display: none; }
+.decision .status p { margin: 0 0 var(--s-2); }
+.actions-row { display: flex; gap: var(--s-2); }
+.actions-row > * { min-height: 44px; white-space: nowrap; }
+.actions-row > .btn--primary { flex: 1; }
+/* While the approving button wakes, a bar fills across its foot. */
+.btn--primary { position: relative; }
+.btn--primary.arming::after { content: ""; position: absolute; left: 0; bottom: 0; height: 3px; background: var(--paper); animation: arming 800ms linear forwards; }
+@keyframes arming { from { width: 0; } to { width: 100%; } }
+@media (prefers-reduced-motion: reduce) { .btn--primary.arming::after { animation: none; width: 100%; } }
+/* Content runs on under the bar: the status line says so, as a way down. */
+.decision .status .text-action { font-size: var(--fs-12); }

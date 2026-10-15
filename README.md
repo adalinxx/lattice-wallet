@@ -119,6 +119,84 @@ chain scanning.
 
 > one proof. every chain.
 
+## Web pages: `window.lattice`
+
+A web page can ask the wallet for an address, ask it to sign writes of
+records that may also pay addresses, and ask it to sign a message. The
+wallet adds `window.lattice` to every http(s) page:
+
+```js
+const address = await lattice.connect(); // from a click; asks the person once per site
+const { transactionCID } = await lattice.writeRecords({
+  chainPath: ["Nexus", "stoa"],
+  actions: [{ key: "profile/<address>", newValue: "{\"name\":\"Alice\"}" }],
+  fee: "1", // decimal string
+});
+
+// A write that also pays, in the same transaction (a ticket and its price):
+await lattice.writeRecords({
+  chainPath: ["Nexus", "fanfare", "band"],
+  actions: [{ key: "own/<artist>/berlin/A12", oldValue: "<holder>@250", newValue: "<buyer>" }],
+  payments: [{ to: "<holder>", amount: "250" }],
+  fee: "1",
+});
+
+// A message: signed as "lattice-message:" + the page's origin + "\n" + text.
+const { publicKey, signature } = await lattice.signMessage({ text: "door check 7f3c…" });
+```
+
+`lattice.address()` returns the site's address without asking (or null), and
+`lattice.disconnect()` forgets the site.
+
+- **Every write is approved, and shown as what it does to you.** Each
+  `writeRecords` opens the wallet's own window. It leads with what you pay
+  (payments plus fee, on the chain's coin, from which account), each part
+  of it, and your balance after; then each record, was → now. Addresses the
+  wallet knows appear as names in an inverted tag (*you*, *payee*, an
+  account's label), which no text from a page can look like. A payee is
+  "named in" the record whose old value holds its address (the chain refuses
+  a write whose old value is stale); a payee no record names is shown whole,
+  in groups of four, with a warning beside it, and listed first. Full
+  addresses, the records as sent and the nonce are under Details. The
+  approving button names what it does ("Pay 251", "Sign write") and stays
+  off, saying why, until the account, read from your node, covers the debit,
+  and until everything that decides the request has been on screen: what
+  does not fit must be scrolled to (the bar offers a way down), so nothing a
+  page puts below the fold is approved unseen. There are no standing
+  allowances.
+- **Records, payments and a fee, nothing else.** The wallet builds the
+  transaction: the records, a debit of the connected account for the
+  payments plus the fee, a credit to each payee, and that account as the
+  only signer. Coin leaves only the connected account. A payee is a
+  canonical address other than that account, each once, each amount above
+  zero (at most 16 payments). The page chose who is paid; the window says so.
+- **Messages cannot be transactions.** `signMessage` signs
+  `lattice-message:` + the page's origin + a newline + the text with the
+  connected account's key, after the person approves it with the full text
+  shown (a long one must be scrolled to its end). A message naming another site (in a URL, or a "… wants you to sign
+  in" line) gets a warning. A transaction's signed bytes start `lattice-tx-v1:`, so no message
+  signature passes for one, and a verifier rebuilds the bytes with the
+  origin it expects, so a signature taken on one site fails on another. The
+  text is at most 4 KiB of printable characters and line breaks. The page
+  gets the public key (Multikey hex) and the signature (hex), and checks the
+  key belongs to the address it cares about.
+- **The wallet chooses the nonce.** The approval window reads the account
+  from the person's own nodes (the one chosen for the chain or an ancestor,
+  else one discovered from their Nexus node, once they allow it) and moves
+  past every transaction the wallet knows is pending there (sends, deposits,
+  receipts, withdrawals, page writes), so a page cannot
+  take the nonce of a pending transaction and cancel it.
+- **One request at a time per site**, and the approving button wakes a moment
+  after the window is seen, so a click aimed elsewhere cannot land on it.
+- **The site is the one Chrome reports.** The worker takes the origin from
+  the tab's top frame, not from the page; iframes are not answered.
+- **The wallet submits.** It sends the write to the node it read the nonce
+  from, so a page never holds a signed write it could send later against
+  the person's next transaction. The page gets the transaction's CID.
+- **Connecting needs a click.** `connect()` is answered only during a click
+  or key press the person just made (pages call `address()` on load), and a
+  site whose request was declined waits a few seconds before asking again.
+
 ## Why an extension (not a web page)
 
 A static web wallet re-fetches its code on every load, so a host/DNS/supply-chain
