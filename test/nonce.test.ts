@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chosenNodes, knownPending, nextNonce } from "../src/lib/wallet/nonce.ts";
+import { chosenNodes, knownPending, livePageWrites, nextNonce } from "../src/lib/wallet/nonce.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 
 test("the next nonce skips every transaction this wallet knows is pending on that chain, from that account", () => {
@@ -45,4 +45,16 @@ test("every transaction the wallet knows may be pending takes its nonce: sends, 
   assert.equal(nextNonce(3n, "Nexus", "a", pending), 4n, "receipt 3 taken");
   assert.equal(nextNonce(2n, "Nexus/x", "a", pending), 3n, "deposit 2 taken");
   assert.equal(nextNonce(4n, "Nexus/x", "a", pending), 7n, "withdrawals 4, 5 and page write 6 taken");
+});
+
+test("a page write keeps its nonce only while the node's pool holds it", () => {
+  const writes = [
+    { chain: "Nexus/s", from: "a", nonce: "4", cid: "in-pool" },
+    { chain: "Nexus/s", from: "a", nonce: "5", cid: "never-admitted" },
+    { chain: "Nexus/s", from: "a", nonce: "2", cid: "landed" },
+    { chain: "Nexus/t", from: "a", nonce: "9", cid: "other-chain" },
+  ];
+  const live = livePageWrites(writes, "Nexus/s", 4n, new Set(["in-pool"]));
+  assert.deepEqual(live.map((w) => w.cid), ["in-pool", "other-chain"]);
+  assert.equal(nextNonce(4n, "Nexus/s", "a", live), 5n, "5 is free again: its write never reached the pool");
 });

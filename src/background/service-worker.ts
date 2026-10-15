@@ -8,7 +8,7 @@ import type { Vault } from "../lib/crypto/keystore.ts";
 import type { Request, Response, SignedSubmit, WalletState } from "../lib/wallet/types.ts";
 import { browserFetch, describe, isDefiniteSubmissionRefusal, submitChecked, submitter } from "../lib/wallet/node.ts";
 import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
-import type { KnownPending } from "../lib/wallet/nonce.ts";
+import type { PageWrite } from "../lib/wallet/nonce.ts";
 
 const AUTO_LOCK_MINUTES = 10;
 const store = chrome.storage.local;
@@ -32,6 +32,8 @@ interface Pending {
   call: ProviderCall;
   /** For a write: the account shown to the person, the only one that may sign it. */
   address: string | null;
+  /** Approved and being signed or sent: closing the window no longer declines it. */
+  approved?: boolean;
   window?: number;
   settle: (r: Response) => void;
 }
@@ -89,8 +91,8 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
 
 /** The approval window's view of its request, and the person's answer. */
 /** Page writes this wallet signed, until the chain's nonce passes them (nonce.ts). */
-const pageWrites = async (): Promise<KnownPending[]> =>
-  ((await store.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? [];
+const pageWrites = async (): Promise<PageWrite[]> =>
+  ((await store.get("pageWrites")).pageWrites as PageWrite[] | undefined) ?? [];
 
 // Decisions run one at a time: two windows signing for one account must not
 // both take a nonce, or both rewrite pageWrites.
@@ -106,7 +108,7 @@ async function fromApproval(msg: Parameters<typeof decideNow>[0]): Promise<Respo
   return decideNow(msg);
 }
 
-async function decideNow(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown; node?: unknown }): Promise<Response> {
+async function decideNow(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown; node?: unknown; stale?: unknown }): Promise<Response> {
   const request = msg.id ? pending.get(msg.id) : undefined;
   if (!request) return { ok: false, error: "This request is gone (answered, or the page went away)." };
   if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address: request.address } as Response;
@@ -136,11 +138,15 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   const chain = request.call.params.chainPath.join("/");
   const from = request.address;
   const nonce = msg.nonce;
+  // Writes the window found the node's pool no longer holds stop keeping their nonce.
+  const stale = Array.isArray(msg.stale) ? msg.stale.filter((cid): cid is string => typeof cid === "string") : [];
+  if (stale.length) await store.set({ pageWrites: (await pageWrites()).filter((p) => !(p.chain === chain && p.cid && stale.includes(p.cid))) });
   if ((await pageWrites()).some((p) => p.chain === chain && p.from === from && p.nonce === nonce)) {
     return { ok: false, error: "That nonce was just taken; check again" };
   }
+  request.approved = true;
   const signed = await signer.handle({ type: "signRecords", from, ...request.call.params, nonce });
-  if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+  if (!signed.ok) { request.approved = false; return signed; } // e.g. locked: the window unlocks and tries again
   const signedSubmit = (signed as unknown as { signedSubmit: SignedSubmit }).signedSubmit;
   // The wallet submits, to the node it read the nonce from: a page never
   // holds a signed write it could send later, against the person's next
@@ -163,17 +169,17 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   const passed = BigInt(msg.stateNonce);
   await store.set({ pageWrites: [
     ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
-    { chain, from, nonce },
+    { chain, from, nonce, cid: signedSubmit.transactionCID },
   ] });
   request.settle(delivered === "yes"
-    ? { ok: true, signedSubmit, transactionCID: signedSubmit.transactionCID } as Response
+    ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later
     : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response);
   return { ok: true };
 }
 
 chrome.windows.onRemoved.addListener((closed) => {
   for (const request of pending.values()) {
-    if (request.window === closed) declined(request);
+    if (request.window === closed && !request.approved) declined(request);
   }
 });
 

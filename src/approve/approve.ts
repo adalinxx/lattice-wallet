@@ -5,7 +5,7 @@
 import type { ProviderCall } from "../lib/wallet/provider.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
-import { chosenNodes, discoveryStart, knownPending, nextNonce, type KnownPending } from "../lib/wallet/nonce.ts";
+import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
 import { browserFetch, discover, reader } from "../lib/wallet/node.ts";
 import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
@@ -40,7 +40,8 @@ function fail(message: string) {
 
 // ---- the nonce, read from the person's own node choices ----
 
-type NonceRead = { nonce: bigint; stateNonce: bigint; node: string } | { missing: string[] } | { error: string };
+/** `stale`: page writes the node's pool no longer holds (never admitted, or dropped). */
+type NonceRead = { nonce: bigint; stateNonce: bigint; node: string; stale: string[] } | { missing: string[] } | { error: string };
 const permitted = (origin: string) => chrome.permissions.contains({ origins: [origin] });
 
 /** The next free nonce for `address` on `chainPath`, from a node the person chose or allowed. */
@@ -62,20 +63,25 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       for (const endpoint of await discover(discoveryStart(settings, LATTICE_EXPLORER_RPC), chainPath, allowedFetch)) candidates.push(endpoint.url);
     } catch { /* what it could not reach is in `missing` */ }
   }
-  const pending = knownPending(settings, ((await chrome.storage.local.get("pageWrites")).pageWrites as KnownPending[] | undefined) ?? []);
+  const pageWrites = ((await chrome.storage.local.get("pageWrites")).pageWrites as PageWrite[] | undefined) ?? [];
+  const chain = chainPath.join("/");
   for (const url of new Set(candidates)) {
     try {
       const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
-      const state = await reader(url, chainPath, allowedFetch, auth).account(address);
-      return { nonce: nextNonce(state.nonce, chainPath.join("/"), address, pending), stateNonce: state.nonce, node: url };
+      const node = reader(url, chainPath, allowedFetch, auth);
+      const state = await node.account(address);
+      const pool = new Set((await node.mempool()).transactions);
+      const live = livePageWrites(pageWrites, chain, state.nonce, pool);
+      const stale = pageWrites.filter((p) => p.chain === chain && p.cid && !live.includes(p)).map((p) => p.cid!);
+      return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, node: url, stale };
     } catch { /* not this node */ }
   }
   return missing.size ? { missing: [...missing] }
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
-async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string }) {
-  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node }) });
+async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string; stale: string[] }) {
+  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node, stale: nonce.stale }) });
   if (answer.ok) window.close();
   else if (answer.error === "Locked") render();
   else fail(answer.error ?? "Could not finish");

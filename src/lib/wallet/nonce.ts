@@ -9,6 +9,18 @@ import type { SignedSubmit } from "./types.ts";
 /** A transaction this wallet signed whose outcome it has not seen yet. */
 export interface KnownPending { chain: string; from: string; nonce: string }
 
+/** A page write the wallet sent (or may have: delivery can be uncertain). */
+export interface PageWrite extends KnownPending { cid?: string }
+
+/**
+ * The page writes still pending on `chain`: those at or above the chain's
+ * nonce that the node's pool holds. One the pool does not hold was never
+ * admitted (or was dropped), and must not keep its nonce forever.
+ */
+export function livePageWrites(pageWrites: readonly PageWrite[], chain: string, stateNonce: bigint, pool: ReadonlySet<string>): PageWrite[] {
+  return pageWrites.filter((p) => p.chain !== chain || (BigInt(p.nonce) >= stateNonce && (p.cid === undefined || pool.has(p.cid))));
+}
+
 const fromSigned = (signed: SignedSubmit | undefined): KnownPending[] => {
   const body = signed?.payload.transaction.body;
   return body?.signers.length ? [{ chain: body.chainPath.join("/"), from: body.signers[0], nonce: body.nonce }] : [];
