@@ -129,7 +129,14 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     const finder = nodeFinder(discoveryStart(settings, LATTICE_EXPLORER_RPC), allowedFetch);
     for (let attempt = 0; attempt < 4; attempt++) {
       const found = await finder.nodeFor(chainPath).catch(() => undefined); // what it could not reach is in `missing`
-      if (!found || tried.has(found.url)) break;
+      if (!found) break;
+      if (tried.has(found.url)) {
+        // A chosen node the finder also found (it failed above): forget it, so
+        // the next search moves on. The start node is never forgotten; stop.
+        if (!found.found) break;
+        await finder.forget(chainPath, found);
+        continue;
+      }
       tried.add(found.url);
       const read = await readAt(found.url);
       if (read) return read;
