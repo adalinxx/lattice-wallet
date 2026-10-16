@@ -1,14 +1,14 @@
 # Chrome Web Store submission materials
 
-Local draft for the next release. The Selfhold name is approved; logo and final declarations are pending review.
+Local draft for the next release. The Selfhold name and round-two logo A are selected; the production reconstruction and final declarations remain available for review.
 
 Name: Selfhold
 
-Short description: Non-custodial wallet for Lattice chains. Keys stay on your device; you choose the node.
+Short description: Open-source, self-custodial wallet for Lattice chains. Keys stay on your device; you choose the node.
 
 ## Description
 
-Selfhold is a non-custodial wallet for Lattice. Manage accounts and transact across Lattice chains from your browser.
+Selfhold is an open-source, self-custodial wallet for Lattice. Manage accounts and transact across Lattice chains from your browser.
 
 - Create a wallet or import an existing recovery phrase or private key.
 - Switch between parent and child chains.
@@ -68,6 +68,6 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 
 ## Assets and account tasks
 
-Retain the existing 128px PNG icon temporarily; a new logo requires review before publication. Existing screenshots are historical and must be reviewed/refreshed for Selfhold branding before submission. Three actual 1280×800 Chrome screenshots are checked in under docs/store-assets: welcome, node choice, and unlock. They contain disposable data and no seeds, passwords or cookies. Regenerate with PLAYWRIGHT_MODULE pointing to your installed Playwright package and `node scripts/store-screenshots.cjs`; generated files appear in release/store-assets. Provide a 440×280 promotional image if requested by the dashboard.
+Use the selected Selfhold S/key mark: SVG master and 16/32/48/128px exports in public/assets. Existing screenshots are historical and must be reviewed/refreshed for Selfhold branding before submission. Three actual 1280×800 Chrome screenshots are checked in under docs/store-assets: welcome, node choice, and unlock. They contain disposable data and no seeds, passwords or cookies. Regenerate with PLAYWRIGHT_MODULE pointing to your installed Playwright package and `node scripts/store-screenshots.cjs`; generated files appear in release/store-assets. A 440×280 promotional image is provided at docs/store-assets/selfhold-promo-440x280.png; it is artwork, not a browser screenshot.
 
 Retain the established pseudonymous publisher account and support@lattice.build contact; verify two-step verification in the dashboard. Do not create a new item: update the existing item to preserve its extension ID and storage. The product rename does not authorize changing publisher identity. Publisher registration, account verification, fees, jurisdiction declarations, and final certification are account-owner actions. Select deferred publication while the release gates remain open.

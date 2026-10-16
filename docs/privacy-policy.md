@@ -2,7 +2,7 @@
 
 Draft for the next release; not yet effective.
 
-Selfhold (previously Lattice Wallet) is a non-custodial browser extension for Lattice maintained by the Lattice project. This policy covers the extension, not third-party nodes, websites, Chrome, or community services.
+Selfhold (previously Lattice Wallet) is a self-custodial browser extension for Lattice maintained by the Lattice project. This policy covers the extension, not third-party nodes, websites, Chrome, or community services.
 
 ## Data on your device
 

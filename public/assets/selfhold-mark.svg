@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-label="Selfhold">
+  <style>.ink { fill: #101112; } @media (prefers-color-scheme: dark) { .ink { fill: #f5f5f5; } }</style>
+  <g id="mark" class="ink">
+    <path d="M100 32H216Q234 32 248 46L286 80Q300 94 300 116Q300 136 280 136H166C158 118 140 106 120 106C92 106 70 128 70 156Q70 165 72 172C42 164 20 138 20 108C20 66 56 32 100 32Z"/>
+    <path d="M48 194H82C92 202 106 208 120 208C142 208 160 194 166 168H218V194Q218 200 224 200H244Q250 200 250 194V168H264C286 172 302 194 302 218C302 258 268 286 228 286H98Q80 286 68 274L30 238Q20 228 20 216Q20 194 48 194Z"/>
+    <circle cx="120" cy="156" r="21"/>
+  </g>
+</svg>

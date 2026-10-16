@@ -2,18 +2,22 @@
   "manifest_version": 3,
   "name": "Selfhold",
   "version": "0.4.0",
-  "description": "Non-custodial wallet for Lattice chains. Keys never leave your device; you choose the node.",
+  "description": "Open-source, self-custodial wallet for Lattice. Your keys. Your control.",
   "action": {
     "default_title": "Selfhold",
     "default_popup": "popup/index.html",
     "default_icon": {
-      "48": "assets/lattice-mark-48.png",
-      "128": "assets/lattice-mark-128.png"
+      "16": "assets/selfhold-icon-16.png",
+      "32": "assets/selfhold-icon-32.png",
+      "48": "assets/selfhold-icon-48.png",
+      "128": "assets/selfhold-icon-128.png"
     }
   },
   "icons": {
-    "48": "assets/lattice-mark-48.png",
-    "128": "assets/lattice-mark-128.png"
+    "16": "assets/selfhold-icon-16.png",
+    "32": "assets/selfhold-icon-32.png",
+    "48": "assets/selfhold-icon-48.png",
+    "128": "assets/selfhold-icon-128.png"
   },
   "background": {
     "service_worker": "background/service-worker.js",

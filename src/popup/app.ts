@@ -681,7 +681,7 @@ function route() {
 function welcome() {
   render(
     h("div", { class: "stack" },
-      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "SELFHOLD"), h("p", { class: "muted" }, "non-custodial. keys never leave this device.")),
+      h("div", { class: "hero" }, h("span", { class: "wordmark" }, "SELFHOLD"), h("p", { class: "muted" }, "open-source. self-custodial. your keys, your control.")),
       h("button", { class: "block", onclick: createFlow }, "Create wallet"),
       h("button", { class: "btn block", onclick: restoreChoice }, "Restore or import"),
     ),
