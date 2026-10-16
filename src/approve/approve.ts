@@ -12,7 +12,7 @@ import { addressGroups, addressNames, nameAddresses, otherHosts, payeeRecords, p
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
-import { browserFetch, nodeFinder, reader, sentStatus } from "../lib/wallet/node.ts";
+import { browserFetch, chainNodes, reader, sentStatus } from "../lib/wallet/node.ts";
 import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
@@ -124,24 +124,13 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     if (read) return read;
   }
   if (settings.nodeMode === "automatic") {
-    // Then the SDK's finder: a found node that fails is forgotten, and the
-    // next search tries the others first.
-    const finder = nodeFinder(discoveryStart(settings, LATTICE_EXPLORER_RPC), allowedFetch);
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const found = await finder.nodeFor(chainPath).catch(() => undefined); // what it could not reach is in `missing`
-      if (!found) break;
-      if (tried.has(found.url)) {
-        // A chosen node the finder also found (it failed above): forget it, so
-        // the next search moves on. The start node is never forgotten; stop.
-        if (!found.found) break;
-        await finder.forget(chainPath, found);
-        continue;
-      }
-      tried.add(found.url);
-      const read = await readAt(found.url);
-      if (read) return read;
-      await finder.forget(chainPath, found);
-    }
+    // Then the SDK's failover list: the start node if it serves the chain,
+    // then the declared hosts, each until one answers.
+    const read = await chainNodes(discoveryStart(settings, LATTICE_EXPLORER_RPC), allowedFetch).read(chainPath, async (node) => {
+      if (tried.has(node.url)) throw new Error("already tried");
+      return (await readAt(node.url)) ?? Promise.reject(new Error("not this node"));
+    }).catch(() => undefined); // what it could not reach is in `missing`
+    if (read) return read;
   }
   return missing.size ? { missing: [...missing] }
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };

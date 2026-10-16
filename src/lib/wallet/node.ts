@@ -1,9 +1,9 @@
 // The wallet's use of the SDK's node plane: reads (NodeClient), discovery
-// (ChainNodeFinder and EndpointResolver), submission (HTTPTransactionSubmitter), and how their
+// (ChainNodes and EndpointResolver), submission (HTTPTransactionSubmitter), and how their
 // answers read to the user. Nothing here names a node: every URL is the user's.
 
 import {
-  ChainNodeFinder,
+  ChainNodes,
   EndpointResolver,
   NodeClient,
   NodeError,
@@ -286,9 +286,9 @@ export async function receiptWithdrawer(
 export function declaredHosts(startURL: string, chainPath: string[], fetchImpl: Fetch = browserFetch): Promise<ResolvedEndpoint[]> {
   return new EndpointResolver(reader(startURL, [ROOT_CHAIN], fetchImpl), { fetch: fetchImpl }).resolve(chainPath);
 }
-/** One node to read a chain from, starting at `startURL` (the SDK's finder). */
-export function nodeFinder(startURL: string, fetchImpl: Fetch = browserFetch): ChainNodeFinder {
-  return new ChainNodeFinder(startURL, { fetch: fetchImpl });
+/** The nodes to read a chain from, in order, starting at `startURL` (the SDK's failover list). */
+export function chainNodes(startURL: string, fetchImpl: Fetch = browserFetch): ChainNodes {
+  return new ChainNodes(startURL, { fetch: fetchImpl });
 }
 export { OPERATOR_DECLARED };
 

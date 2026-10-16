@@ -182,7 +182,7 @@ test("a long message must be read to its end before it can be signed", async () 
   assert.equal(approveButton(dom).disabled, false);
 });
 
-test("with no node chosen, the nonce is read from a node the SDK's finder finds, past one that fails", async () => {
+test("with no node chosen, the nonce is read from the chain's next node when one fails", async () => {
   const START = "lattice-mainnet-read.fly.dev";
   const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
     settings: { endpoints: {}, nodeMode: "automatic" },
@@ -206,7 +206,7 @@ test("with no node chosen, the nonce is read from a node the SDK's finder finds,
   assert.equal(approveButton(dom).disabled, false, "the nonce was read");
 });
 
-test("when the chosen node is down and is also the first host found, the finder moves on to the next", async () => {
+test("when the chosen node is down and is also the first host found, the next host is read", async () => {
   const START = "lattice-mainnet-read.fly.dev";
   const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
     settings: { endpoints: { "Nexus/fanfare/band": { url: "https://broken.example", acceptsSubmit: true, source: "discovered" } }, nodeMode: "automatic" },
@@ -227,5 +227,28 @@ test("when the chosen node is down and is also the first host found, the finder 
   });
   assert.ok(!text().includes("None of your nodes"), text());
   assert.equal(approveButton(dom).textContent, "Sign write");
+  assert.equal(approveButton(dom).disabled, false, "the nonce was read");
+});
+
+test("when the start node serves the chain but cannot read the account, a declared host is read", async () => {
+  const START = "lattice-mainnet-read.fly.dev";
+  const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
+    settings: { endpoints: {}, nodeMode: "automatic" },
+    fetch: (url) => {
+      const chain = url.searchParams.get("chainPath");
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (url.pathname === "/api/chain/genesis") return json({ genesisHash: "bafynexusgenesis" });
+      if (url.pathname === "/api/chain/info" && chain && (url.host === START || chain === "Nexus/fanfare/band")) {
+        return json({ chain: chain.split("/"), height: "3" });
+      }
+      if (url.host === START && url.pathname === "/api/chain/endpoints" && chain === "Nexus/fanfare/band") {
+        return json({ chainPath: ["Nexus", "fanfare", "band"], endpoints: ["https://band.example"] });
+      }
+      if (url.pathname === `/api/state/account/${me}`) {
+        return url.host === "band.example" ? json({ owner: me, balance: "10", nonce: "7" }) : json({ error: "unavailable" }, 500);
+      }
+    },
+  });
+  assert.ok(!text().includes("None of your nodes"), text());
   assert.equal(approveButton(dom).disabled, false, "the nonce was read");
 });
