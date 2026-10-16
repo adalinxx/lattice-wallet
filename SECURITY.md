@@ -1,6 +1,6 @@
 # Security
 
-Lattice Wallet holds signing keys. Never attach a real recovery phrase, private key, password, cookie, or backup to a report.
+Selfhold holds signing keys. Never attach a real recovery phrase, private key, password, cookie, or backup to a report.
 
 Report vulnerabilities privately at https://github.com/adalinxx/lattice-wallet/security/advisories/new. Private vulnerability reporting is enabled. If that channel becomes unavailable, open an issue requesting a private reporting channel without describing the vulnerability or sharing an exploit.
 

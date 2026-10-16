@@ -1,5 +1,7 @@
 # Release preparation evidence
 
+> Local October 16 draft: this file records historical 0.3.1 evidence. The proposed 0.4.0 candidate adds website provider/approval flows; the older browser and live-flow results below do not validate those additions. Current rename preparation is recorded in [Selfhold release preparation](selfhold-release.md). Store-signed upgrade remains untested and is now applicable because 0.3.1 is published. No independent audit is claimed.
+
 Date: October 10, 2026. Candidate: 0.3.1 on the release-preparation branch. This is preparation evidence, not public-release approval. It replaces the October 8 evidence for 0.3.0, which no longer describes the code.
 
 ## Automated checks on this candidate

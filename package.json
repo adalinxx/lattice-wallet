@@ -1,9 +1,9 @@
 {
   "name": "lattice-wallet",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Lattice Wallet — non-custodial MV3 browser extension for Lattice chains",
+  "description": "Selfhold — non-custodial MV3 browser extension for Lattice chains",
   "license": "MIT",
   "scripts": {
     "prepare": "npm run sdk",

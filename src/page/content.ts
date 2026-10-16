@@ -19,3 +19,11 @@ window.addEventListener("message", (event) => {
     .then(answer)
     .catch((e) => answer({ ok: false, error: String(e?.message ?? e) }));
 });
+
+// Only the extension worker can probe this isolated-world listener. A probe
+// addressed to documentId cannot be answered by a replacement page in the tab.
+chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if (sender.id === chrome.runtime.id && message?.type === "provider-document") {
+    reply({ origin: window.location.origin });
+  }
+});

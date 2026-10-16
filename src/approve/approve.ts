@@ -228,7 +228,7 @@ async function render() {
   const call = request.call as ProviderCall;
   const stateAnswer = await send({ type: "getState" });
   const state = stateAnswer.state as WalletState;
-  if (!state.initialized) return fail("Set up the wallet first: open Lattice Wallet from the toolbar.");
+  if (!state.initialized) return fail("Set up the wallet first: open Selfhold from the toolbar.");
   if (state.locked) {
     const password = el("input", { type: "password", placeholder: "Password", autocomplete: "current-password" }) as HTMLInputElement;
     const error = el("p", { className: "warn", hidden: true });

@@ -1,12 +1,14 @@
 # Chrome Web Store submission materials
 
-Name: Lattice Wallet
+Local draft for the next release. The Selfhold name is approved; logo and final declarations are pending review.
+
+Name: Selfhold
 
 Short description: Non-custodial wallet for Lattice chains. Keys stay on your device; you choose the node.
 
 ## Description
 
-Manage accounts and transact across Lattice chains from your browser.
+Selfhold is a non-custodial wallet for Lattice. Manage accounts and transact across Lattice chains from your browser.
 
 - Create a wallet or import an existing recovery phrase or private key.
 - Switch between parent and child chains.
@@ -19,6 +21,7 @@ Manage accounts and transact across Lattice chains from your browser.
 You control your keys. Keep an offline backup of your recovery phrase. Node availability, transaction confirmation, and cross-chain order availability depend on the selected network and operators.
 
 Homepage: https://lattice.build/
+Support email: support@lattice.build
 Support: https://github.com/adalinxx/lattice-wallet/issues
 Privacy policy: https://github.com/adalinxx/lattice-wallet/blob/main/docs/privacy-policy.md
 
@@ -36,9 +39,13 @@ Address copying uses the Clipboard API inside a user gesture, without a clipboar
 
 Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev and lattice-mainnet-testnet.fly.dev provide hosted submission, explorer reads and testnet access without connection-time prompts. These are exact hosts, not wildcard subdomains.
 
-Optional HTTPS hosts: Connect to user-selected custom operators, including endpoints discovered through parent chains outside the fixed hosted allowlist. Access is requested through Chrome permissions. The extension does not inject scripts into websites or read their browsing content.
+Optional HTTPS hosts: Connect to user-selected custom operators, including endpoints discovered through parent chains outside the fixed hosted allowlist. Access is requested through Chrome permissions. These optional node permissions are separate from the content-script matches described below.
 
 Optional loopback HTTP hosts: Connect to a node running locally on the user's device. Authentication and explicit node pairing are required where the node demands them.
+
+Content scripts: A page-world API and an isolated relay run at document start on HTTPS sites and HTTP localhost/127.0.0.1 pages, subject to Chrome site access. They relay `window.lattice` calls, not page text or browsing history. The worker accepts only top-frame requests and uses Chrome's reported origin. Connection approval discloses one chosen address; subsequent reads by that origin do not prompt. Every record write, payment and message signature requires a separate extension-window approval. No standing signing permission is granted. Website access may require an installation/upgrade acknowledgement.
+
+Local storage also retains site-origin/account connections and pending page-write chain/account/nonce/CID/node metadata. Approved writes go to the selected node and the site receives the CID; approved messages return the public key and origin-bound signature to the site. The privacy policy must describe these disclosures before submission. Reassess the dashboard data categories against this behavior; do not automatically carry forward the prior certifications.
 
 Remote code: No. JavaScript and WebAssembly dependencies are bundled in the package; node responses are data.
 
@@ -55,10 +62,12 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 5. Open Send. Invalid addresses and non-positive amounts are refused before signing. Review displays sender, recipient, amount and fee.
 6. Lock from Settings, then unlock with the test password. A wrong password must fail.
 7. Backup and import can be tested with disposable accounts. Camera permission is needed only for camera scanning; paste/file import is also available.
-8. Actual submission needs funds on the selected chain. No funded shared credential is included. For repeatable funded verification, run the isolated-node tests described in docs/release.md.
+8. On a disposable HTTPS or loopback test site, call `connect()` from a click. Confirm the correct origin and account in the extension window. Decline and close requests, test a second simultaneous request, and navigate/reload the requesting page before approval. Confirm these cannot produce a signature or payment without a valid request and explicit approval.
+9. Inspect a record write with payments: check each recipient, total, fee, chain and record change. Check message-signing review and a message naming a different origin. Use disposable local funds only for submission tests; do not provide shared funded credentials.
+10. Actual submission needs funds on the selected chain. No funded shared credential is included. For repeatable funded verification, run the isolated-node tests described in docs/release.md.
 
 ## Assets and account tasks
 
-Use the existing 128px PNG icon. Three actual 1280×800 Chrome screenshots are checked in under docs/store-assets: welcome, node choice, and unlock. They contain disposable data and no seeds, passwords or cookies. Regenerate with PLAYWRIGHT_MODULE pointing to your installed Playwright package and `node scripts/store-screenshots.cjs`; generated files appear in release/store-assets. Provide a 440×280 promotional image if requested by the dashboard.
+Retain the existing 128px PNG icon temporarily; a new logo requires review before publication. Existing screenshots are historical and must be reviewed/refreshed for Selfhold branding before submission. Three actual 1280×800 Chrome screenshots are checked in under docs/store-assets: welcome, node choice, and unlock. They contain disposable data and no seeds, passwords or cookies. Regenerate with PLAYWRIGHT_MODULE pointing to your installed Playwright package and `node scripts/store-screenshots.cjs`; generated files appear in release/store-assets. Provide a 440×280 promotional image if requested by the dashboard.
 
-Use Lattice as the public publisher name and an organization-controlled verified email with two-step verification. Publisher registration, account verification, fees, jurisdiction declarations, and final certification are account-owner actions. Select deferred publication while the release gates remain open.
+Retain the established pseudonymous publisher account and support@lattice.build contact; verify two-step verification in the dashboard. Do not create a new item: update the existing item to preserve its extension ID and storage. The product rename does not authorize changing publisher identity. Publisher registration, account verification, fees, jurisdiction declarations, and final certification are account-owner actions. Select deferred publication while the release gates remain open.

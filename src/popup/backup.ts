@@ -174,9 +174,9 @@ function showBackup(cbor: Uint8Array) {
     h("p", { class: "warn" }, "Encrypted with your password, but anyone who copies it can try to guess that password. Keep it private."),
     node,
     h("div", { class: "row-actions" },
-      h("button", { class: "btn", onclick: () => save(`lattice-wallet-backup-${today()}.txt`, `# Lattice wallet backup (encrypted with your wallet password)\n${single}\n`, status) }, "Save file"),
+      h("button", { class: "btn", onclick: () => save(`lattice-wallet-backup-${today()}.txt`, `# Selfhold wallet backup (encrypted with your wallet password)\n${single}\n`, status) }, "Save file"),
       h("button", { class: "btn", onclick: () => printOnly(h("div", { class: "print-page" },
-        h("h1", {}, "Lattice wallet backup"),
+        h("h1", {}, "Selfhold wallet backup"),
         h("p", {}, `Encrypted with the wallet password. ${today()}. ${parts.length > 1 ? `Scan all ${parts.length} codes, in any order.` : ""}`),
         h("div", { class: "print-grid" }, ...parts.map((p) => svgNode(urSvg(p), "qr-print"))),
       )) }, "Print"),
@@ -194,7 +194,7 @@ function importBackup() {
     openFullPage: host.openFullPage && (() => host.openFullPage!(host.state().initialized ? "backup" : "restore")),
     pasteHint: "paste the ur:lattice-vault/… text",
     onText(text) {
-      if (!decoder.receive(text) && !decoder.result) { s.status.textContent = decoder.error ?? "Not a Lattice wallet backup code."; return !!decoder.error; }
+      if (!decoder.receive(text) && !decoder.result) { s.status.textContent = decoder.error ?? "Not a Selfhold wallet backup code."; return !!decoder.error; }
       progress.textContent = decoder.result ? "" : `received ${Math.round(decoder.progress() * 100)}%`;
       if (decoder.result) { unlockBackup(decoder.result); return true; }
       return false;
@@ -347,7 +347,7 @@ function sendToDevice() {
     openFullPage: host.openFullPage && (() => host.openFullPage!("backup")),
     pasteHint: "paste the ur:lattice-pair/… text",
     onText(text) {
-      if (!decoder.receive(text) || !decoder.result) { s.status.textContent = "Not a Lattice pairing code."; return false; }
+      if (!decoder.receive(text) || !decoder.result) { s.status.textContent = "Not a Selfhold pairing code."; return false; }
       confirmSend(decoder.result);
       return true;
     },
@@ -419,7 +419,7 @@ async function receiveFromDevice() {
       openFullPage: host.openFullPage && (() => host.openFullPage!(host.state().initialized ? "backup" : "restore")),
       pasteHint: "paste the ur:lattice-transfer/… text",
       onText(text) {
-        if (!decoder.receive(text) && !decoder.result) { s.status.textContent = decoder.error ?? "Not a Lattice transfer code."; return !!decoder.error; }
+        if (!decoder.receive(text) && !decoder.result) { s.status.textContent = decoder.error ?? "Not a Selfhold transfer code."; return !!decoder.error; }
         progress.textContent = decoder.result ? "" : `received ${Math.round(decoder.progress() * 100)}%`;
         if (decoder.result) { scanning = false; openTransfer(decoder.result); return true; }
         return false;

@@ -1,4 +1,6 @@
-# Lattice Wallet
+# Selfhold
+
+Selfhold is the wallet for Lattice, previously named Lattice Wallet. Existing installations update through the same Chrome Web Store item.
 
 See [network binding and replay](docs/network-binding.md) before reusing keys on separate networks.
 
@@ -123,7 +125,7 @@ chain scanning.
 
 A web page can ask the wallet for an address, ask it to sign writes of
 records that may also pay addresses, and ask it to sign a message. The
-wallet adds `window.lattice` to every http(s) page:
+wallet adds `window.lattice` to HTTPS pages and HTTP localhost/127.0.0.1 pages, subject to Chrome site access:
 
 ```js
 const address = await lattice.connect(); // from a click; asks the person once per site

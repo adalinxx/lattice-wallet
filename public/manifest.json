@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Lattice Wallet",
-  "version": "0.3.1",
+  "name": "Selfhold",
+  "version": "0.4.0",
   "description": "Non-custodial wallet for Lattice chains. Keys never leave your device; you choose the node.",
   "action": {
-    "default_title": "Lattice Wallet",
+    "default_title": "Selfhold",
     "default_popup": "popup/index.html",
     "default_icon": {
       "48": "assets/lattice-mark-48.png",
