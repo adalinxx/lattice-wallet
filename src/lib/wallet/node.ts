@@ -1,8 +1,9 @@
 // The wallet's use of the SDK's node plane: reads (NodeClient), discovery
-// (EndpointResolver), submission (HTTPTransactionSubmitter), and how their
+// (ChainNodeFinder and EndpointResolver), submission (HTTPTransactionSubmitter), and how their
 // answers read to the user. Nothing here names a node: every URL is the user's.
 
 import {
+  ChainNodeFinder,
   EndpointResolver,
   NodeClient,
   NodeError,
@@ -276,9 +277,18 @@ export async function receiptWithdrawer(
   return withdrawer ?? null;
 }
 
-/** Verified-declared endpoints of `chainPath`, walked down from a Nexus node the user chose. */
-export function discover(startURL: string, chainPath: string[], fetchImpl: Fetch = browserFetch): Promise<ResolvedEndpoint[]> {
+/**
+ * The hosts that declare `chainPath`, walked down from a Nexus node the user
+ * chose: each serves the chain at that path on that node's network (the SDK's
+ * rule; what a parent commits does not decide). Listed in declared order,
+ * with what each declares about submission.
+ */
+export function declaredHosts(startURL: string, chainPath: string[], fetchImpl: Fetch = browserFetch): Promise<ResolvedEndpoint[]> {
   return new EndpointResolver(reader(startURL, [ROOT_CHAIN], fetchImpl), { fetch: fetchImpl }).resolve(chainPath);
+}
+/** One node to read a chain from, starting at `startURL` (the SDK's finder). */
+export function nodeFinder(startURL: string, fetchImpl: Fetch = browserFetch): ChainNodeFinder {
+  return new ChainNodeFinder(startURL, { fetch: fetchImpl });
 }
 export { OPERATOR_DECLARED };
 

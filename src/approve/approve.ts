@@ -12,7 +12,7 @@ import { addressGroups, addressNames, nameAddresses, otherHosts, payeeRecords, p
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
-import { browserFetch, discover, reader, sentStatus } from "../lib/wallet/node.ts";
+import { browserFetch, nodeFinder, reader, sentStatus } from "../lib/wallet/node.ts";
 import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
@@ -94,15 +94,9 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     }
     return browserFetch(input, init);
   };
-  const candidates = chosenNodes(settings, chainPath);
-  if (settings.nodeMode === "automatic") {
-    try {
-      for (const endpoint of await discover(discoveryStart(settings, LATTICE_EXPLORER_RPC), chainPath, allowedFetch)) candidates.push(endpoint.url);
-    } catch { /* what it could not reach is in `missing` */ }
-  }
   const pageWrites = ((await chrome.storage.local.get("pageWrites")).pageWrites as PageWrite[] | undefined) ?? [];
   const chain = chainPath.join("/");
-  for (const url of new Set(candidates)) {
+  const readAt = async (url: string): Promise<NonceRead | undefined> => {
     try {
       const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
       const node = reader(url, chainPath, allowedFetch, auth);
@@ -121,7 +115,26 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       const live = livePageWrites(pageWrites, chain, state.nonce, dead);
       const stale = [...dead];
       return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, balance: state.balance, node: url, stale };
-    } catch { /* not this node */ }
+    } catch { return undefined; /* not this node */ }
+  };
+  const tried = new Set<string>();
+  for (const url of chosenNodes(settings, chainPath)) {
+    tried.add(url);
+    const read = await readAt(url);
+    if (read) return read;
+  }
+  if (settings.nodeMode === "automatic") {
+    // Then the SDK's finder: a found node that fails is forgotten, and the
+    // next search tries the others first.
+    const finder = nodeFinder(discoveryStart(settings, LATTICE_EXPLORER_RPC), allowedFetch);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const found = await finder.nodeFor(chainPath).catch(() => undefined); // what it could not reach is in `missing`
+      if (!found || tried.has(found.url)) break;
+      tried.add(found.url);
+      const read = await readAt(found.url);
+      if (read) return read;
+      await finder.forget(chainPath, found);
+    }
   }
   return missing.size ? { missing: [...missing] }
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };

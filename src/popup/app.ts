@@ -8,7 +8,7 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
@@ -479,7 +479,7 @@ async function switchToChain(chain: string, status: El) {
 async function finishAutomaticChain(chain: string, status: El): Promise<boolean> {
   const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
   try {
-    const candidates = (await discover(bootstrap, parseChainPath(chain)!, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
+    const candidates = (await declaredHosts(bootstrap, parseChainPath(chain)!, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
     for (const candidate of candidates) {
       if (await chooseEndpoint(candidate.url, "discovered", status, true, undefined, true, true)) {
         await update((s) => { const { pendingAutomaticChain: _, ...rest } = s; return rest; });
@@ -981,8 +981,8 @@ function endpointScreen() {
     err.textContent = "discovering…";
     found.replaceChildren();
     try {
-      const list = await discover(n, chainPath(), platform.fetch);
-      err.textContent = list.length ? "" : "No endpoint served the block its parent commits.";
+      const list = await declaredHosts(n, chainPath(), platform.fetch);
+      err.textContent = list.length ? "" : "No declared node serves this chain.";
       if (autoSelect) {
         const candidates = list.filter((endpoint) => endpoint.declaresSubmit);
         if (!candidates.length) {
@@ -1010,7 +1010,7 @@ function endpointScreen() {
           h("button", { class: "btn", onclick: async () => { if (await chooseEndpoint(e.url, "discovered", err, e.declaresSubmit, undefined, false, true)) route(); } }, "Use"),
         ));
       }
-      if (list.length) found.append(h("p", { class: "muted node-note" }, `Each served the block its parent commits; ${OPERATOR_DECLARED}.`));
+      if (list.length) found.append(h("p", { class: "muted node-note" }, `Each serves this chain on that Nexus node's network; ${OPERATOR_DECLARED}.`));
     } catch (e) {
       err.textContent = "Discovery failed: " + (e instanceof RangeError ? e.message : describe(e));
     } finally {

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reader, discover, sentStatus, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
+import { reader, declaredHosts, sentStatus, OPERATOR_DECLARED } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 
 const live = process.env.LATTICE_LIVE_READ;
@@ -23,12 +23,12 @@ test("live reads and discovery (read-only)", { skip: !live, timeout: 60_000 }, a
   // A well-formed CID that names no transaction.
   assert.equal((await sentStatus(nexus, account.owner)).kind, "unknown to node");
 
-  const testnet = await discover(live!, ["Nexus", "testnet"], fetch);
+  const testnet = await declaredHosts(live!, ["Nexus", "testnet"], fetch);
   assert.ok(testnet.length > 0, "Nexus/testnet has a verified declared endpoint");
   for (const e of testnet) {
     assert.equal(e.trust, OPERATOR_DECLARED);
     const child = await reader(e.url, ["Nexus", "testnet"], fetch).chainInfo();
     assert.deepEqual(child.chain, ["Nexus", "testnet"]);
-    console.log(`[live] Nexus/testnet -> ${e.url} (committed ${e.committedBlock}; declares submit: ${e.declaresSubmit}; height ${child.height})`);
+    console.log(`[live] Nexus/testnet -> ${e.url} (declares submit: ${e.declaresSubmit}; height ${child.height})`);
   }
 });
