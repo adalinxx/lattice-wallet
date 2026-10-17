@@ -1,6 +1,6 @@
 # Release procedure
 
-The next candidate is Selfhold 0.4.0, the renamed wallet for Lattice. Preserve the existing store item and storage when updating from 0.3.1. The selected S/key logo is implemented; review production assets and refresh browser screenshots before submission. See [candidate evidence](selfhold-release.md).
+The next candidate is Selfhold 0.4.1, the renamed wallet for Lattice. Preserve the existing store item and storage when updating from 0.3.1. The selected S/key logo is implemented; review production assets and refresh browser screenshots before submission. See [current candidate evidence](selfhold-0.4.1-release.md) and [historical 0.4.0 preparation](selfhold-release.md).
 
 ## Build and verification
 
