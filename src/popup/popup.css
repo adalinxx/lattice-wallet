@@ -102,7 +102,9 @@ label.k { display: block; margin-bottom: var(--s-1); font-size: var(--fs-12); te
 .notice .btn { flex: 0 0 auto; }
 .balance-value { display: block; margin-top: var(--s-2); font-size: var(--fs-44); line-height: 1; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .account-line { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-top: var(--s-3); padding-top: var(--s-2); border-top: var(--rule); font-size: var(--fs-12); }
-.account-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.account-identity { display: flex; flex: 1 1 0; min-width: 0; flex-direction: column; gap: 2px; }
+.account-name { min-width: 0; overflow-wrap: anywhere; }
+.account-line > .icon-action { flex: 0 0 32px; }
 .account-address { word-break: break-all; }
 .primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-2); }
 .primary-actions button { min-height: 48px; }
