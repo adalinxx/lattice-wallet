@@ -56,6 +56,25 @@ test("no default node, and only https or the CSP's loopback http", async () => {
   assert.equal(parseChainPath("Nexus//x"), null);
 });
 
+test("HTTP node selection agrees with CSP and optional permissions", async () => {
+  const manifest = JSON.parse(readFileSync(new URL("../public/manifest.json", import.meta.url), "utf8"));
+  const connect = manifest.content_security_policy.extension_pages.split(";").find((part: string) => part.trim().startsWith("connect-src ")).trim().split(/\s+/).slice(1);
+  assert.deepEqual(connect, ["https:", "http://127.0.0.1:*", "http://localhost:*"]);
+  assert.deepEqual(manifest.optional_host_permissions.filter((p: string) => p.startsWith("http:")), ["http://127.0.0.1/*", "http://localhost/*"]);
+  for (const url of ["http://localhost:8080", "http://127.0.0.1:8080"]) {
+    assert.equal(normalizeNodeURL(url), url);
+    assert.ok(manifest.optional_host_permissions.includes(originPattern(url)));
+  }
+  for (const url of ["http://[::1]:8080", "http://[0:0:0:0:0:0:0:1]:8080", "http://[::ffff:127.0.0.1]:8080", "http://remote.example:8080"]) {
+    assert.equal(normalizeNodeURL(url), null, url);
+  }
+  for (const url of ["https://[::1]:8080", "https://localhost:8080", "https://remote.example"]) assert.equal(normalizeNodeURL(url), url);
+  assert.equal(isLoopbackNodeURL("http://[::1]:8080"), true, "locality classification is independent of CSP support");
+  const saved = { ...DEFAULT_SETTINGS, endpoints: { Nexus: { url: "http://[::1]:8080", source: "user" } } };
+  const loaded = await loadSettings({ get: async () => ({ settings: saved }), set: async () => { assert.fail("loading existing settings must not rewrite storage"); } });
+  assert.deepEqual(loaded.endpoints, saved.endpoints, "existing IPv6 endpoint remains intact for explicit user replacement");
+});
+
 test("only a node on this computer counts as the user's own", () => {
   for (const own of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "https://localhost"]) assert.equal(isLoopbackNodeURL(own), true, own);
   for (const other of ["https://rpc.lattice.build", "https://127.0.0.1.example.com", "https://localhost.example.com", "https://192.168.1.10", "not a url", ""]) {

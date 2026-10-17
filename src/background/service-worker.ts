@@ -27,7 +27,9 @@ const signer = createSigner(
 // connection and each write is approved by the person in a window of the
 // wallet's own; the page never touches the signer.
 
+interface PageDocument { tabId: number; documentId: string }
 interface Pending {
+  document: PageDocument;
   origin: string;
   call: ProviderCall;
   /** For a write: the account shown to the person, the only one that may sign it. */
@@ -49,7 +51,7 @@ function declined(request: Pending) {
 const connections = async (): Promise<Record<string, string>> =>
   ((await store.get("connections")).connections as Record<string, string> | undefined) ?? {};
 
-async function ask(origin: string, call: ProviderCall, address: string | null): Promise<Response> {
+async function ask(origin: string, call: ProviderCall, address: string | null, document: PageDocument): Promise<Response> {
   // One waiting request per site: a page cannot stack windows, or slip a
   // second request under a click meant for the first.
   if ([...pending.values()].some((request) => request.origin === origin)) {
@@ -60,7 +62,7 @@ async function ask(origin: string, call: ProviderCall, address: string | null): 
   }
   const id = crypto.randomUUID();
   return new Promise((settle) => {
-    const request: Pending = { origin, call, address, settle: (r) => { pending.delete(id); settle(r); } };
+    const request: Pending = { origin, call, address, document, settle: (r) => { pending.delete(id); settle(r); } };
     pending.set(id, request);
     // Tall enough that a payment with one payee and a record fits above the
     // decision bar: what does not fit must be scrolled to before approving.
@@ -70,7 +72,7 @@ async function ask(origin: string, call: ProviderCall, address: string | null): 
   });
 }
 
-async function fromPage(origin: string, raw: unknown): Promise<Response> {
+async function fromPage(origin: string, raw: unknown, document: PageDocument): Promise<Response> {
   const call = parseProviderCall(raw);
   if ("error" in call) return { ok: false, error: call.error };
   const address = (await connections())[origin] ?? null;
@@ -84,14 +86,14 @@ async function fromPage(origin: string, raw: unknown): Promise<Response> {
       return { ok: true, address: null } as Response;
     }
     case "connect":
-      return address ? { ok: true, address } as Response : ask(origin, call, null);
+      return address ? { ok: true, address } as Response : ask(origin, call, null, document);
     case "writeRecords":
     case "signMessage":
       if (!address) return { ok: false, error: "Not connected: call connect() first" };
       if (call.method === "writeRecords" && call.params.payments?.some((p) => p.to === address)) {
         return { ok: false, error: "A write cannot pay the account that signs it" };
       }
-      return ask(origin, call, address);
+      return ask(origin, call, address, document);
   }
 }
 
@@ -122,11 +124,22 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     declined(request);
     return { ok: true };
   }
+  // Target the exact document Chrome reported, not just its tab or origin.
+  // Reloads, navigation and a closed tab must not leave an old request usable.
+  const alive = await chrome.tabs.sendMessage(request.document.tabId,
+    { type: "provider-document" }, { documentId: request.document.documentId })
+    .then((answer) => answer?.origin === request.origin).catch(() => false);
+  if (!alive || pending.get(msg.id!) !== request) {
+    request.settle({ ok: false, error: "The requesting page went away; ask again" });
+    return { ok: false, error: "The requesting page went away. Nothing was signed." };
+  }
   if (request.call.method === "connect") {
     const state = await signer.handle({ type: "getState" });
     const chosen = state.ok ? (state as unknown as { state: WalletState }).state.accounts.find((a) => a.address === msg.address) : undefined;
     if (!chosen) return { ok: false, error: "Choose one of this wallet's accounts" };
-    await store.set({ connections: { ...(await connections()), [request.origin]: chosen.address } });
+    const all = await connections();
+    if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
+    await store.set({ connections: { ...all, [request.origin]: chosen.address } });
     request.settle({ ok: true, address: chosen.address } as Response);
     return { ok: true };
   }
@@ -137,6 +150,7 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     request.settle({ ok: false, error: "The site's connection changed; ask again" });
     return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
   }
+  if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
   if (request.call.method === "signMessage") {
     const signed = await signer.handle({ type: "signMessage", from: request.address, origin: request.origin, text: request.call.params.text });
     if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
@@ -158,6 +172,7 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   if ((await pageWrites()).some((p) => p.chain === chain && p.from === from && p.nonce === nonce)) {
     return { ok: false, error: "That nonce was just taken; check again" };
   }
+  if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
   request.approved = true;
   try {
     return await signAndSend(request, from, chain, nonce, msg.node, BigInt(msg.stateNonce));
@@ -178,24 +193,26 @@ async function signAndSend(request: Pending, from: string, chain: string, nonce:
   // holds a signed write it could send later, against the person's next
   // transaction at that nonce.
   const auth = await signer.handle({ type: "nodeAuthorization", url: nodeURL });
+  // Persist before broadcast. If storage fails, nothing leaves the wallet;
+  // if the worker stops after broadcast, the nonce is already reserved.
+  await store.set({ pageWrites: [
+    ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
+    { chain, from, nonce, cid: signedSubmit.transactionCID, node: nodeURL },
+  ] });
   let delivered: "yes" | "uncertain" = "yes";
   let failure = "";
   try {
     await submitChecked(submitter(nodeURL, browserFetch, auth.ok ? (auth as unknown as { authorization?: string }).authorization : undefined), signedSubmit);
   } catch (e) {
     if (isDefiniteSubmissionRefusal(e)) {
+      await store.set({ pageWrites: (await pageWrites()).filter((p) => p.cid !== signedSubmit.transactionCID) });
       request.settle({ ok: false, error: `The node refused it: ${describe(e)}` });
       return { ok: false, error: `The node refused it: ${describe(e)}. Nothing was sent.` };
     }
     delivered = "uncertain";
     failure = describe(e);
   }
-  // Pending until the chain's nonce passes it, even if delivery is uncertain:
-  // it may have been admitted.
-  await store.set({ pageWrites: [
-    ...(await pageWrites()).filter((p) => !(p.chain === chain && p.from === from && BigInt(p.nonce) < passed)),
-    { chain, from, nonce, cid: signedSubmit.transactionCID, node: nodeURL },
-  ] });
+  // Keep the pre-broadcast reservation even when delivery is uncertain.
   request.settle(delivered === "yes"
     ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later
     : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response);
@@ -216,8 +233,8 @@ chrome.runtime.onMessage.addListener((message: { type?: unknown }, sender, sendR
   const page = sender.url?.split(/[?#]/, 1)[0];
   if (message?.type === "provider" && page !== APPROVE_PAGE && page !== chrome.runtime.getURL("popup/index.html")) {
     const origin = pageOrigin(sender);
-    if (!origin) return false;
-    fromPage(origin, (message as { call?: unknown }).call).then(sendResponse)
+    if (!origin || typeof sender.tab?.id !== "number" || !sender.documentId) return false;
+    fromPage(origin, (message as { call?: unknown }).call, { tabId: sender.tab.id, documentId: sender.documentId }).then(sendResponse)
       .catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
     return true;
   }

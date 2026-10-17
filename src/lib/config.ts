@@ -34,7 +34,7 @@ export const chainKey = (path: string[]) => path.join("/");
 
 /**
  * A node base URL the user typed: the SDK's rule (absolute https, or http on
- * loopback only, which is exactly what the extension's CSP allows; no
+ * localhost or 127.0.0.1, matching the extension's CSP; no
  * credentials, query or fragment), without a trailing slash; null when not
  * acceptable. Declared (discovered) URLs are judged by the SDK's
  * EndpointResolver, which also refuses private hosts.
@@ -46,17 +46,19 @@ export function normalizeNodeURL(text: string): string | null {
   } catch {
     return null;
   }
-  // The CSP's connect-src names these three loopback hosts and no others.
+  // CSP host sources cannot express an IPv6 literal. Use localhost for
+  // an IPv6 loopback listener; do not rewrite saved URLs or cookie scopes.
   const { protocol, hostname } = new URL(url);
   if (new URL(url).search || new URL(url).hash) return null;
-  return protocol === "https:" || CSP_LOOPBACK.has(hostname) ? url : null;
+  return protocol === "https:" || HTTP_NODE_HOSTS.has(hostname) ? url : null;
 }
 
-const CSP_LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const HTTP_NODE_HOSTS = new Set(["127.0.0.1", "localhost"]);
+const LOOPBACK_HOSTS = new Set([...HTTP_NODE_HOSTS, "[::1]"]);
 
 /** A node on this computer. Any other node is someone else's word about the chain. */
 export function isLoopbackNodeURL(nodeURL: string): boolean {
-  try { return CSP_LOOPBACK.has(new URL(nodeURL).hostname); } catch { return false; }
+  try { return LOOPBACK_HOSTS.has(new URL(nodeURL).hostname); } catch { return false; }
 }
 
 /** The host-permission match pattern for a node URL (match patterns carry no port). */

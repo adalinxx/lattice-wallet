@@ -12,12 +12,13 @@ import { messageBytes } from "../src/lib/wallet/provider.ts";
 
 const MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const prefix = "chrome-extension://wallet-id/";
-type Sender = { id: string; url?: string; origin?: string; frameId?: number; tab?: object };
+type Sender = { id: string; url?: string; origin?: string; frameId?: number; tab?: { id: number }; documentId?: string };
 type Answer = { ok: boolean; error?: string; [key: string]: unknown };
 
 test("pages connect and write only through the person's approval", async () => {
   let listener!: (msg: unknown, sender: Sender, reply: (r: Answer) => void) => boolean;
   let onWindowClosed!: (id: number) => void;
+  let documentAlive = true;
   const opened: string[] = [];
   const data: Record<string, unknown> = {};
   Object.defineProperty(globalThis, "chrome", { configurable: true, value: {
@@ -27,6 +28,7 @@ test("pages connect and write only through the person's approval", async () => {
       set: async (items: Record<string, unknown>) => { Object.assign(data, structuredClone(items)); },
       remove: async (keys: string[]) => { for (const k of keys) delete data[k]; },
     } },
+    tabs: { sendMessage: async (_tab: number, _message: object, target: { documentId: string }) => documentAlive && target.documentId === "doc-1" ? { origin: "https://stoa.example" } : Promise.reject(new Error("Document gone")) },
     alarms: { create: () => {}, onAlarm: { addListener: () => {} } },
     windows: { create: async ({ url }: { url: string }) => { opened.push(url); return { id: opened.length }; }, onRemoved: { addListener: (fn: typeof onWindowClosed) => { onWindowClosed = fn; } } },
   } });
@@ -49,7 +51,7 @@ test("pages connect and write only through the person's approval", async () => {
   const send = (msg: unknown, sender: Sender) => new Promise<Answer>((resolve, reject) => {
     if (!listener(msg, sender, resolve)) reject(new Error("ignored"));
   });
-  const stoa: Sender = { id: "wallet-id", url: "https://stoa.example/app/", origin: "https://stoa.example", frameId: 0, tab: {} };
+  const stoa: Sender = { id: "wallet-id", url: "https://stoa.example/app/", origin: "https://stoa.example", frameId: 0, tab: { id: 7 }, documentId: "doc-1" };
   const page = (call: unknown, from = stoa) => send({ type: "provider", call }, from);
   const popup = (msg: unknown) => send(msg, { id: "wallet-id", url: prefix + "popup/index.html" });
   const approval = (msg: unknown) => send(msg, { id: "wallet-id", url: opened.at(-1) });
@@ -159,10 +161,12 @@ test("pages connect and write only through the person's approval", async () => {
   const store = (globalThis as unknown as { chrome: { storage: { local: { set: (i: object) => Promise<void> } } } }).chrome.storage.local;
   const realSet = store.set;
   store.set = async (items: object) => { if ("pageWrites" in items) throw new Error("quota"); return realSet(items); };
+  const sentBeforeQuota = submitted.length;
   const failing = page(writeCall);
   await new Promise((r) => setTimeout(r, 10));
   assert.match(String((await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "5" })).error), /quota/);
   assert.match(String((await failing).error), /could not finish: quota/);
+  assert.equal(submitted.length, sentBeforeQuota, "storage failure must prevent broadcast");
   store.set = realSet;
   data.pageWrites = original;
 
@@ -213,6 +217,16 @@ test("pages connect and write only through the person's approval", async () => {
   assert.equal(submitted.length, sent, "a message is never sent anywhere");
   skew += 6000;
   assert.equal((await page({ method: "signMessage", params: { text: "a\u202eb" } })).error, "A message may hold only printable text and line breaks");
+
+  // A navigation/reload removes the original document, even on the same origin.
+  const abandoned = page({ method: "signMessage", params: { text } });
+  await new Promise((r) => setTimeout(r, 10));
+  const abandonedId = requestId();
+  documentAlive = false;
+  assert.equal((await approval({ type: "decide", id: abandonedId, approve: true })).ok, false);
+  assert.match(String((await abandoned).error), /page.*away/i);
+  documentAlive = true;
+  assert.equal((await approval({ type: "decide", id: abandonedId, approve: true })).ok, false, "an old approval cannot be replayed");
 
   // Disconnect forgets the site.
   assert.deepEqual(await page({ method: "disconnect" }), { ok: true, address: null });
