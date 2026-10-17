@@ -205,3 +205,4 @@ h2.section-label { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 
 .nav-row.leads .nav-set::after { content: "›"; content: "›" / ""; flex: 0 0 auto; opacity: 0.45; }
 /* A row of home actions with one button in it: the button takes the row. */
 .primary-actions > :only-child { grid-column: 1 / -1; }
+.account-name-field { width: 100%; min-width: 0; padding: 2px var(--s-1); font: inherit; }

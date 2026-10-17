@@ -7,6 +7,9 @@ import type { WalletState } from "../src/lib/wallet/types.ts";
 import { startWallet } from "../src/popup/app.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer as signTestTransfer } from "../src/lib/wallet/session.ts";
+import { createSigner } from "../src/lib/wallet/signer.ts";
+import { walletClient } from "../src/lib/wallet/client.ts";
+import type { Vault } from "../src/lib/crypto/keystore.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 24; i += 1) await tick(); }
@@ -776,4 +779,71 @@ test("before there is a wallet, the header offers nothing that would do nothing"
   const wallet = walletFor({ initialized: false, locked: true, accounts: [], active: null });
   await startWallet({ wallet, store: memoryStore().api, ownNode: "http://127.0.0.1:8080", fetch: nodeFetch(), requestOrigins: async () => true });
   for (const id of ["settings-button", "net-badge"]) assert.equal(document.getElementById(id)!.style.visibility, "hidden", id);
+});
+
+test("wallet UI e2e: the account is renamed where its name is shown, and Escape keeps the old name", async () => {
+  installDOM();
+  let vault: Vault | null = null;
+  const signer = createSigner({ load: async () => vault, save: async (v) => { vault = v; }, remove: async () => { vault = null; } });
+  const client = walletClient(signer.handle);
+  await client.create("pw-pw-pw-pw", { privHex: "a1".repeat(32) });
+  await client.importKey("b0".repeat(32), "Cold");
+  await client.setActive(alice);
+  await startWallet({ wallet: client, store: memoryStore().api, fetch: nodeFetch(), requestOrigins: async () => true });
+  await settle();
+  const name = () => document.querySelector(".account-name") as HTMLElement;
+  const picker = () => document.querySelector(".account-picker") as HTMLSelectElement;
+  const field = () => document.querySelector('input[aria-label="Account name"]') as HTMLInputElement | null;
+  const key = (k: string) => field()!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  assert.equal(name().textContent, "Imported 1");
+
+  button("Rename account").click();
+  assert.ok(field(), "the name becomes a field");
+  assert.equal(field()!.value, "Imported 1");
+  field()!.value = "Throwaway"; key("Escape"); await settle();
+  assert.equal(field(), null); assert.equal(name().textContent, "Imported 1", "Escape keeps the old name");
+
+  button("Rename account").click();
+  field()!.value = "cold"; key("Enter"); await settle();
+  assert.ok(field(), "a refused name stays in the field to be corrected");
+  assert.match(document.body.textContent ?? "", /already named “Cold”/);
+
+  field()!.value = "Mining  rewards"; key("Enter"); await settle();
+  assert.equal(field(), null);
+  assert.equal(name().textContent, "Mining rewards");
+  assert.match(picker().selectedOptions[0]!.textContent ?? "", /^Mining rewards · /, "the account menu shows the new name at once");
+  const state = await client.getState();
+  assert.ok(state.ok && state.state.accounts.find((a) => a.address === alice)!.label === "Mining rewards");
+});
+
+test("wallet UI e2e: a new account opens with its name ready to type; Escape keeps the default", async () => {
+  installDOM();
+  let vault: Vault | null = null;
+  const signer = createSigner({ load: async () => vault, save: async (v) => { vault = v; }, remove: async () => { vault = null; } });
+  const client = walletClient(signer.handle);
+  await client.create("pw-pw-pw-pw", { mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" });
+  await startWallet({ wallet: client, store: memoryStore().api, fetch: nodeFetch(), requestOrigins: async () => true });
+  await settle();
+  const field = () => document.querySelector('input[aria-label="Account name"]') as HTMLInputElement | null;
+  const key = (k: string) => field()!.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+  const add = () => {
+    const picker = document.querySelector(".account-picker") as HTMLSelectElement;
+    picker.value = "__add"; picker.dispatchEvent(new Event("change"));
+  };
+  assert.equal(field(), null, "the home screen opens with no field");
+
+  add(); await settle();
+  assert.ok(field(), "the new account's name is a field");
+  assert.equal(field()!.value, "Account 2");
+  assert.equal(document.activeElement, field(), "ready to type");
+  field()!.value = "Savings"; key("Enter"); await settle();
+  assert.equal(document.querySelector(".account-name")!.textContent, "Savings");
+
+  add(); await settle();
+  assert.equal(field()!.value, "Account 3");
+  key("Escape"); await settle();
+  assert.equal(document.querySelector(".account-name")!.textContent, "Account 3", "Escape keeps the default");
+  const state = await client.getState();
+  assert.ok(state.ok);
+  assert.deepEqual(state.state.accounts.map((a) => a.label), ["Account 1", "Savings", "Account 3"]);
 });

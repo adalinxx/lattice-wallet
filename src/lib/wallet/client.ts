@@ -19,6 +19,8 @@ export function walletClient(send: Send) {
     addAccount: (label?: string) => call<WithState>({ type: "addAccount", label }),
     importKey: (privHex: string, label?: string) => call<WithState>({ type: "importKey", privHex, label }),
     setActive: (address: string) => call<WithState>({ type: "setActive", address }),
+    /** Name an account; an empty name gives it back its default. */
+    renameAccount: (address: string, label: string) => call<WithState>({ type: "renameAccount", address, label }),
     /** Pair (or, with null, unpair) a node: keep its operator cookie in the vault. */
     setNodeCookie: (url: string, cookie: string | null) => call({ type: "setNodeCookie", url, cookie }),
     /** The Authorization header for a paired node; absent when unpaired. */

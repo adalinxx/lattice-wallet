@@ -57,6 +57,7 @@ export type Request =
   | { type: "addAccount"; label?: string }
   | { type: "importKey"; privHex: string; label?: string }
   | { type: "setActive"; address: string }
+  | { type: "renameAccount"; address: string; label: string } // "" restores the default name
   | { type: "reset" }
   | { type: "setNodeCookie"; url: string; cookie: string | null }
   | { type: "nodeAuthorization"; url: string }

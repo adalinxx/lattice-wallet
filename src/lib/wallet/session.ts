@@ -51,6 +51,24 @@ export function nextHdLabel(data: WalletData): { index: number; label: string } 
   return { index, label: `Account ${index + 1}` };
 }
 
+/** As long as a backup accepts (src/lib/wallet/backup.ts), so every name survives one. */
+export const LABEL_MAX = 64;
+
+/**
+ * A name as the owner typed it, made safe to show beside an address: no
+ * control or format characters (a right-to-left override could make it read as
+ * something else), runs of spaces as one, no space at the ends. Empty means
+ * "no name of my own"; the caller puts the default back.
+ */
+export function cleanLabel(raw: string): string {
+  const label = raw.normalize("NFC").replace(/[\p{Cc}\p{Cf}]/gu, "").replace(/\s+/g, " ").trim();
+  if (label.length > LABEL_MAX) throw new Error(`Account name is too long (${LABEL_MAX} characters at most)`);
+  // A write's review names the signer "you" and who is paid "payee"
+  // (src/lib/wallet/review.ts); an account so named would read as one of them.
+  if (/^(you|payee( \d+)?)$/i.test(label)) throw new Error(`“${label}” is how a review names the signer or who is paid; choose another name`);
+  return label;
+}
+
 /**
  * Build and sign a transfer (runs in the worker, the key's only home). The SDK
  * builds the body (fee = debit over credit), encodes it, derives its CID and
