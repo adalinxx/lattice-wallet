@@ -6,7 +6,7 @@ Selfhold is the renamed wallet for Lattice. This is a draft candidate, not publi
 
 Prepared against main `962e5775143c2bbf89c8c7bb86519292440da707`, with SDK `283d0e0e174e1a825e8a10b225f4a9a58e67e4ca`. Main had not advanced when fetched for this rename. Manifest and package versions are 0.4.0. The internal npm package name remains `lattice-wallet`; release archives use `selfhold-0.4.0.zip`.
 
-Update existing Chrome Web Store item `amcobhbipbblfjonmoiicihhfglkhpce`; do not uninstall or create a replacement item. No storage key/schema, cryptographic identity, derivation, provider API (`window.lattice`, `isLatticeWallet`, relay channel), backup encoding or protocol identifier changes are introduced. Legacy backup download filenames remain compatible. Permission declarations are unchanged from the fetched main. Manifest icon paths now reference Selfhold exports at 16/32/48/128px.
+Update existing Chrome Web Store item `amcobhbipbblfjonmoiicihhfglkhpce`; do not uninstall or create a replacement item. No storage key/schema, cryptographic identity, derivation, provider API (`window.lattice`, `isLatticeWallet`, relay channel), backup encoding or protocol identifier changes are introduced. Legacy backup download filenames remain compatible. The unusable HTTP IPv6 optional permission is removed; permissions are not broadened. Manifest icon paths now reference Selfhold exports at 16/32/48/128px.
 
 Two previously prepared patches are included for review: reserve page-write nonces before broadcasting so storage failure prevents submission; bind pending approvals to Chrome's requesting document and reject stale/canceled requests. These are retained changes, not newly imposed publication prerequisites.
 
@@ -14,12 +14,12 @@ Two previously prepared patches are included for review: reserve page-write nonc
 
 On Node 24.21.0:
 
-- Full suite: 168 tests; 163 pass, 5 opt-in skipped.
+- Full suite: 169 tests; 164 pass, 5 opt-in skipped.
 - TypeScript and diff whitespace checks pass; 22 conformance checks pass.
 - Wallet and SDK production dependency audits each report zero vulnerabilities.
 - Deployed read/discovery test passes, without signing or submission (Nexus height 5215; discovered testnet operators at heights 21185–21186).
 - Packaging succeeds with 12 bundled package license inventories. Two builds under different process timezones are byte-identical on the recorded macOS toolchain.
-- ZIP SHA-256: `00358f3d8d9b402444d6bbb2c416b568398a158628c79867bb93b6ae1dd72357`.
+- ZIP SHA-256: `e414f4efb90ecc84d9f1ddce1d9db84ff6a82d9808d6bee3c0e6c3364138cbb6`.
 - Tracked source and packaged assets checked for known personal identifiers and local home paths. Required upstream attribution is retained.
 
 Earlier disposable vault compatibility testing preserved the published baseline's three accounts and encrypted vault. This is not store-signed upgrade evidence. Historical manual funded trade evidence remains distinct from automated tests; no new live transaction was performed.
@@ -35,3 +35,7 @@ After review and merge, rebuild the exact approved commit, record its checksum a
 ## Selected logo implementation
 
 Round-two A was materialized and visually inspected before reconstructing the SVG. The master, optical 16/32/48/128px exports and light/dark preview are documented in [brand assets](brand/README.md). Popup and approval headers use the new SVG; manifest toolbar/store entries use the new PNGs. The product descriptor is open-source, self-custodial wallet. Historical browser screenshots are unchanged and still need refresh through supported Mac browser controls. The renderer is a pinned development-only dependency and does not enter the extension bundle. Full tests/typecheck/conformance and packaging were rerun after integration. The checksum above supersedes the pre-logo artifact.
+
+## HTTP IPv6 CSP correction
+
+Chrome QA reported the invalid `http://[::1]:*` CSP source. The candidate removes that entry and the corresponding optional HTTP permission, and rejects new literal HTTP IPv6 endpoint selections. HTTP localhost/127.0.0.1 and HTTPS remain supported. IPv6 locality classification remains intact, and existing settings, cookie scopes and recovery records are not migrated or rewritten. Regression coverage checks endpoint acceptance, manifest agreement and preservation of a saved IPv6 endpoint. The package checksum above supersedes the pre-fix artifact. Browser retest must confirm the warning is gone, supported loopback/HTTPS reads work and remote HTTP remains blocked. Earlier browser results on `73d8d268` do not establish those checks on this patch.

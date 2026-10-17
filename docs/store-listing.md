@@ -41,7 +41,7 @@ Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev and lattic
 
 Optional HTTPS hosts: Connect to user-selected custom operators, including endpoints discovered through parent chains outside the fixed hosted allowlist. Access is requested through Chrome permissions. These optional node permissions are separate from the content-script matches described below.
 
-Optional loopback HTTP hosts: Connect to a node running locally on the user's device. Authentication and explicit node pairing are required where the node demands them.
+Optional loopback HTTP hosts: localhost and 127.0.0.1 connect to a node running locally on the user's device. Literal HTTP IPv6 addresses are not supported by the extension CSP. Authentication and explicit node pairing are required where the node demands them.
 
 Content scripts: A page-world API and an isolated relay run at document start on HTTPS sites and HTTP localhost/127.0.0.1 pages, subject to Chrome site access. They relay `window.lattice` calls, not page text or browsing history. The worker accepts only top-frame requests and uses Chrome's reported origin. Connection approval discloses one chosen address; subsequent reads by that origin do not prompt. Every record write, payment and message signature requires a separate extension-window approval. No standing signing permission is granted. Website access may require an installation/upgrade acknowledgement.
 
