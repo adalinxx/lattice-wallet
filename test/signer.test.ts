@@ -148,3 +148,43 @@ test("pairing keeps a node's cookie encrypted in the vault and yields its Author
   assert.ok((await wallet.setNodeCookie(url, null)).ok);
   assert.deepEqual(await wallet.nodeAuthorization(url), { ok: true }, "unpaired");
 });
+
+test("an account is renamed in the vault; names are cleaned, kept unique, and an empty one restores the default", async () => {
+  const vaults = memory();
+  const signer = createSigner(vaults);
+  const wallet = walletClient(signer.handle);
+  const created = await wallet.create("pw-pw-pw-pw", { mnemonic: MNEMONIC });
+  assert.ok(created.ok);
+  const first = created.state.accounts[0]!.address;
+  const added = await wallet.addAccount();
+  assert.ok(added.ok);
+  const second = added.state.accounts[1]!.address;
+  const imported = await wallet.importKey("c3".repeat(32), "  Miner‮  key ");
+  assert.ok(imported.ok);
+  const miner = imported.state.accounts.find((a) => a.kind === "imported")!;
+  assert.equal(miner.label, "Miner key", "a name is trimmed, spaces collapsed, format characters dropped");
+
+  const renamed = await wallet.renameAccount(first, " Savings ");
+  assert.ok(renamed.ok);
+  assert.equal(renamed.state.accounts[0]!.label, "Savings");
+  assert.equal(renamed.state.active, miner.address, "renaming leaves the active account alone");
+  assert.equal((await decryptVault<WalletData>("pw-pw-pw-pw", vaults.vault!)).hd[0]!.label, "Savings", "the name is kept in the vault");
+
+  assert.deepEqual(await wallet.renameAccount(second, "savings"), { ok: false, error: "Another account is already named “Savings”" });
+  assert.ok((await wallet.renameAccount(first, "SAVINGS")).ok, "an account may change the case of its own name");
+  assert.deepEqual(await wallet.renameAccount(first, "x".repeat(65)), { ok: false, error: "Account name is too long (64 characters at most)" });
+  assert.deepEqual(await wallet.addAccount("x".repeat(65)), { ok: false, error: "Account name is too long (64 characters at most)" }, "a backup could not hold it");
+  assert.deepEqual(await wallet.renameAccount("not-an-account", "x"), { ok: false, error: "Unknown account" });
+  for (const reserved of ["you", "Payee", "payee 2"]) {
+    assert.equal((await wallet.renameAccount(first, reserved)).ok, false, `"${reserved}" is a word the review uses`);
+  }
+  assert.ok((await wallet.renameAccount(first, "Your savings")).ok);
+
+  const reset = await wallet.renameAccount(first, "   ");
+  assert.ok(reset.ok && reset.state.accounts[0]!.label === "Account 1");
+  const resetImported = await wallet.renameAccount(miner.address, "");
+  assert.ok(resetImported.ok && resetImported.state.accounts.find((a) => a.address === miner.address)!.label === "Imported 1");
+
+  signer.lock();
+  assert.deepEqual(await wallet.renameAccount(first, "Later"), { ok: false, error: "Locked" });
+});

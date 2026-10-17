@@ -5,7 +5,7 @@
 // on every key-touching event; the host calls `lock()` when it fires.
 
 import { encryptVault, decryptVault, deriveForVault, encryptWithVaultKey, type Vault } from "../crypto/keystore.ts";
-import { deriveAccounts, toView, nextHdLabel, signDeposit, signMessage, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
+import { deriveAccounts, toView, nextHdLabel, cleanLabel, signDeposit, signMessage, signReceipt, signRecords, signTransfer, signWithdrawal, type LiveAccount } from "./session.ts";
 import { deriveAccount, importPrivateKey } from "../crypto/accounts.ts";
 import { parseChainPath } from "../config.ts";
 import { isNonce, messageError, parseRecordsWrite } from "./provider.ts";
@@ -97,6 +97,17 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
       return { ok: false, error: failedReauth >= 5 ? "Too many failed attempts. Wallet locked." : "Wrong password" };
     }
   }
+  /**
+   * A name the owner chose, cleaned, and refused if another account already
+   * has it: two accounts with one name are told apart only by their addresses.
+   * Empty (no name chosen) is returned as is, for the caller's default.
+   */
+  function namedOnce(raw: string, self?: string): string {
+    const label = cleanLabel(raw);
+    const taken = label && session?.accounts.find((a) => a.address !== self && a.label.toLowerCase() === label.toLowerCase());
+    if (taken) throw new Error(`Another account is already named “${taken.label}”`);
+    return label;
+  }
   const hex = (s: unknown): Uint8Array => {
     if (typeof s !== "string" || !/^([0-9a-f]{2})+$/.test(s) || s.length > 2_000_000) throw new Error("Malformed data");
     return hexToBytes(s);
@@ -165,7 +176,9 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if (!session?.data.mnemonic) return { ok: false, error: "Locked or no recovery phrase" };
         if (session.accounts.length >= 256) return { ok: false, error: "256-account limit reached" };
         const { index, label } = nextHdLabel(session.data);
-        session.data.hd.push({ index, label: msg.label?.trim() || label });
+        let named;
+        try { named = namedOnce(msg.label ?? ""); } catch (e) { return { ok: false, error: (e as Error).message }; }
+        session.data.hd.push({ index, label: named || label });
         session.accounts = deriveAccounts(session.data);
         session.data.active = deriveAccount(session.data.mnemonic, index).address;
         await persistData();
@@ -182,7 +195,9 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
           return { ok: false, error: (e as Error).message };
         }
         if (session.accounts.some((a) => a.address === acct.address)) return { ok: false, error: "Account already exists" };
-        session.data.imported.push({ priv: msg.privHex.trim().replace(/^0x/, ""), label: msg.label?.trim() || `Imported ${session.data.imported.length + 1}` });
+        let named;
+        try { named = namedOnce(msg.label ?? ""); } catch (e) { return { ok: false, error: (e as Error).message }; }
+        session.data.imported.push({ priv: msg.privHex.trim().replace(/^0x/, ""), label: named || `Imported ${session.data.imported.length + 1}` });
         session.accounts = deriveAccounts(session.data);
         session.data.active = acct.address;
         await persistData();
@@ -193,6 +208,23 @@ export function createSigner(vaults: VaultStorage, touchAutoLock: () => void = (
         if (!session) return { ok: false, error: "Locked" };
         if (!findAccount(msg.address)) return { ok: false, error: "Unknown account" };
         session.data.active = msg.address;
+        await persistData();
+        return { ok: true, state: await stateView() } as Response;
+      }
+
+      case "renameAccount": {
+        if (!session) return { ok: false, error: "Locked" };
+        const acct = typeof msg.address === "string" ? findAccount(msg.address) : undefined;
+        if (!acct || typeof msg.label !== "string") return { ok: false, error: "Unknown account" };
+        let label;
+        try { label = namedOnce(msg.label, acct.address); } catch (e) { return { ok: false, error: (e as Error).message }; }
+        if (acct.kind === "hd") {
+          const entry = session.data.hd.find((e) => e.index === acct.index)!;
+          entry.label = label || `Account ${acct.index + 1}`;
+        } else {
+          session.data.imported[acct.index]!.label = label || `Imported ${acct.index + 1}`;
+        }
+        session.accounts = deriveAccounts(session.data);
         await persistData();
         return { ok: true, state: await stateView() } as Response;
       }

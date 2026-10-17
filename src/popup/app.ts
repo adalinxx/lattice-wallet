@@ -16,7 +16,7 @@ import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 import { scanner, scannerFileTexts } from "./scanner.ts";
 import { textSvg } from "../lib/qr/render.ts";
-import { isAccountAddress } from "../lib/wallet/session.ts";
+import { isAccountAddress, LABEL_MAX } from "../lib/wallet/session.ts";
 import { replacementTransfer } from "../lib/wallet/replacement.ts";
 
 export interface Platform {
@@ -121,7 +121,7 @@ export const h = (tag: string, attrs: Record<string, unknown> = {}, ...kids: (No
   for (const kid of kids) if (kid != null) n.append(kid as Node | string);
   return n;
 };
-type ActionIcon = "copy" | "refresh";
+type ActionIcon = "copy" | "refresh" | "edit";
 /** Familiar Lucide action geometry, redrawn at Lattice's hairline weight. */
 function actionIcon(name: ActionIcon): SVGSVGElement {
   const ns = "http://www.w3.org/2000/svg";
@@ -141,6 +141,9 @@ function actionIcon(name: ActionIcon): SVGSVGElement {
     shape("path", { d: "M21 3v5h-5" });
     shape("path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" });
     shape("path", { d: "M8 16H3v5" });
+  } else if (name === "edit") {
+    shape("path", { d: "M21.17 6.81a1 1 0 0 0-3.98-3.98L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z" });
+    shape("path", { d: "m15 5 4 4" });
   } else {
     shape("rect", { width: "14", height: "14", x: "8", y: "8", rx: "2", ry: "2" });
     shape("path", { d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" });
@@ -203,6 +206,8 @@ const endpointFor = (chain: string): ChosenEndpoint | undefined =>
   platform.ownNode ? { url: platform.ownNode, acceptsSubmit: true, source: "user" } : settings.endpoints[chain];
 // The chosen node's cookie header when the user paired it (its operator port requires one).
 let nodeAuth: string | undefined;
+/** The account just added: the home screen opens with its name ready to type. */
+let nameOnOpen: string | undefined;
 let nodeAuthURL: string | undefined;
 const client = () => {
   const chosen = endpoint()!;
@@ -1088,13 +1093,66 @@ async function mainScreen() {
 
   const accountPicker = h("select", { class: "picker account-picker", onchange: async (e: Event) => {
     const v = (e.target as HTMLSelectElement).value;
-    if (v === "__add") { await wallet.addAccount(); await refresh(); return; }
+    if (v === "__add") {
+      const r = await wallet.addAccount();
+      if (r.ok) nameOnOpen = r.state.active ?? undefined;
+      await refresh();
+      return;
+    }
     if (v === "__import") return importKeyFlow();
     await wallet.setActive(v); await refresh();
   } }) as HTMLSelectElement;
-  for (const a of st.accounts) accountPicker.append(h("option", { value: a.address, ...(a.address === acct.address ? { selected: "true" } : {}) }, `${a.label} · ${short(a.address)}`));
+  const pickerText = (a: AccountView) => `${a.label} · ${short(a.address)}`;
+  for (const a of st.accounts) accountPicker.append(h("option", { value: a.address, ...(a.address === acct.address ? { selected: "true" } : {}) }, pickerText(a)));
   accountPicker.append(h("option", { value: "__add" }, "+ Add account"));
   accountPicker.append(h("option", { value: "__import" }, "+ Import key"));
+
+  // The name is changed where it is read: the pencil turns it into a field
+  // holding it, Enter or leaving the field keeps the new one, Escape the old.
+  // Emptied, the account takes back its default ("Account 2").
+  const nameLine = h("span", { class: "account-name" }, acct.label);
+  function renameInPlace() {
+    if (nameLine.querySelector("input")) return;
+    const field = h("input", {
+      class: "account-name-field", type: "text", value: acct!.label, maxlength: String(LABEL_MAX),
+      "aria-label": "Account name", placeholder: acct!.kind === "hd" ? `Account ${acct!.index + 1}` : `Imported ${acct!.index + 1}`,
+      spellcheck: "false", autocomplete: "off",
+    }) as HTMLInputElement;
+    let done = false;
+    // A refused name (too long, another account's) stays in the field after
+    // Enter, to be corrected; on leaving the field the old name comes back.
+    const finish = async (keep: boolean, leaving = false) => {
+      if (done) return;
+      done = true;
+      const typed = field.value;
+      if (keep && typed.trim() !== acct!.label) {
+        const r = await wallet.renameAccount(acct!.address, typed);
+        if (!r.ok) {
+          toast.textContent = r.error;
+          if (!leaving && field.isConnected) { done = false; field.focus(); return; }
+          nameLine.replaceChildren(acct!.label);
+          return;
+        }
+        st = r.state;
+        const renamed = st.accounts.find((a) => a.address === acct!.address);
+        if (renamed) {
+          acct!.label = renamed.label;
+          const option = [...accountPicker.options].find((o) => o.value === renamed.address);
+          if (option) option.textContent = pickerText(renamed);
+        }
+        toast.textContent = "";
+      }
+      nameLine.replaceChildren(acct!.label);
+    };
+    field.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); void finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); void finish(false); }
+    });
+    field.addEventListener("blur", () => { void finish(true, true); });
+    nameLine.replaceChildren(field);
+    field.focus();
+    field.select();
+  }
 
   render(
     h("div", { class: "stack wallet-home" },
@@ -1111,9 +1169,13 @@ async function mainScreen() {
         h("span", { class: "balance-value" }, balanceV),
         h("div", { class: "account-line" },
           h("div", { class: "account-identity" },
-            h("span", {}, acct.label),
+            nameLine,
             h("span", { class: "mono account-address" }, acct.address),
           ),
+          h("button", {
+            class: "btn icon-action", type: "button", title: "Rename account", "aria-label": "Rename account",
+            onclick: () => renameInPlace(),
+          }, actionIcon("edit")),
           h("button", {
             class: "btn icon-action", type: "button", title: "Copy account address", "aria-label": "Copy account address",
             onclick: async () => {
@@ -1183,6 +1245,10 @@ async function mainScreen() {
         void loadBalance();
       } }, line.action.label) : null)));
   }
+  // A new account is named as it is made, like a new folder: its default is
+  // there, selected; typing replaces it, and Enter or Escape keeps it.
+  if (nameOnOpen === acct.address) renameInPlace();
+  nameOnOpen = undefined;
   loadBalance();
 }
 
@@ -1997,15 +2063,20 @@ function receiveScreen() {
 
 async function importKeyFlow() {
   const inp = h("textarea", { placeholder: "32-byte (64-hex) private key, or a `lattice key generate` key file", spellcheck: "false" }) as HTMLTextAreaElement;
+  const name = h("input", {
+    type: "text", maxlength: String(LABEL_MAX), "aria-label": "Account name (optional)",
+    placeholder: `Name (optional) · Imported ${st.accounts.filter((a) => a.kind === "imported").length + 1}`,
+    spellcheck: "false", autocomplete: "off",
+  }) as HTMLInputElement;
   const err = h("div", { class: "toast" });
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Import key"),
-      inp, ...keyFilePicker(inp), err,
+      inp, ...keyFilePicker(inp), name, err,
       h("button", { class: "block", onclick: async () => {
         let priv: string;
         try { priv = privateKeyText(inp.value); } catch (e) { err.textContent = (e as Error).message; return; }
-        const r = await wallet.importKey(priv); if (r.ok) { st = r.state; route(); } else err.textContent = r.error;
+        const r = await wallet.importKey(priv, name.value); if (r.ok) { st = r.state; route(); } else err.textContent = r.error;
       } }, "Import"),
       h("button", { class: "btn block", onclick: mainScreen }, "Back"),
     ),
@@ -2489,7 +2560,7 @@ function feeScreen() {
 //    and is sent again.
 // Passive reads never raise the prompt themselves.
 const NEEDS_KEYS = ["signTransfer", "signDeposit", "signReceipt", "signWithdrawal", "exportBackup", "exportSeedQR",
-  "transferSend", "addAccount", "importKey", "setActive", "setNodeCookie"] as const;
+  "transferSend", "addAccount", "importKey", "setActive", "renameAccount", "setNodeCookie"] as const;
 type KeyCall = (...args: unknown[]) => Promise<{ ok: boolean; error?: string }>;
 let signer: WalletClient; // the platform's own client, without the unlock wrapper
 

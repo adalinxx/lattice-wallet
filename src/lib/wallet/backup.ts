@@ -6,7 +6,7 @@
 import { encryptVault, decryptVault, type Vault } from "../crypto/keystore.ts";
 import { cborEncode, cborDecode, type Cbor } from "../qr/ur.ts";
 import { isValidMnemonic, importPrivateKey, deriveAccount } from "../crypto/accounts.ts";
-import { deriveAccounts } from "./session.ts";
+import { deriveAccounts, LABEL_MAX } from "./session.ts";
 import type { WalletData } from "./types.ts";
 
 export const VAULT_UR_TYPE = "lattice-vault";
@@ -83,7 +83,7 @@ function cborToVault(bytes: Uint8Array): Vault {
   throw new Error("Unsupported backup KDF");
 }
 
-const isLabel = (x: unknown): x is string => typeof x === "string" && x.length <= 64;
+const isLabel = (x: unknown): x is string => typeof x === "string" && x.length <= LABEL_MAX;
 
 /** Decrypted backup contents, checked field by field before the signer uses them. */
 export function validWalletData(raw: unknown): WalletData {
