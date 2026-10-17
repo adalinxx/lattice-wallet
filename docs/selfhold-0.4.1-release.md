@@ -20,10 +20,14 @@ Node 24.21.0, macOS packaging:
 - Tracked-source and ZIP scans find no known personal identifiers or local home paths; no source maps, ZIP comments or extra metadata. Required attribution retained for 12 bundled dependency versions.
 
 Artifact: `release/selfhold-0.4.1.zip`.
-SHA-256: `43c83e94e3f0f202a4b822e8b0a424f969a3d937fe4925abf61a1f5099eb1b5b`.
+SHA-256: `5e835bd4842da2cb51112ce6551a39017d8c405ac8297c621d8095f6200ffffe`.
 
 ## Browser/store handoff
 
 Run focused actual-Chrome acceptance on this candidate: existing-account rename, Enter/blur/Escape, new-account naming, named import using disposable fixture data, invalid/reserved/duplicate names, lock/unlock persistence, and account identity/settings/recovery preservation across local upgrade. Recheck layout and screenshots with long names and light/dark UI. Tests passing on 0.4.0 do not establish these new UI checks. Local compatibility remains distinct from a store-signed upgrade.
 
 Confirm the existing item's current uploaded/review version before upload; if a version newer than 0.4.0 already exists, resolve the version before submission. Coordinate the pending-review replacement through the browser/store task. No store action or live transaction was performed while preparing this candidate; Analytics remains untouched. Do not withdraw, upload or submit based on this document alone.
+
+## Long-name layout follow-up
+
+Browser QA found a 64-character account name could overlap rename/copy controls. The account identity now takes the available flexible width, names wrap at any character when needed, and each control retains a 32px width. Full text remains visible/editable rather than truncated. The UI regression covers the full 64-character value, edit/cancel preservation and enabled controls; jsdom does not establish physical layout. Actual Chrome retest should confirm no overlap/overflow at popup width in display and edit modes and both themes. This checksum supersedes the initial 0.4.1 candidate.

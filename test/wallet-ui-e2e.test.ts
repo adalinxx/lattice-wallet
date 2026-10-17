@@ -814,6 +814,18 @@ test("wallet UI e2e: the account is renamed where its name is shown, and Escape 
   assert.match(picker().selectedOptions[0]!.textContent ?? "", /^Mining rewards · /, "the account menu shows the new name at once");
   const state = await client.getState();
   assert.ok(state.ok && state.state.accounts.find((a) => a.address === alice)!.label === "Mining rewards");
+
+  // Preserve the complete maximum-length label; actual wrapping needs browser QA.
+  const longName = "QA " + "L".repeat(61);
+  button("Rename account").click();
+  field()!.value = longName; key("Enter"); await settle();
+  assert.equal(name().textContent, longName);
+  assert.equal(button("Rename account").disabled, false);
+  assert.equal(button("Copy account address").disabled, false);
+  button("Rename account").click();
+  assert.equal(field()!.value, longName, "editing retains the full name");
+  key("Escape"); await settle();
+  assert.equal(name().textContent, longName);
 });
 
 test("wallet UI e2e: a new account opens with its name ready to type; Escape keeps the default", async () => {
