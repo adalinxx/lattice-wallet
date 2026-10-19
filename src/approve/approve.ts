@@ -11,9 +11,9 @@ import { totalDebit, type ProviderCall } from "../lib/wallet/provider.ts";
 import { addressGroups, addressNames, nameAddresses, otherHosts, payeeRecords, paymentsToShow, shortAddress } from "../lib/wallet/review.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
-import { chosenNodes, discoveryStart, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
+import { chosenNodes, discoveryStarts, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
 import { browserFetch, chainNodes, reader, sentStatus } from "../lib/wallet/node.ts";
-import { LATTICE_EXPLORER_RPC, originPattern } from "../lib/config.ts";
+import { originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
 const view = document.getElementById("view")!;
@@ -124,9 +124,9 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     if (read) return read;
   }
   if (settings.nodeMode === "automatic") {
-    // Then the SDK's failover list: the start node if it serves the chain,
+    // Then the SDK's list, in turns: the start nodes that serve the chain,
     // then the declared hosts, each until one answers.
-    const read = await chainNodes(discoveryStart(settings, LATTICE_EXPLORER_RPC), allowedFetch).read(chainPath, async (node) => {
+    const read = await chainNodes(discoveryStarts(settings), allowedFetch).read(chainPath, async (node) => {
       if (tried.has(node.url)) throw new Error("already tried");
       return (await readAt(node.url)) ?? Promise.reject(new Error("not this node"));
     }).catch(() => undefined); // what it could not reach is in `missing`

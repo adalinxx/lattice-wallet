@@ -16,11 +16,14 @@ Nothing is selected until you choose it. On first use the wallet asks for a
 node per chain:
 
 - a **hosted Lattice node** — `rpc.lattice.build` for Nexus, and the hosted
-  testnet node. The wallet declares these three origins
-  (`rpc.lattice.build`, `lattice-mainnet-read.fly.dev`,
-  `lattice-mainnet-testnet.fly.dev`) as required host permissions so choosing
-  them needs no further prompt; it still contacts none of them until you pick
-  one or ask for automatic discovery; or
+  testnet node. The wallet declares these origins (`rpc.lattice.build`,
+  `lattice-mainnet-read.fly.dev`, the backbones `lattice-mainnet-iad`,
+  `-ams` and `-sjc.fly.dev`, and `lattice-mainnet-testnet.fly.dev`) as
+  required host permissions so choosing them needs no further prompt; it
+  still contacts none of them until you pick one or ask for automatic
+  discovery. Automatic discovery starts from the read node and the backbones
+  in turns, and picks a chain's node at random among the hosts that accept
+  submits, so wallets spread over them; or
 - **your own node** — its loopback API (`http://127.0.0.1:<rpc-port>`)
   accepts your submits once the wallet is **paired** with it (below); or
 - an endpoint **discovered** through a Nexus node you choose, by the SDK's

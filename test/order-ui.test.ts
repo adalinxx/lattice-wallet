@@ -665,7 +665,7 @@ test("the optional Lattice.build endpoint is offered but a failed submit probe i
 
   button("Use Lattice.build").click();
   await settle();
-  assert.deepEqual(requested, [["https://rpc.lattice.build/*", "https://lattice-mainnet-read.fly.dev/*", "https://lattice-mainnet-testnet.fly.dev/*"]]);
+  assert.deepEqual(requested, [["https://rpc.lattice.build/*", "https://lattice-mainnet-read.fly.dev/*", "https://lattice-mainnet-iad.fly.dev/*", "https://lattice-mainnet-ams.fly.dev/*", "https://lattice-mainnet-sjc.fly.dev/*", "https://lattice-mainnet-testnet.fly.dev/*"]]);
   assert.deepEqual(stored.settings.endpoints, {});
   assert.match(document.body.textContent ?? "", /not accepting transactions/i);
 });
