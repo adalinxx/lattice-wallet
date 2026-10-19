@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
-import { activeDeposits, discover, reader, receiptWithdrawer } from "../src/lib/wallet/node.ts";
+import { activeDeposits, declaredHosts, reader, receiptWithdrawer } from "../src/lib/wallet/node.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 import type { WalletClient } from "../src/lib/wallet/client.ts";
 
@@ -20,7 +20,7 @@ test("deployed unpaid offer reaches purchase review without signing or submittin
     }
     return fetch(request);
   };
-  const endpoints = await discover(parentURL!, childChain, readOnlyFetch);
+  const endpoints = await declaredHosts(parentURL!, childChain, readOnlyFetch);
   const endpoint = endpoints.find((item) => item.declaresSubmit);
   assert.ok(endpoint, "No discovered submission-capable child endpoint; live gate cannot pass");
   const childURL = endpoint.url;

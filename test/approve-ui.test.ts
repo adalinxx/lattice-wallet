@@ -18,7 +18,8 @@ async function settle() { for (let i = 0; i < 40; i += 1) await tick(); }
 
 let loads = 0;
 /** Opens the window on `call`, with the node reporting `balance`. Returns what it sent the worker. */
-async function open(call: unknown, balance: string, layout?: (dom: JSDOM) => void) {
+async function open(call: unknown, balance: string, layout?: (dom: JSDOM) => void,
+  env: { settings?: unknown; fetch?: (url: URL) => Response | undefined } = {}) {
   const dom = new JSDOM('<main id="view"></main>', { url: "chrome-extension://wallet-id/approve/index.html?id=r1", pretendToBeVisual: true });
   for (const name of ["window", "document", "location", "Node", "HTMLElement", "HTMLButtonElement", "HTMLSelectElement", "Event"]) {
     Object.defineProperty(globalThis, name, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[name] });
@@ -35,11 +36,12 @@ async function open(call: unknown, balance: string, layout?: (dom: JSDOM) => voi
       return { ok: true };
     } },
     storage: { local: { get: async (key: string) => key === "settings"
-      ? { settings: { endpoints: { "Nexus/fanfare/band": { url: NODE, acceptsSubmit: true, source: "user" } }, nodeMode: "custom" } } : {} } },
+      ? { settings: env.settings ?? { endpoints: { "Nexus/fanfare/band": { url: NODE, acceptsSubmit: true, source: "user" } }, nodeMode: "custom" } } : {} } },
     permissions: { contains: async () => true },
   } });
   Object.defineProperty(globalThis, "fetch", { configurable: true, value: async (input: string | URL) => {
     const url = new URL(String(input));
+    if (env.fetch) return env.fetch(url) ?? new Response("{}", { status: 404 });
     if (url.pathname === `/api/state/account/${me}`) return new Response(JSON.stringify({ owner: me, balance, nonce: "7" }), { status: 200 });
     return new Response("{}", { status: 404 });
   } });
@@ -178,4 +180,75 @@ test("a long message must be read to its end before it can be signed", async () 
   (dom.window.document.querySelector(".decision .status .text-action") as HTMLButtonElement).click();
   await new Promise((r) => setTimeout(r, 900));
   assert.equal(approveButton(dom).disabled, false);
+});
+
+test("with no node chosen, the nonce is read from the chain's next node when one fails", async () => {
+  const START = "lattice-mainnet-read.fly.dev";
+  const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
+    settings: { endpoints: {}, nodeMode: "automatic" },
+    fetch: (url) => {
+      const chain = url.searchParams.get("chainPath");
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (url.pathname === "/api/chain/genesis") return json({ genesisHash: "bafynexusgenesis" });
+      if (url.pathname === "/api/chain/info" && (url.host !== START ? chain === "Nexus/fanfare/band" : chain === "Nexus/fanfare")) {
+        return json({ chain: chain!.split("/"), height: "3" });
+      }
+      if (url.host === START && url.pathname === "/api/chain/endpoints" && chain === "Nexus/fanfare/band") {
+        return json({ chainPath: ["Nexus", "fanfare", "band"], endpoints: ["https://broken.example", "https://band.example"] });
+      }
+      if (url.pathname === `/api/state/account/${me}`) {
+        return url.host === "band.example" ? json({ owner: me, balance: "10", nonce: "7" }) : json({ error: "unavailable" }, 500);
+      }
+    },
+  });
+  assert.ok(!text().includes("None of your nodes"), text());
+  assert.equal(approveButton(dom).textContent, "Sign write");
+  assert.equal(approveButton(dom).disabled, false, "the nonce was read");
+});
+
+test("when the chosen node is down and is also the first host found, the next host is read", async () => {
+  const START = "lattice-mainnet-read.fly.dev";
+  const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
+    settings: { endpoints: { "Nexus/fanfare/band": { url: "https://broken.example", acceptsSubmit: true, source: "discovered" } }, nodeMode: "automatic" },
+    fetch: (url) => {
+      const chain = url.searchParams.get("chainPath");
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (url.pathname === "/api/chain/genesis") return json({ genesisHash: "bafynexusgenesis" });
+      if (url.pathname === "/api/chain/info" && (url.host !== START ? chain === "Nexus/fanfare/band" : chain === "Nexus/fanfare")) {
+        return json({ chain: chain!.split("/"), height: "3" });
+      }
+      if (url.host === START && url.pathname === "/api/chain/endpoints" && chain === "Nexus/fanfare/band") {
+        return json({ chainPath: ["Nexus", "fanfare", "band"], endpoints: ["https://broken.example", "https://band.example"] });
+      }
+      if (url.pathname === `/api/state/account/${me}`) {
+        return url.host === "band.example" ? json({ owner: me, balance: "10", nonce: "7" }) : json({ error: "unavailable" }, 500);
+      }
+    },
+  });
+  assert.ok(!text().includes("None of your nodes"), text());
+  assert.equal(approveButton(dom).textContent, "Sign write");
+  assert.equal(approveButton(dom).disabled, false, "the nonce was read");
+});
+
+test("when the start node serves the chain but cannot read the account, a declared host is read", async () => {
+  const START = "lattice-mainnet-read.fly.dev";
+  const { text, dom } = await open({ ...buy, params: { ...buy.params, payments: undefined } }, "10", undefined, {
+    settings: { endpoints: {}, nodeMode: "automatic" },
+    fetch: (url) => {
+      const chain = url.searchParams.get("chainPath");
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+      if (url.pathname === "/api/chain/genesis") return json({ genesisHash: "bafynexusgenesis" });
+      if (url.pathname === "/api/chain/info" && chain && (url.host === START || chain === "Nexus/fanfare/band")) {
+        return json({ chain: chain.split("/"), height: "3" });
+      }
+      if (url.host === START && url.pathname === "/api/chain/endpoints" && chain === "Nexus/fanfare/band") {
+        return json({ chainPath: ["Nexus", "fanfare", "band"], endpoints: ["https://band.example"] });
+      }
+      if (url.pathname === `/api/state/account/${me}`) {
+        return url.host === "band.example" ? json({ owner: me, balance: "10", nonce: "7" }) : json({ error: "unavailable" }, 500);
+      }
+    },
+  });
+  assert.ok(!text().includes("None of your nodes"), text());
+  assert.equal(approveButton(dom).disabled, false, "the nonce was read");
 });

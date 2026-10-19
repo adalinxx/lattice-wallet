@@ -10,7 +10,7 @@ import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern, isLoopbackNodeURL } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, discover, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, chainNodes, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -322,31 +322,60 @@ test("a failed nonce lookup after transaction 404 remains unknown instead of blo
   assert.deepEqual(await sentStatus(client, "bafymissing", { from: "bafyalice", nonce: 4n }), { kind: "unknown to node" });
 });
 
-const blockView = (hash: string, chain: string[]) => ({
-  height: "3", hash, timestamp: "1", transactionCount: 0, childBlockCount: 0, nonce: "0", version: 1,
-  target: "0x1", nextTarget: "0x1", transactionsCID: "bafyt", postStateCID: "bafys", chain,
-});
+const NEXUS_GENESIS = "bafynexusgenesis";
+/** A host that answers for `chain` with a tip, on the network `genesis` names. */
+const serves = (url: URL, chain: string, genesis = NEXUS_GENESIS) => {
+  if (url.searchParams.get("chainPath") !== chain) return undefined;
+  if (url.pathname === "/api/chain/info") return { status: 200, body: { chain: chain.split("/"), height: "3", tipCID: "bafytip" } };
+  if (url.pathname === "/api/chain/genesis") return { status: 200, body: { genesisHash: genesis } };
+};
 
-test("discovery walks Nexus -> A -> B through the SDK resolver, accepting only hosts serving the committed block", async () => {
+test("discovery walks Nexus -> A -> B through the SDK resolver, accepting hosts that serve the chain on the start node's network", async () => {
   const { fetch, calls } = scripted((url) => {
     const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
     if (host === "start.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
-      return { status: 200, body: { chainPath: ["Nexus", "A"], committedBlock: "bafyA",
-        endpoints: ["https://liar.example", "https://a.example", "http://127.0.0.1:8080", "https://10.0.0.5", "https://169.254.169.254"],
+      // committedBlock names a block nobody serves: it decides nothing.
+      return { status: 200, body: { chainPath: ["Nexus", "A"], committedBlock: "bafyorphan",
+        endpoints: ["https://other-network.example", "https://a.example", "https://silent.example", "http://127.0.0.1:8080", "https://10.0.0.5", "https://169.254.169.254"],
         submitEndpoints: ["https://a.example/"] } };
     }
-    if (host === "a.example" && path === "/api/block/bafyA" && chain === "Nexus/A") return { status: 200, body: blockView("bafyA", ["Nexus", "A"]) };
-    if (host === "liar.example" && path === "/api/block/bafyA") return { status: 200, body: blockView("bafyOther", ["Nexus", "A"]) };
     if (host === "a.example" && path === "/api/chain/endpoints" && chain === "Nexus/A/B") {
-      return { status: 200, body: { chainPath: ["Nexus", "A", "B"], committedBlock: "bafyB", endpoints: ["https://b.example"] } };
+      return { status: 200, body: { chainPath: ["Nexus", "A", "B"], endpoints: ["https://b.example"] } };
     }
-    if (host === "b.example" && path === "/api/block/bafyB" && chain === "Nexus/A/B") return { status: 200, body: blockView("bafyB", ["Nexus", "A", "B"]) };
+    if (host === "start.example") return serves(url, "Nexus");
+    if (host === "other-network.example") return serves(url, "Nexus/A", "bafyothergenesis");
+    if (host === "a.example") return serves(url, "Nexus/A");
+    if (host === "b.example") return serves(url, "Nexus/A/B");
   });
-  const a = await discover("https://start.example", ["Nexus", "A"], fetch);
+  const a = await declaredHosts("https://start.example", ["Nexus", "A"], fetch);
   assert.deepEqual(a.map((e) => [e.url, e.declaresSubmit, e.trust]), [["https://a.example", true, OPERATOR_DECLARED]]);
   assert.ok(!calls.some((c) => /127\.0\.0\.1|10\.0\.0\.5|169\.254/.test(c)), "private hosts are never dialed:\n" + calls.join("\n"));
-  const b = await discover("https://start.example", ["Nexus", "A", "B"], fetch);
+  assert.ok(!calls.some((c) => c.includes("/api/block/")), "no host is asked for the block its parent commits");
+  const b = await declaredHosts("https://start.example", ["Nexus", "A", "B"], fetch);
   assert.deepEqual(b.map((e) => [e.url, e.declaresSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
+});
+
+test("the chain's nodes are the start node when it serves the chain, then the found hosts in order, read until one answers", async () => {
+  const { fetch } = scripted((url) => {
+    const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
+    if (host === "start.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
+      return { status: 200, body: { chainPath: ["Nexus", "A"], endpoints: ["https://a1.example", "https://a2.example"] } };
+    }
+    if (host === "start.example") return serves(url, "Nexus") ?? serves(url, "Nexus/served");
+    if (host === "a1.example" || host === "a2.example") return serves(url, "Nexus/A");
+  });
+  const nodes = chainNodes("https://start.example", fetch);
+  assert.deepEqual(await nodes.list(["Nexus", "served"]), [{ url: "https://start.example", found: false }]);
+  assert.deepEqual(await nodes.list(["Nexus", "A"]), [{ url: "https://a1.example", found: true }, { url: "https://a2.example", found: true }]);
+  const asked: string[] = [];
+  const answer = await nodes.read(["Nexus", "A"], async (node) => {
+    asked.push(node.url);
+    if (node.url === "https://a1.example") throw new Error("down");
+    return node.url;
+  });
+  assert.equal(answer, "https://a2.example");
+  assert.deepEqual(asked, ["https://a1.example", "https://a2.example"]);
+  await assert.rejects(nodes.read(["Nexus", "nowhere"], async () => "never"), { name: "ChainOfflineError" });
 });
 
 test("a submission is held to the CID the wallet computed", async () => {

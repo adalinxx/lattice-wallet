@@ -786,22 +786,17 @@ test("a child chain automatically discovers and selects a verified submit node t
     get: async () => stored,
     set: async (items: Record<string, unknown>) => { stored = items as typeof stored; },
   };
-  const block = {
-    height: "3", hash: "bafycommitted", timestamp: "1", transactionCount: 0, childBlockCount: 0,
-    nonce: "0", version: 1, target: "0x1", nextTarget: "0x1", transactionsCID: "bafyt",
-    postStateCID: "bafys", chain: ["Nexus", "testnet"],
-  };
   const fetch = async (input: string | URL) => {
     const url = new URL(input);
     if (url.host === "lattice-mainnet-read.fly.dev" && url.pathname === "/api/chain/endpoints") {
       return new Response(JSON.stringify({
-        chainPath: ["Nexus", "testnet"], committedBlock: "bafycommitted",
+        chainPath: ["Nexus", "testnet"],
         endpoints: ["https://testnet-node.example"], submitEndpoints: ["https://testnet-node.example"],
       }));
     }
-    if (url.host === "testnet-node.example" && url.pathname === "/api/block/bafycommitted") return new Response(JSON.stringify(block));
+    if (url.pathname === "/api/chain/genesis") return new Response(JSON.stringify({ genesisHash: "bafynexusgenesis" }));
     if (url.host === "testnet-node.example" && url.pathname === "/api/chain/info") {
-      return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], minRelayFee: "1", acceptsSubmit: true }));
+      return new Response(JSON.stringify({ chain: ["Nexus", "testnet"], height: "3", minRelayFee: "1", acceptsSubmit: true }));
     }
     return new Response("not found", { status: 404 });
   };

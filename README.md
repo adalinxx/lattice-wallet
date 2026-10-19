@@ -28,7 +28,10 @@ node per chain:
 - an endpoint **discovered** through a Nexus node you choose, by the SDK's
   `EndpointResolver`: it asks `GET /api/chain/endpoints?chainPath=P/D` one
   level at a time (Nexus → A → B …), never dials a private host, and accepts a
-  declared URL only if it serves the block its parent commits. Discovered
+  declared URL only if it serves that chain path (its `GET /api/chain/info`
+  names it, with a tip) on the starting node's network (its
+  `GET /api/chain/genesis` names the same Nexus genesis). What a parent chain
+  commits does not decide. Accepted hosts keep their declared order. Discovered
   endpoints are labelled *operator-declared, not independently verified*.
   Whether one accepts transactions is its operator's choice
   (`--public-submit`): the wallet submits there only if the host is declared

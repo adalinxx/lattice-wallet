@@ -9,7 +9,7 @@ export interface ChosenEndpoint {
   url: string;
   /** Confirmed from the endpoint's own /api/chain/info when it was chosen. */
   acceptsSubmit: boolean;
-  /** "user": typed in; "discovered": operator-declared, served the committed block, not independently verified. */
+  /** "user": typed in; "discovered": operator-declared, serves the chain on the starting node's network, not independently verified. */
   source: "user" | "discovered";
 }
 
