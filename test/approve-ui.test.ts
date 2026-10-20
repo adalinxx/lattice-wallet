@@ -286,3 +286,22 @@ test("when the start node serves the chain but cannot read the account, a declar
   assert.ok(!text().includes("None of your nodes"), text());
   assert.equal(approveButton(dom).disabled, false, "the nonce was read");
 });
+
+test("conditional records changing before approval force a new review without authorizing a signature", async () => {
+  const { recordState } = await import("./fixtures/record-state.ts");
+  let present = false;
+  const intent = { version: 1, chainPath: ["Nexus", "fanfare", "band"], expiresAt: "2030-01-01T00:00:00Z", fee: "1",
+    actions: [{ key: "always", newValue: "review" }, { key: "optional", newValue: "new", ifAbsent: true }], payments: [] };
+  const { sent, dom, text } = await open({ method: "openRequest", params: intent }, "1000", undefined, { fetch: (url) => {
+    if (url.pathname.startsWith("/api/state/account/")) return Response.json({ owner: me, balance: "1000", nonce: "7" });
+    return recordState(present).respond(url);
+  } });
+  assert.equal(approveButton(dom).disabled, false);
+  present = true;
+  approveButton(dom).click();
+  await settle();
+  assert.equal(sent.filter((m) => m.type === "decide" && m.approve === true).length, 0, "changed review must not reach the signer");
+  assert.match(text(), /optional/);
+  assert.match(text(), /left out|already/i);
+  assert.equal(approveButton(dom).disabled, true, "the changed review must rearm, not reuse the earlier approval");
+});
