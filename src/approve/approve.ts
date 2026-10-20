@@ -338,8 +338,9 @@ async function render() {
       return explain();
     } else if ("missing" in nonceRead && nonceRead.missing.length) {
       const hosts = nonceRead.missing;
-      // Automatic discovery may walk on to hosts not yet named, so it asks once for every HTTPS node.
-      const asked = nonceRead.automatic ? [ALL_HTTPS_ORIGINS] : hosts;
+      // Automatic discovery may walk on to hosts not yet named, so it asks once for every HTTPS node;
+      // a node on this computer is not HTTPS and is still asked for by name.
+      const asked = nonceRead.automatic ? [ALL_HTTPS_ORIGINS, ...hosts.filter((o) => !o.startsWith("https:"))] : hosts;
       nonceShown.textContent = "needs your permission";
       bar.status.replaceChildren(
         el("p", { textContent: `To check your account on ${chain}, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}${nonceRead.automatic ? ", and any other node it finds for this chain" : ""}.` }),

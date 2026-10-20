@@ -13,7 +13,7 @@ const view = new URLSearchParams(location.search).get("view");
 const fullPage = view === "backup" || view === "restore" || view === "wallet";
 if (fullPage) document.body.classList.add("page");
 
-// The three exact hosted origins are required manifest permissions; reaching
+// The exact hosted origins are required manifest permissions; reaching
 // any other HTTPS node is the optional grant automatic discovery asks for.
 startWallet({
   wallet: walletClient((msg) => chrome.runtime.sendMessage(msg)),

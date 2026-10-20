@@ -56,7 +56,7 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 ## Reviewer instructions
 
 1. Open the extension and create a disposable wallet. Use a unique test password and save the generated test phrase privately.
-2. Choose Use lattice.build: no runtime host prompt is expected for the three required hosted origins. For a custom node, accept its optional permission when requested. For Find node automatically on a child chain, accept the one-time request to reach any HTTPS node. Confirm the displayed chain. Chrome may require acknowledgement of new required permissions during an upgrade.
+2. Choose Use lattice.build: no runtime host prompt is expected for the required hosted origins. For a custom node, accept its optional permission when requested. For Find node automatically on a child chain, accept the one-time request to reach any HTTPS node. Confirm the displayed chain. Chrome may require acknowledgement of new required permissions during an upgrade.
 3. Copy the address; verify the full address is visible and clipboard copying works.
 4. Open the chain dropdown, select a direct child, and use the arrow to return to its parent.
 5. Open Send. Invalid addresses and non-positive amounts are refused before signing. Review displays sender, recipient, amount and fee.
