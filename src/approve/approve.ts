@@ -13,7 +13,7 @@ import type { WalletState } from "../lib/wallet/types.ts";
 import { loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStarts, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
 import { browserFetch, chainNodes, reader, sentStatus } from "../lib/wallet/node.ts";
-import { originPattern } from "../lib/config.ts";
+import { ALL_HTTPS_ORIGINS, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
 const view = document.getElementById("view")!;
@@ -78,7 +78,7 @@ function fail(message: string) {
 // ---- the nonce, read from the person's own node choices ----
 
 /** `stale`: page writes the node's pool no longer holds (never admitted, or dropped). */
-type NonceRead = { nonce: bigint; stateNonce: bigint; balance: bigint; node: string; stale: string[] } | { missing: string[] } | { error: string };
+type NonceRead = { nonce: bigint; stateNonce: bigint; balance: bigint; node: string; stale: string[] } | { missing: string[]; automatic: boolean } | { error: string };
 const permitted = (origin: string) => chrome.permissions.contains({ origins: [origin] });
 
 /** The next free nonce for `address` on `chainPath`, from a node the person chose or allowed. */
@@ -132,7 +132,7 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     }).catch(() => undefined); // what it could not reach is in `missing`
     if (read) return read;
   }
-  return missing.size ? { missing: [...missing] }
+  return missing.size ? { missing: [...missing], automatic: settings.nodeMode === "automatic" }
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
@@ -304,7 +304,7 @@ async function render() {
   // ---- the account, read from the person's node: balance and nonce ----
   const balanceAfter = el("p", { className: "meta", textContent: "Balance: checking…" });
   const nonceShown = el("span", { textContent: "checking…" });
-  let nonceRead: NonceRead = { missing: [] };
+  let nonceRead: NonceRead = { missing: [], automatic: false };
   const covered = (read: NonceRead) => "nonce" in read && read.balance >= debit;
   const sign = async () => {
     // Read again at the moment of signing: the account may have moved.
@@ -338,11 +338,14 @@ async function render() {
       return explain();
     } else if ("missing" in nonceRead && nonceRead.missing.length) {
       const hosts = nonceRead.missing;
+      // Automatic discovery may walk on to hosts not yet named, so it asks once for every HTTPS node;
+      // a node on this computer is not HTTPS and is still asked for by name.
+      const asked = nonceRead.automatic ? [ALL_HTTPS_ORIGINS, ...hosts.filter((o) => !o.startsWith("https:"))] : hosts;
       nonceShown.textContent = "needs your permission";
       bar.status.replaceChildren(
-        el("p", { textContent: `To check your account on ${chain}, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}.` }),
+        el("p", { textContent: `To check your account on ${chain}, the wallet needs to reach ${hosts.map((o) => o.replace(/\/\*$/, "")).join(", ")}${nonceRead.automatic ? ", and any other node it finds for this chain" : ""}.` }),
         el("button", { className: "btn block", type: "button", textContent: "Allow", onclick: async () => {
-          if (await chrome.permissions.request({ origins: hosts }).catch(() => false)) check();
+          if (await chrome.permissions.request({ origins: asked }).catch(() => false)) check();
         } }));
     } else if ("error" in nonceRead) {
       nonceShown.textContent = "unknown";

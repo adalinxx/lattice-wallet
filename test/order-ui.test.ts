@@ -8,6 +8,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { ensureOrigins } from "../src/popup/app.ts";
 import { activeDeposits, receiptWithdrawer, depositValues } from "../src/lib/wallet/node.ts";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
+import { HOSTED_NODE_ORIGINS } from "../src/lib/config.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function settle() { for (let i = 0; i < 20; i++) await tick(); }
@@ -665,7 +666,7 @@ test("the optional Lattice.build endpoint is offered but a failed submit probe i
 
   button("Use Lattice.build").click();
   await settle();
-  assert.deepEqual(requested, [["https://rpc.lattice.build/*", "https://lattice-mainnet-read.fly.dev/*", "https://lattice-mainnet-iad.fly.dev/*", "https://lattice-mainnet-ams.fly.dev/*", "https://lattice-mainnet-sjc.fly.dev/*", "https://lattice-mainnet-testnet.fly.dev/*"]]);
+  assert.deepEqual(requested, [[...HOSTED_NODE_ORIGINS]]);
   assert.deepEqual(stored.settings.endpoints, {});
   assert.match(document.body.textContent ?? "", /not accepting transactions/i);
 });
@@ -814,7 +815,7 @@ test("a child chain automatically discovers and selects a verified submit node t
   await startWallet({
     wallet, store, fetch,
     requestOrigins: async () => true,
-    hasOrigins: async (origins) => origins.includes("https://lattice-mainnet-testnet.fly.dev/*"),
+    hasOrigins: async (origins) => origins.includes("https://*/*"),
   });
   await settle();
   assert.equal(stored.settings.endpoints["Nexus/testnet"]?.url, "https://testnet-node.example");

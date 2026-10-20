@@ -13,11 +13,8 @@ const view = new URLSearchParams(location.search).get("view");
 const fullPage = view === "backup" || view === "restore" || view === "wallet";
 if (fullPage) document.body.classList.add("page");
 
-// Remove the old optional all-HTTPS grant on upgrade. The three exact hosted
-// origins are required manifest permissions; arbitrary declarations remain optional.
-if (await chrome.permissions.contains({ origins: ["https://*/*"] })) {
-  await chrome.permissions.remove({ origins: ["https://*/*"] });
-}
+// The exact hosted origins are required manifest permissions; reaching
+// any other HTTPS node is the optional grant automatic discovery asks for.
 startWallet({
   wallet: walletClient((msg) => chrome.runtime.sendMessage(msg)),
   store: chrome.storage.local,
@@ -35,7 +32,7 @@ startWallet({
       const hosted = HOSTED_NODE_ORIGINS.some((required) => required === origin);
       throw new NodePermissionError(hosted
         ? "Chrome has blocked access to this hosted node. Reload the updated extension and check its site-access permissions."
-        : "Node permission is missing. Choose this operator under Custom node to grant access.");
+        : "Node permission is missing. Find a node automatically, or choose this operator under Custom node, to grant access.");
     }
     return fetch(url, init);
   },
