@@ -48,7 +48,7 @@ Content scripts: A page-world API and an isolated relay run at document start on
 
 Local storage also retains site-origin/account connections and pending page-write chain/account/nonce/CID/node metadata. Approved writes go to the selected node and the site receives the CID; approved messages return the public key and origin-bound signature to the site. The privacy policy must describe these disclosures before submission. Reassess the dashboard data categories against this behavior; do not automatically carry forward the prior certifications.
 
-From 0.5.0, `openRequest` can open a write approval without a prior site connection. Pasted/scanned requests use the same approval flow with no website callback. Opening does not authorize signing or create a standing connection. Selected nodes receive chain/record-key reads for write-if-absent checks; approved records/payments are submitted only after explicit approval. Request labels and node-provided state are not independently authenticated. No new manifest permissions are introduced in 0.5.0.
+From 0.5.0, `openRequest` can open a write approval without a prior site connection. Pasted/scanned requests use the same approval flow with no website callback. Opening does not authorize signing or create a standing connection. Selected nodes receive chain and content-identifier reads for write-if-absent checks; these access patterns may reveal the records being checked. Approved records/payments are submitted only after explicit approval. Request labels and node-provided state are not independently authenticated. No new manifest permissions are introduced in 0.5.0.
 
 Remote code: No. JavaScript and WebAssembly dependencies are bundled in the package; node responses are data.
 

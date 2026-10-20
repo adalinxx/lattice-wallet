@@ -8,7 +8,7 @@ This preparation changes only version metadata and documentation. Package, lockf
 
 PR #20 adds write requests through text/file/QR import or `window.lattice.openRequest(uri)`, without requiring a prior site connection. Opening only requests review; it does not grant standing access or authorize signing. The chosen account, records, payments and fee are reviewed separately. The worker validates account ownership and expiry before signing; page requests remain bound to Chrome's document identity. The wallet chooses nonce and node. Labels remain unverified text. Existing-record reads for `ifAbsent` use CID-verified data rooted in the selected node's claimed tip, not independently verified consensus. False presence can omit a record; review lists omissions and rereads before approval. Approved website requests return a CID, while imported requests display the outcome locally.
 
-Privacy and store drafts now describe unconnected requests, chain/record-key disclosure to nodes, explicit approval, and imported-request results. Existing financial/payment and authentication disclosures still require reconciliation with the actual dashboard. No certification or independent security review is claimed. No new code fix was needed in this preparation; this bounded source review is not an audit.
+Privacy and store drafts now describe unconnected requests, chain/content-identifier disclosure and record access patterns, explicit approval, and imported-request results. Existing financial/payment and authentication disclosures still require reconciliation with the actual dashboard. No certification or independent security review is claimed. No new code fix was needed in this preparation; this bounded source review is not an audit.
 
 ## Validation
 
