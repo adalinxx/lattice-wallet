@@ -14,6 +14,7 @@ import { discoveryStarts } from "../lib/wallet/nonce.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
+import { decodeWriteRequest } from "../lib/wallet/write-request.ts";
 import { backupMenu, restoreMenu, type BackupHost } from "./backup.ts";
 import { scanner, scannerFileTexts } from "./scanner.ts";
 import { textSvg } from "../lib/qr/render.ts";
@@ -100,6 +101,8 @@ export interface Platform {
   };
   /** This page may open the camera (an extension popup cannot hold the permission). */
   camera?: boolean;
+  /** The host reviews lattice://write requests in an approval window of its own. */
+  writeRequests?: boolean;
   /** Reopen a backup flow in a full page (the extension: a tab, for camera, files and print). */
   openFullPage?(view: "backup" | "restore" | "wallet"): void;
   /** Start in this flow (the full page the popup opened). */
@@ -1198,7 +1201,7 @@ async function mainScreen() {
       ),
       // What else is done from here: opening an order, and the host's own (the desktop's Mining).
       h("div", { class: "primary-actions" },
-        h("button", { class: "btn", onclick: orderFlow }, "Open order"),
+        h("button", { class: "btn", onclick: orderFlow }, "Open request"),
         ...hostActions("home").map((a) => h("button", { class: "btn", onclick: () => a.run(route) }, a.label)),
       ),
       // What has happened and what is pending, and first of all what waits on its owner.
@@ -1680,17 +1683,17 @@ function connectionScreen() {
   ));
 }
 
-// ---------------- cross-chain order handoff ----------------
+// ---------------- requests: cross-chain orders and record writes ----------------
 
 function orderFlow() {
   const scan = scanner({
     camera: platform.camera === true,
     openFullPage: platform.openFullPage && (() => platform.openFullPage!("wallet")),
-    pasteHint: "paste the lattice://order request",
+    pasteHint: platform.writeRequests ? "paste the lattice://order or lattice://write request" : "paste the lattice://order request",
     onText: (text) => openOrderText(text, scan.status),
   });
   render(h("div", { class: "stack" },
-    h("h1", {}, "Open order"),
+    h("h1", {}, "Open request"),
     h("p", { class: "muted" }, "Scan the QR, load its image, or paste its text. The wallet validates the request and shows the transaction before signing."),
     scan.node,
     h("button", { class: "btn block", onclick: () => { scan.stop(); mainScreen(); } }, "Cancel"),
@@ -1698,6 +1701,16 @@ function orderFlow() {
 }
 
 function openOrderText(text: string, status: El): boolean {
+  if (/^lattice:\/\/write\b/i.test(text.trim())) {
+    if (!platform.writeRequests) { status.textContent = "This wallet can't open write requests yet."; return false; }
+    try { decodeWriteRequest(text); } catch (e) { status.textContent = (e as Error).message; return false; }
+    // Reviewed and signed in the approval window, as a page's request is.
+    status.textContent = "Opening…";
+    wallet.openWriteRequest(text.trim()).then((r) => {
+      status.textContent = r.ok ? "Review it in the window that opened." : r.error;
+    }, (e) => { status.textContent = String(e?.message ?? e); });
+    return true;
+  }
   try {
     const order = decodeOrderRequest(text);
     if (order.side === "buy_child") {
@@ -1915,7 +1928,11 @@ function enableOrderDrop() {
         for (const file of Array.from(transfer.files)) texts.push(...await scannerFileTexts(file));
       }
       for (const text of new Set(texts)) {
-        if (openOrderText(text, notice!)) { hide(); return; }
+        if (openOrderText(text, notice!)) {
+          // A write request answers later, in this notice: leave it up a while.
+          if (/^lattice:\/\/write\b/i.test(text.trim())) setTimeout(hide, 4000); else hide();
+          return;
+        }
       }
       notice!.className = "order-drop error";
       if (!texts.length) notice!.textContent = "Drop order text, a text file, or a QR image.";

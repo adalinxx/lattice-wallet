@@ -9,6 +9,8 @@ import type { Request, Response, SignedSubmit, WalletState } from "../lib/wallet
 import { browserFetch, describe, isDefiniteSubmissionRefusal, submitChecked, submitter } from "../lib/wallet/node.ts";
 import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
 import type { PageWrite } from "../lib/wallet/nonce.ts";
+import type { WriteRequest } from "../lib/wallet/provider.ts";
+import { decodeWriteRequest, fillWriteRequest } from "../lib/wallet/write-request.ts";
 
 const AUTO_LOCK_MINUTES = 10;
 const store = chrome.storage.local;
@@ -29,10 +31,14 @@ const signer = createSigner(
 
 interface PageDocument { tabId: number; documentId: string }
 interface Pending {
-  document: PageDocument;
-  origin: string;
+  /** Null for a request the person pasted into the wallet: no page waits for it. */
+  document: PageDocument | null;
+  origin: string | null;
   call: ProviderCall;
-  /** For a write: the account shown to the person, the only one that may sign it. */
+  /**
+   * For a write: the account shown to the person, the only one that may sign it.
+   * For an opened request: the site's connected account, if any, offered first.
+   */
   address: string | null;
   /** Approved and being signed or sent: closing the window no longer declines it. */
   approved?: boolean;
@@ -45,21 +51,28 @@ const pending = new Map<string, Pending>();
 const DECLINE_PAUSE_MS = 5000;
 const declinedAt = new Map<string, number>();
 function declined(request: Pending) {
-  declinedAt.set(request.origin, Date.now());
+  if (request.origin !== null) declinedAt.set(request.origin, Date.now());
   request.settle({ ok: false, error: "The person declined" });
 }
 const connections = async (): Promise<Record<string, string>> =>
   ((await store.get("connections")).connections as Record<string, string> | undefined) ?? {};
 
-async function ask(origin: string, call: ProviderCall, address: string | null, document: PageDocument): Promise<Response> {
+/** Why `origin` may not ask now, or null. */
+function refusal(origin: string | null): string | null {
   // One waiting request per site: a page cannot stack windows, or slip a
   // second request under a click meant for the first.
   if ([...pending.values()].some((request) => request.origin === origin)) {
-    return { ok: false, error: "A request from this site is already waiting in the wallet" };
+    return origin === null ? "A pasted request is already waiting in the wallet" : "A request from this site is already waiting in the wallet";
   }
-  if (Date.now() - (declinedAt.get(origin) ?? -Infinity) < DECLINE_PAUSE_MS) {
-    return { ok: false, error: "The person just declined; ask again in a moment" };
+  if (origin !== null && Date.now() - (declinedAt.get(origin) ?? -Infinity) < DECLINE_PAUSE_MS) {
+    return "The person just declined; ask again in a moment";
   }
+  return null;
+}
+
+async function ask(origin: string | null, call: ProviderCall, address: string | null, document: PageDocument | null): Promise<Response> {
+  const refused = refusal(origin);
+  if (refused) return { ok: false, error: refused };
   const id = crypto.randomUUID();
   return new Promise((settle) => {
     const request: Pending = { origin, call, address, document, settle: (r) => { pending.delete(id); settle(r); } };
@@ -87,6 +100,8 @@ async function fromPage(origin: string, raw: unknown, document: PageDocument): P
     }
     case "connect":
       return address ? { ok: true, address } as Response : ask(origin, call, null, document);
+    case "openRequest":
+      return ask(origin, call, address, document);
     case "writeRecords":
     case "signMessage":
       if (!address) return { ok: false, error: "Not connected: call connect() first" };
@@ -116,7 +131,7 @@ async function fromApproval(msg: Parameters<typeof decideNow>[0]): Promise<Respo
   return decideNow(msg);
 }
 
-async function decideNow(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown; node?: unknown; stale?: unknown }): Promise<Response> {
+async function decideNow(msg: { type: string; id?: string; approve?: boolean; address?: string; nonce?: unknown; stateNonce?: unknown; node?: unknown; stale?: unknown; present?: unknown; fee?: unknown }): Promise<Response> {
   const request = msg.id ? pending.get(msg.id) : undefined;
   if (!request) return { ok: false, error: "This request is gone (answered, or the page went away)." };
   if (msg.type === "pending") return { ok: true, origin: request.origin, call: request.call, address: request.address } as Response;
@@ -126,14 +141,15 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   }
   // Target the exact document Chrome reported, not just its tab or origin.
   // Reloads, navigation and a closed tab must not leave an old request usable.
-  const alive = await chrome.tabs.sendMessage(request.document.tabId,
-    { type: "provider-document" }, { documentId: request.document.documentId })
+  const page = request.document;
+  const alive = !page || await chrome.tabs.sendMessage(page.tabId,
+    { type: "provider-document" }, { documentId: page.documentId })
     .then((answer) => answer?.origin === request.origin).catch(() => false);
   if (!alive || pending.get(msg.id!) !== request) {
     request.settle({ ok: false, error: "The requesting page went away; ask again" });
     return { ok: false, error: "The requesting page went away. Nothing was signed." };
   }
-  if (request.call.method === "connect") {
+  if (request.call.method === "connect" && request.origin !== null) {
     const state = await signer.handle({ type: "getState" });
     const chosen = state.ok ? (state as unknown as { state: WalletState }).state.accounts.find((a) => a.address === msg.address) : undefined;
     if (!chosen) return { ok: false, error: "Choose one of this wallet's accounts" };
@@ -143,28 +159,53 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     request.settle({ ok: true, address: chosen.address } as Response);
     return { ok: true };
   }
-  if (!request.address) return { ok: false, error: "Not connected" };
-  // Sign only as the account the person was shown, and only while the site
-  // is still connected to it.
-  if ((await connections())[request.origin] !== request.address) {
-    request.settle({ ok: false, error: "The site's connection changed; ask again" });
-    return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
+  let from: string;
+  let write: WriteRequest;
+  if (request.call.method === "openRequest") {
+    // Any of the wallet's accounts the person chose, with the fee the window
+    // showed and the records it found already there left out (write-request.ts).
+    // A request's expiry holds until it is signed, however long its window stays open.
+    if (Date.parse(request.call.params.expiresAt) <= Date.now()) {
+      request.settle({ ok: false, error: "This request has expired" });
+      return { ok: false, error: "This request has expired. Nothing was signed." };
+    }
+    const state = await signer.handle({ type: "getState" });
+    const view = state.ok ? (state as unknown as { state: WalletState }).state : undefined;
+    if (view?.locked) return { ok: false, error: "Locked" }; // the window unlocks and tries again
+    const chosen = view?.accounts.find((a) => a.address === msg.address);
+    if (!chosen) return { ok: false, error: "Choose one of this wallet's accounts" };
+    if (!Array.isArray(msg.present) || !msg.present.every((key) => typeof key === "string") || typeof msg.fee !== "string") {
+      return { ok: false, error: "The wallet has not read this request's records" };
+    }
+    try { write = fillWriteRequest(request.call.params, chosen.address, new Set(msg.present), msg.fee); } catch (e) {
+      return { ok: false, error: String((e as Error)?.message ?? e) };
+    }
+    from = chosen.address;
+  } else {
+    if (!request.address || request.origin === null) return { ok: false, error: "Not connected" };
+    // Sign only as the account the person was shown, and only while the site
+    // is still connected to it.
+    if ((await connections())[request.origin] !== request.address) {
+      request.settle({ ok: false, error: "The site's connection changed; ask again" });
+      return { ok: false, error: "This site's connection changed since this request was made. Nothing was signed." };
+    }
+    if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
+    if (request.call.method === "signMessage") {
+      const signed = await signer.handle({ type: "signMessage", from: request.address, origin: request.origin, text: request.call.params.text });
+      if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
+      const { publicKey, signature } = signed as unknown as { publicKey: string; signature: string };
+      request.settle({ ok: true, publicKey, signature } as Response);
+      return { ok: true };
+    }
+    if (request.call.method !== "writeRecords") return { ok: false, error: "Unknown request" };
+    from = request.address;
+    write = request.call.params;
   }
-  if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
-  if (request.call.method === "signMessage") {
-    const signed = await signer.handle({ type: "signMessage", from: request.address, origin: request.origin, text: request.call.params.text });
-    if (!signed.ok) return signed; // e.g. locked: the window unlocks and tries again
-    const { publicKey, signature } = signed as unknown as { publicKey: string; signature: string };
-    request.settle({ ok: true, publicKey, signature } as Response);
-    return { ok: true };
-  }
-  if (request.call.method !== "writeRecords") return { ok: false, error: "Unknown request" };
   // The nonce the window read from the person's node (nonce.ts); never the page's.
   if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce) || typeof msg.node !== "string") {
     return { ok: false, error: "The wallet has not read this account's nonce" };
   }
-  const chain = request.call.params.chainPath.join("/");
-  const from = request.address;
+  const chain = write.chainPath.join("/");
   const nonce = msg.nonce;
   // Writes the window found the node's pool no longer holds stop keeping their nonce.
   const stale = Array.isArray(msg.stale) ? msg.stale.filter((cid): cid is string => typeof cid === "string") : [];
@@ -175,7 +216,7 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   if (pending.get(msg.id!) !== request) return { ok: false, error: "This request was canceled" };
   request.approved = true;
   try {
-    return await signAndSend(request, from, chain, nonce, msg.node, BigInt(msg.stateNonce));
+    return await signAndSend(request, write, from, chain, nonce, msg.node, BigInt(msg.stateNonce));
   } catch (e) {
     // Never leave an approved request unanswered: the site could ask nothing again.
     const reason = String((e as Error)?.message ?? e);
@@ -184,9 +225,8 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   }
 }
 
-async function signAndSend(request: Pending, from: string, chain: string, nonce: string, nodeURL: string, passed: bigint): Promise<Response> {
-  if (request.call.method !== "writeRecords") return { ok: false, error: "Not a write" };
-  const signed = await signer.handle({ type: "signRecords", from, ...request.call.params, nonce });
+async function signAndSend(request: Pending, write: WriteRequest, from: string, chain: string, nonce: string, nodeURL: string, passed: bigint): Promise<Response> {
+  const signed = await signer.handle({ type: "signRecords", from, ...write, nonce });
   if (!signed.ok) { request.approved = false; return signed; } // e.g. locked: the window unlocks and tries again
   const signedSubmit = (signed as unknown as { signedSubmit: SignedSubmit }).signedSubmit;
   // The wallet submits, to the node it read the nonce from: a page never
@@ -213,10 +253,12 @@ async function signAndSend(request: Pending, from: string, chain: string, nonce:
     failure = describe(e);
   }
   // Keep the pre-broadcast reservation even when delivery is uncertain.
-  request.settle(delivered === "yes"
+  const outcome = delivered === "yes"
     ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later
-    : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response);
-  return { ok: true };
+    : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response;
+  request.settle(outcome);
+  // A pasted request has no page to hear the outcome: the window shows it.
+  return request.origin === null ? { ok: true, outcome } as Response : { ok: true };
 }
 
 chrome.windows.onRemoved.addListener((closed) => {
@@ -249,6 +291,18 @@ chrome.runtime.onMessage.addListener((message: { type?: unknown }, sender, sendR
     return true;
   }
   if (page !== chrome.runtime.getURL("popup/index.html")) return false;
+  if (msg.type === "openWriteRequest") {
+    // A request the person pasted or scanned: reviewed in the same window a page's is.
+    let answer: Response;
+    try {
+      const call: ProviderCall = { method: "openRequest", params: decodeWriteRequest(msg.uri) };
+      const refused = refusal(null);
+      if (refused) answer = { ok: false, error: refused };
+      else { void ask(null, call, null, null); answer = { ok: true }; }
+    } catch (e) { answer = { ok: false, error: String((e as Error)?.message ?? e) }; }
+    sendResponse(answer);
+    return false;
+  }
   if (msg.type !== "getState" && msg.type !== "nodeAuthorization") chrome.alarms.create("auto-lock", { delayInMinutes: AUTO_LOCK_MINUTES });
   signer.handle(msg).then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
   return true; // async response

@@ -64,7 +64,7 @@ test("deployed unpaid offer reaches purchase review without signing or submittin
     assert.ok(found, `Missing ${label}`); return found;
   };
   await new Promise((resolve) => setTimeout(resolve, 20));
-  button("Open order").click();
+  button("Open request").click();
   const order = { version: 1, parentChain, childChain, asset: "LAT", expiresAt: new Date(Date.now() + 3600_000).toISOString(), side: "buy_child", orderType: "take", deposits: [{
     demander: selected.demander, amountDemanded: String(selected.amountDemanded), amountDeposited: String(selected.amountDeposited), depositNonce: String(selected.depositNonce),
   }] };
