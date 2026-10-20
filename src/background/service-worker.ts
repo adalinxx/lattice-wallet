@@ -164,8 +164,15 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
   if (request.call.method === "openRequest") {
     // Any of the wallet's accounts the person chose, with the fee the window
     // showed and the records it found already there left out (write-request.ts).
+    // A request's expiry holds until it is signed, however long its window stays open.
+    if (Date.parse(request.call.params.expiresAt) <= Date.now()) {
+      request.settle({ ok: false, error: "This request has expired" });
+      return { ok: false, error: "This request has expired. Nothing was signed." };
+    }
     const state = await signer.handle({ type: "getState" });
-    const chosen = state.ok ? (state as unknown as { state: WalletState }).state.accounts.find((a) => a.address === msg.address) : undefined;
+    const view = state.ok ? (state as unknown as { state: WalletState }).state : undefined;
+    if (view?.locked) return { ok: false, error: "Locked" }; // the window unlocks and tries again
+    const chosen = view?.accounts.find((a) => a.address === msg.address);
     if (!chosen) return { ok: false, error: "Choose one of this wallet's accounts" };
     if (!Array.isArray(msg.present) || !msg.present.every((key) => typeof key === "string") || typeof msg.fee !== "string") {
       return { ok: false, error: "The wallet has not read this request's records" };
@@ -246,10 +253,12 @@ async function signAndSend(request: Pending, write: WriteRequest, from: string, 
     failure = describe(e);
   }
   // Keep the pre-broadcast reservation even when delivery is uncertain.
-  request.settle(delivered === "yes"
+  const outcome = delivered === "yes"
     ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later
-    : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response);
-  return { ok: true };
+    : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response;
+  request.settle(outcome);
+  // A pasted request has no page to hear the outcome: the window shows it.
+  return request.origin === null ? { ok: true, outcome } as Response : { ok: true };
 }
 
 chrome.windows.onRemoved.addListener((closed) => {

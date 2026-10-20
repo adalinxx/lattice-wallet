@@ -42,6 +42,7 @@ startWallet({
   // The node sees this extension's requests from this origin.
   pairOrigin: location.origin,
   camera: fullPage,
+  writeRequests: true,
   initialView: view === "backup" || view === "restore" ? view : undefined,
   openFullPage: (v) => { chrome.tabs.create({ url: chrome.runtime.getURL(`popup/index.html?view=${v}`) }); window.close(); },
 });

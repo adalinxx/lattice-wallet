@@ -101,6 +101,8 @@ export interface Platform {
   };
   /** This page may open the camera (an extension popup cannot hold the permission). */
   camera?: boolean;
+  /** The host reviews lattice://write requests in an approval window of its own. */
+  writeRequests?: boolean;
   /** Reopen a backup flow in a full page (the extension: a tab, for camera, files and print). */
   openFullPage?(view: "backup" | "restore" | "wallet"): void;
   /** Start in this flow (the full page the popup opened). */
@@ -1700,6 +1702,7 @@ function orderFlow() {
 
 function openOrderText(text: string, status: El): boolean {
   if (/^lattice:\/\/write\b/i.test(text.trim())) {
+    if (!platform.writeRequests) { status.textContent = "This wallet can't open write requests yet."; return false; }
     try { decodeWriteRequest(text); } catch (e) { status.textContent = (e as Error).message; return false; }
     // Reviewed and signed in the approval window, as a page's request is.
     status.textContent = "Opening…";

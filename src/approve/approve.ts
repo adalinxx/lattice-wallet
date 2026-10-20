@@ -102,6 +102,7 @@ async function readNonce(chainPath: string[], address: string, keys: readonly st
   };
   const pageWrites = ((await chrome.storage.local.get("pageWrites")).pageWrites as PageWrite[] | undefined) ?? [];
   const chain = chainPath.join("/");
+  let recordsUnread = "";
   const readAt = async (url: string): Promise<NonceRead | undefined> => {
     try {
       const auth = (await send({ type: "nodeAuthorization", url })).authorization as string | undefined;
@@ -120,7 +121,11 @@ async function readNonce(chainPath: string[], address: string, keys: readonly st
       const state = await node.account(address);
       const live = livePageWrites(pageWrites, chain, state.nonce, dead);
       const stale = [...dead];
-      const present = await recordsPresent(url, chainPath, keys, allowedFetch, auth);
+      let present: string[];
+      try { present = await recordsPresent(url, chainPath, keys, allowedFetch, auth); } catch (e) {
+        recordsUnread = `${new URL(url).host} did not serve this chain's records (${String((e as Error)?.message ?? e)}).`;
+        return undefined;
+      }
       return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, balance: state.balance, node: url, stale, present };
     } catch { return undefined; /* not this node */ }
   };
@@ -139,13 +144,22 @@ async function readNonce(chainPath: string[], address: string, keys: readonly st
     }).catch(() => undefined); // what it could not reach is in `missing`
     if (read) return read;
   }
+  if (recordsUnread && !missing.size) return { error: `${recordsUnread} The wallet needs them to know what this request writes.` };
   return missing.size ? { missing: [...missing], automatic: settings.nodeMode === "automatic" }
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
 async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string; stale: string[] }, extra?: object) {
   const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node, stale: nonce.stale }), ...extra });
-  if (answer.ok) window.close();
+  const outcome = answer.outcome as { ok: boolean; error?: string; transactionCID?: string } | undefined;
+  if (answer.ok && outcome) {
+    // A pasted request: no page hears how it went, so say it here.
+    view.replaceChildren(
+      el("h1", { textContent: outcome.ok ? "Sent" : "Sent, unconfirmed" }),
+      el("p", { className: outcome.ok ? "" : "warn", textContent: outcome.ok ? "Your node took it. It lands with the next block." : outcome.error ?? "" }),
+      ...(outcome.transactionCID ? [row("Transaction", el("span", { className: "groups", textContent: outcome.transactionCID }))] : []),
+      el("button", { className: "btn block", textContent: "Close", onclick: () => window.close() }));
+  } else if (answer.ok) window.close();
   else if (answer.error === "Locked") render();
   else fail(answer.error ?? "Could not finish");
 }
@@ -324,16 +338,21 @@ async function reviewRequest(intent: WriteIntent, origin: string | null, state: 
     return;
   }
   reviewWrite(write, address, origin, state, {
-    keys: absentKeys(intent, address), present, label: intent.label, choose,
+    keys: absentKeys(intent, address), present, label: intent.label, expiresAt: intent.expiresAt, choose,
     reread: (now) => { reviewRequest(intent, origin, state, connected, address, now).catch((e) => fail(String(e?.message ?? e))); },
   });
 }
 
 /** What an opened request adds to a write's review: the account picker, its label, and what was left out. */
-interface Opened { keys: string[]; present: string[]; label?: string; choose: HTMLElement[]; reread: (present: string[]) => void }
+interface Opened { keys: string[]; present: string[]; label?: string; expiresAt: string; choose: HTMLElement[]; reread: (present: string[]) => void }
 
 /** A write's review, signed as `address`. */
+// Each review drawn: a read begun for an earlier one (another account, say) is dropped when it returns.
+let drawn = 0;
+
 function reviewWrite(write: WriteRequest, address: string, origin: string | null, state: WalletState, opened?: Opened) {
+  const mine = ++drawn;
+  const current = () => mine === drawn;
   const account = state.accounts.find((a) => a.address === address);
   const who = account?.label ?? shortAddress(address);
   const accountDetail = row("Account", ...(account ? [`${account.label} `] : []), fullAddress(address));
@@ -355,7 +374,13 @@ function reviewWrite(write: WriteRequest, address: string, origin: string | null
   const changed = (read: NonceRead) => opened !== undefined && "present" in read && !sameKeys(read.present, opened.present);
   const sign = async () => {
     // Read again at the moment of signing: the account may have moved.
+    if (opened && Date.parse(opened.expiresAt) <= Date.now()) return fail("This request has expired. Nothing was signed.");
+    // The account can't change under a signing in progress.
+    const picker = view.querySelector("select.picker") as HTMLSelectElement | null;
+    if (picker) picker.disabled = true;
     const now = await readNonce(chainPath, address, opened?.keys);
+    if (!current()) return;
+    if (picker) picker.disabled = false;
     if (changed(now)) return opened!.reread((now as Extract<NonceRead, { nonce: bigint }>).present);
     if (!covered(now)) { nonceRead = now; showRead(); return; }
     decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
@@ -402,6 +427,7 @@ function reviewWrite(write: WriteRequest, address: string, origin: string | null
     bar.arm();
   }
   const check = () => readNonce(chainPath, address, opened?.keys).then((r) => {
+    if (!current()) return;
     if (changed(r)) return opened!.reread((r as Extract<NonceRead, { nonce: bigint }>).present);
     nonceRead = r; showRead();
   }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showRead(); });
@@ -442,7 +468,7 @@ function reviewWrite(write: WriteRequest, address: string, origin: string | null
     summary,
     label(`Records · ${actions.length}`),
     recordList,
-    ...leftOut.map((key) => el("p", { className: "meta" }, "Left out, already there: ", named(key, names, 80))),
+    ...leftOut.map((key) => el("p", { className: "meta left-out" }, "Left out, already there: ", named(key, names, 80))),
     el("details", { className: "advanced" },
       el("summary", { textContent: "Details" }),
       el("div", { className: "advanced-content" },
@@ -458,7 +484,8 @@ function reviewWrite(write: WriteRequest, address: string, origin: string | null
             : a.oldValue === undefined ? [valueNode("new", a.newValue)]
             : [valueNode("was", a.oldValue), valueNode("now", a.newValue)])))))),
     bar);
-  gate.watch(recordList, bar);
+  // What was left out decides the request too: it must be seen before signing.
+  gate.watch([...view.querySelectorAll(".left-out")].at(-1) ?? recordList, bar);
   check();
 }
 

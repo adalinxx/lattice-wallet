@@ -267,7 +267,22 @@ test("pages connect and write only through the person's approval", async () => {
   assert.equal(opened.length, windows + 1);
   assert.equal((await approval({ type: "pending", id: requestId() })).origin, null);
   assert.equal((await popup({ type: "openWriteRequest", uri: request })).error, "A pasted request is already waiting in the wallet");
-  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...filled, address, nonce: "8", present: [] }), { ok: true });
+  const pasted = await approval({ type: "decide", id: requestId(), approve: true, ...filled, address, nonce: "8", present: [] });
+  assert.equal((pasted.outcome as Answer).ok, true, "no page hears it, so the window is told how it went");
+  assert.equal(typeof (pasted.outcome as Answer).transactionCID, "string");
   assert.ok(JSON.stringify(submitted.at(-1)!.body.transaction.body).includes(`user/${address}/profile`), "a record not there yet is written");
   assert.equal((await approval({ type: "pending", id: requestId() })).ok, false, "answered");
+
+  // Locked while it waits: the window is told to unlock. Expired while it waits: refused, nothing signed.
+  const late = page({ method: "openRequest", params: { uri: request } });
+  await new Promise((r) => setTimeout(r, 10));
+  const lateId = requestId();
+  await popup({ type: "lock" });
+  assert.equal((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "9" })).error, "Locked");
+  assert.equal((await approval({ type: "unlock", password: "pw" })).ok, true);
+  const sentBefore = submitted.length;
+  skew += 10 * 365 * 86_400_000;
+  assert.match(String((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "9" })).error), /expired/);
+  assert.deepEqual(await late, { ok: false, error: "This request has expired" });
+  assert.equal(submitted.length, sentBefore);
 });
