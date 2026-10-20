@@ -37,7 +37,7 @@ alarms: Automatically lock the signing session after the configured inactivity i
 
 Address copying uses the Clipboard API inside a user gesture, without a clipboard permission.
 
-Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev and lattice-mainnet-testnet.fly.dev provide hosted submission, explorer reads and testnet access without connection-time prompts. These are exact hosts, not wildcard subdomains.
+Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev, lattice-mainnet-iad.fly.dev, lattice-mainnet-ams.fly.dev, lattice-mainnet-sjc.fly.dev and lattice-mainnet-testnet.fly.dev provide hosted submission, explorer and discovery reads, and testnet access without connection-time prompts. These are exact hosts, not wildcard subdomains.
 
 Optional HTTPS hosts: Connect to user-selected custom operators, and to endpoints discovered through parent chains outside the fixed hosted allowlist. A custom operator is requested by its own host. Automatic discovery requests access to every HTTPS host once, when the user first asks it to find a node, because each level's nodes are declared by the level above and are known only as discovery walks down. These optional node permissions are separate from the content-script matches described below.
 

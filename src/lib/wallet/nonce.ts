@@ -2,7 +2,7 @@
 // chose it could take the nonce of one of the person's pending transactions
 // and cancel it. Pure, so it is testable without the extension.
 
-import { ROOT_CHAIN } from "../config.ts";
+import { NEXUS_DEFAULT_NODES, ROOT_CHAIN } from "../config.ts";
 import type { Settings } from "./settings.ts";
 import type { SignedSubmit } from "./types.ts";
 
@@ -67,5 +67,8 @@ export function chosenNodes(settings: Settings, chainPath: readonly string[]): s
   return urls;
 }
 
-/** Where discovery starts: the person's Nexus node, else the hosted reader. */
-export const discoveryStart = (settings: Settings, fallback: string) => settings.endpoints[ROOT_CHAIN]?.url ?? fallback;
+/** Where discovery starts: the person's Nexus node, else the default Nexus nodes, taken in turns. */
+export const discoveryStarts = (settings: Settings): string[] => {
+  const own = settings.endpoints[ROOT_CHAIN]?.url;
+  return own ? [own] : [...NEXUS_DEFAULT_NODES];
+};

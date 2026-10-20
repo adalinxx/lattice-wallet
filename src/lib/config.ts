@@ -13,6 +13,14 @@ export const LATTICE_TESTNET_RPC = "https://lattice-mainnet-testnet.fly.dev";
 /** Nexus read service used by the explorer and as the default bootstrap for
  * child-chain endpoint discovery. It is never used to submit transactions. */
 export const LATTICE_EXPLORER_RPC = "https://lattice-mainnet-read.fly.dev";
+/** Nexus nodes that automatic discovery starts from, in turns, when the user
+ * chose no Nexus node: the read service and the backbones. Read only. */
+export const NEXUS_DEFAULT_NODES = [
+  LATTICE_EXPLORER_RPC,
+  "https://lattice-mainnet-iad.fly.dev",
+  "https://lattice-mainnet-ams.fly.dev",
+  "https://lattice-mainnet-sjc.fly.dev",
+] as const;
 
 /** Must match the manifest's exact required host permissions. No wildcard
  * subdomains: a newly discovered operator still needs explicit permission. */
@@ -20,6 +28,9 @@ export const HOSTED_NODE_ORIGINS = [
   "https://rpc.lattice.build/*",
   "https://lattice-mainnet-read.fly.dev/*",
   "https://lattice-mainnet-testnet.fly.dev/*",
+  "https://lattice-mainnet-iad.fly.dev/*",
+  "https://lattice-mainnet-ams.fly.dev/*",
+  "https://lattice-mainnet-sjc.fly.dev/*",
 ] as const;
 
 /** Every HTTPS node: the optional grant automatic discovery asks for once,

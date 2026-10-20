@@ -277,18 +277,38 @@ export async function receiptWithdrawer(
   return withdrawer ?? null;
 }
 
-/**
- * The hosts that declare `chainPath`, walked down from a Nexus node the user
- * chose: each serves the chain at that path on that node's network (the SDK's
- * rule; what a parent commits does not decide). Listed in declared order,
- * with what each declares about submission.
- */
-export function declaredHosts(startURL: string, chainPath: string[], fetchImpl: Fetch = browserFetch): Promise<ResolvedEndpoint[]> {
-  return new EndpointResolver(reader(startURL, [ROOT_CHAIN], fetchImpl), { fetch: fetchImpl }).resolve(chainPath);
+/** `items` begun at a random one, so many wallets do not all take the first. */
+export function spread<T>(items: readonly T[], random: () => number = Math.random): T[] {
+  const first = Math.floor(random() * items.length);
+  return [...items.slice(first), ...items.slice(0, first)];
 }
-/** The nodes to read a chain from, in order, starting at `startURL` (the SDK's failover list). */
-export function chainNodes(startURL: string, fetchImpl: Fetch = browserFetch): ChainNodes {
-  return new ChainNodes(startURL, { fetch: fetchImpl });
+
+/**
+ * The hosts that declare `chainPath`, walked down from a Nexus node: the one
+ * the user chose, or one of the defaults, begun at a random one and the next
+ * when it fails. Each host serves the chain at that path on that node's
+ * network (the SDK's rule; what a parent commits does not decide). Listed in
+ * declared order, with what each declares about submission.
+ */
+export async function declaredHosts(
+  start: string | readonly string[],
+  chainPath: string[],
+  fetchImpl: Fetch = browserFetch,
+  random: () => number = Math.random,
+): Promise<ResolvedEndpoint[]> {
+  let failure: { reason: unknown } | undefined;
+  for (const startURL of spread(typeof start === "string" ? [start] : start, random)) {
+    try {
+      return await new EndpointResolver(reader(startURL, [ROOT_CHAIN], fetchImpl), { fetch: fetchImpl }).resolve(chainPath);
+    } catch (error) {
+      failure ??= { reason: error };
+    }
+  }
+  throw failure!.reason;
+}
+/** The nodes to read a chain from, in turns, starting at `start` (the SDK's round-robin list). */
+export function chainNodes(start: string | readonly string[], fetchImpl: Fetch = browserFetch): ChainNodes {
+  return new ChainNodes(start, { fetch: fetchImpl });
 }
 export { OPERATOR_DECLARED };
 

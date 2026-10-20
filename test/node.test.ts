@@ -10,7 +10,7 @@ import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern, isLoopbackNodeURL } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, chainNodes, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, chainNodes, spread, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -355,7 +355,7 @@ test("discovery walks Nexus -> A -> B through the SDK resolver, accepting hosts 
   assert.deepEqual(b.map((e) => [e.url, e.declaresSubmit]), [["https://b.example", false]], "an undeclared submit is not assumed");
 });
 
-test("the chain's nodes are the start node when it serves the chain, then the found hosts in order, read until one answers", async () => {
+test("the chain's nodes are the start node when it serves the chain, then the found hosts in order, read in turns until one answers", async () => {
   const { fetch } = scripted((url) => {
     const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
     if (host === "start.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
@@ -374,8 +374,32 @@ test("the chain's nodes are the start node when it serves the chain, then the fo
     return node.url;
   });
   assert.equal(answer, "https://a2.example");
-  assert.deepEqual(asked, ["https://a1.example", "https://a2.example"]);
+  // The read begins at a random node and goes on round the list.
+  assert.ok(["https://a1.example,https://a2.example", "https://a2.example"].includes(asked.join()));
   await assert.rejects(nodes.read(["Nexus", "nowhere"], async () => "never"), { name: "ChainOfflineError" });
+});
+
+test("spread begins at a random item and keeps the rest in order", () => {
+  assert.deepEqual(spread(["a", "b", "c"], () => 0), ["a", "b", "c"]);
+  assert.deepEqual(spread(["a", "b", "c"], () => 0.5), ["b", "c", "a"]);
+  assert.deepEqual(spread(["a", "b", "c"], () => 0.99), ["c", "a", "b"]);
+  assert.deepEqual(spread([], () => 0.5), []);
+});
+
+test("discovery from several Nexus nodes moves on when one fails", async () => {
+  const { fetch } = scripted((url) => {
+    const host = url.host, path = url.pathname, chain = url.searchParams.get("chainPath");
+    if (host === "down.example") throw new TypeError("Failed to fetch");
+    if (host === "up.example" && path === "/api/chain/endpoints" && chain === "Nexus/A") {
+      return { status: 200, body: { chainPath: ["Nexus", "A"], endpoints: ["https://a1.example"] } };
+    }
+    if (host === "up.example") return serves(url, "Nexus");
+    if (host === "a1.example") return serves(url, "Nexus/A");
+  });
+  for (const random of [() => 0, () => 0.75]) {
+    const found = await declaredHosts(["https://down.example", "https://up.example"], ["Nexus", "A"], fetch, random);
+    assert.deepEqual(found.map((e) => e.url), ["https://a1.example"]);
+  }
 });
 
 test("a submission is held to the CID the wallet computed", async () => {
