@@ -39,7 +39,7 @@ Address copying uses the Clipboard API inside a user gesture, without a clipboar
 
 Required HTTPS hosts: rpc.lattice.build, lattice-mainnet-read.fly.dev and lattice-mainnet-testnet.fly.dev provide hosted submission, explorer reads and testnet access without connection-time prompts. These are exact hosts, not wildcard subdomains.
 
-Optional HTTPS hosts: Connect to user-selected custom operators, including endpoints discovered through parent chains outside the fixed hosted allowlist. Access is requested through Chrome permissions. These optional node permissions are separate from the content-script matches described below.
+Optional HTTPS hosts: Connect to user-selected custom operators, and to endpoints discovered through parent chains outside the fixed hosted allowlist. A custom operator is requested by its own host. Automatic discovery requests access to every HTTPS host once, when the user first asks it to find a node, because each level's nodes are declared by the level above and are known only as discovery walks down. These optional node permissions are separate from the content-script matches described below.
 
 Optional loopback HTTP hosts: localhost and 127.0.0.1 connect to a node running locally on the user's device. Literal HTTP IPv6 addresses are not supported by the extension CSP. Authentication and explicit node pairing are required where the node demands them.
 
@@ -56,7 +56,7 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 ## Reviewer instructions
 
 1. Open the extension and create a disposable wallet. Use a unique test password and save the generated test phrase privately.
-2. Choose Use lattice.build: no runtime host prompt is expected for the three required hosted origins. For a custom node, accept its optional permission when requested. Confirm the displayed chain. Chrome may require acknowledgement of new required permissions during an upgrade.
+2. Choose Use lattice.build: no runtime host prompt is expected for the three required hosted origins. For a custom node, accept its optional permission when requested. For Find node automatically on a child chain, accept the one-time request to reach any HTTPS node. Confirm the displayed chain. Chrome may require acknowledgement of new required permissions during an upgrade.
 3. Copy the address; verify the full address is visible and clipboard copying works.
 4. Open the chain dropdown, select a direct child, and use the arrow to return to its parent.
 5. Open Send. Invalid addresses and non-positive amounts are refused before signing. Review displays sender, recipient, amount and fee.

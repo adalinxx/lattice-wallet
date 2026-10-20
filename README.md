@@ -33,6 +33,9 @@ node per chain:
   `GET /api/chain/genesis` names the same Nexus genesis). What a parent chain
   commits does not decide. Accepted hosts keep their declared order. Discovered
   endpoints are labelled *operator-declared, not independently verified*.
+  The first discovery asks Chrome to let the wallet reach any HTTPS node: the
+  hosts it checks are named by the nodes one level up, so they cannot be
+  listed before it starts.
   Whether one accepts transactions is its operator's choice
   (`--public-submit`): the wallet submits there only if the host is declared
   for submit **and** its own `GET /api/chain/info` says `acceptsSubmit`.
@@ -332,9 +335,11 @@ Read [node trust and purchase safety](docs/node-trust.md) before using cross-cha
 - Strict CSP: `script-src 'self' 'wasm-unsafe-eval'`, no inline, no eval, no
   remote code. `connect-src` is `https:` plus loopback `http:` (your own
   node). The three exact hosted Lattice node origins are declared as required
-  host permissions, avoiding connection-time prompts for those nodes. Other
-  operators require explicit Custom node selection and optional permission.
-  Old all-HTTPS grants are revoked on upgrade. DNS rebinding of public host
+  host permissions, avoiding connection-time prompts for those nodes. A custom
+  node is granted by its own host. Automatic discovery asks once for the
+  optional grant to every HTTPS host, since each level's nodes are declared by
+  the level above as it walks; that grant is kept while automatic mode is on.
+  DNS rebinding of public host
   names cannot be excluded by a browser-only client; discovery sends no cookies.
 - Lockfile-pinned deps; the SDK pinned by commit (submodule). With
   `npm ci --ignore-scripts`, run `npm run sdk` to build it.

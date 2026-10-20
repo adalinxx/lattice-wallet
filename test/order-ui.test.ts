@@ -814,7 +814,7 @@ test("a child chain automatically discovers and selects a verified submit node t
   await startWallet({
     wallet, store, fetch,
     requestOrigins: async () => true,
-    hasOrigins: async (origins) => origins.includes("https://lattice-mainnet-testnet.fly.dev/*"),
+    hasOrigins: async (origins) => origins.includes("https://*/*"),
   });
   await settle();
   assert.equal(stored.settings.endpoints["Nexus/testnet"]?.url, "https://testnet-node.example");

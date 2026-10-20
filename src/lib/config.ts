@@ -22,6 +22,10 @@ export const HOSTED_NODE_ORIGINS = [
   "https://lattice-mainnet-testnet.fly.dev/*",
 ] as const;
 
+/** Every HTTPS node: the optional grant automatic discovery asks for once,
+ * since the hosts a chain's nodes declare are only known while walking. */
+export const ALL_HTTPS_ORIGINS = "https://*/*";
+
 /** "Nexus/Alpha" -> ["Nexus","Alpha"]; null unless Nexus-rooted with plain names. */
 export function parseChainPath(text: string): string[] | null {
   const parts = text.trim().split("/");

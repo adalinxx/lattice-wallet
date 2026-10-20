@@ -9,7 +9,7 @@ import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
 import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
+import { ALL_HTTPS_ORIGINS, HOSTED_NODE_ORIGINS, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
@@ -429,10 +429,11 @@ export async function ensureOrigins(host: Pick<Platform, "hasOrigins" | "request
   return host.requestOrigins(origins).catch(() => false);
 }
 
-/** Only the selected bootstrap and the two hosted chains get automatic reach.
- * Other discovered operators require an explicit custom-node choice. */
+/** Discovery walks to whatever hosts each level's nodes declare, so it may
+ * reach any HTTPS node; a starting node on this computer is added by name. */
 export function discoveryOrigins(bootstrap: string): string[] {
-  return [...new Set([bootstrap, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC].map(originPattern))];
+  const start = originPattern(bootstrap);
+  return start.startsWith("https:") ? [ALL_HTTPS_ORIGINS] : [ALL_HTTPS_ORIGINS, start];
 }
 
 function syncBadge() {
@@ -518,9 +519,9 @@ async function requestEndpoint(
     if (!paired.ok) { status.textContent = "Cookie: " + paired.error; return false; }
   }
   await update((s) => ({ ...s, pendingEndpoint: pending }));
-  // Grant the known hosted endpoints together, not every HTTPS origin.
+  // The hosted endpoints are granted at install; discovery asks for more only when it runs.
   const origins = pending.chain === ROOT_CHAIN && pending.url === LATTICE_BUILD_RPC
-    && pending.nodeMode === "automatic" ? discoveryOrigins(pending.url) : [originPattern(pending.url)];
+    && pending.nodeMode === "automatic" ? [...HOSTED_NODE_ORIGINS] : [originPattern(pending.url)];
   const granted = await ensureOrigins(platform, origins);
   if (granted) return finishPendingEndpoint(status);
   if (pending.clearCookieOnFailure) await wallet.setNodeCookie(pending.url, null);
@@ -923,7 +924,7 @@ function endpointScreen() {
     }
     hosted.push(
       h("button", { class: hosted.length ? "btn block" : "btn btn--primary block", onclick: () => discoverFrom(true) }, "Find node automatically"),
-      h("p", { class: "muted" }, "Asks the Lattice explorer's Nexus service which nodes serve this chain and picks one that accepts transactions."),
+      h("p", { class: "muted" }, "Asks the Lattice explorer's Nexus service which nodes serve this chain and picks one that accepts transactions. The first time, Chrome asks to let the wallet reach any HTTPS node, since the nodes a chain names are only known as it looks."),
     );
   }
   const pairing = platform.pairOrigin
@@ -1676,11 +1677,14 @@ function connectionScreen() {
     ...(platform.releaseUnusedOrigins ? [h("button", { class: "btn block", onclick: async () => {
       try {
         const current = await loadSettings(store);
-        const keep = discoveryOrigins(current.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC);
+        // Automatic mode keeps its reach to every declared node; a custom choice needs only its own nodes.
+        const keep = current.nodeMode === "automatic" ? discoveryOrigins(current.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC) : [];
         keep.push(...Object.values(current.endpoints).map((node) => originPattern(node.url)));
         for (const url of [current.pendingEndpoint?.url, current.pendingDiscovery?.url]) if (url) keep.push(originPattern(url));
         await platform.releaseUnusedOrigins!(keep);
-        status.textContent = "Unused node permissions removed. Saved nodes and hosted discovery remain available.";
+        status.textContent = current.nodeMode === "automatic"
+          ? "Unused node permissions removed. Saved nodes and automatic discovery remain available."
+          : "Unused node permissions removed. Saved nodes and the hosted nodes remain available.";
       } catch (error) { status.textContent = describe(error); }
     } }, "Remove unused node permissions")] : []),
     status,
