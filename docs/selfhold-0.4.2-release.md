@@ -39,11 +39,11 @@ Initial artifact, now preserved at `release/pr18-original/selfhold-0.4.2.zip`.
 SHA-256: `fd92b8c1061dc956f30050f8a7fbf67d5a3f17f6e2b463d2a6ea1c27a3354bf3`.
 The older 0.4.1 ZIP remains untouched with SHA-256 `5e835bd4842da2cb51112ce6551a39017d8c405ac8297c621d8095f6200ffffe`.
 
-## Handoff and remaining checks
+## Initial handoff and remaining checks (historical)
 
 The public main CI passed at the baseline, but this local version-bump commit has no hosted CI until a push/PR is authorized. No public commit/push, merge or submission is performed here. The independent store task confirms public 0.4.1 and a separate unpublished 0.4.1 draft, with no pending review. Version 0.4.2 is therefore the next candidate and is already anticipated by main's policy. The exact published 0.4.1 bytes are unverified: the retained tested ZIP is only an explicit comparison baseline, not proof of what the store distributes.
 
-Browser QA should cover first optional all-HTTPS consent, denial, persistence, cleanup when changing node mode, named HTTP local grants, required-host upgrade prompts, fallback/round-robin behavior and provider nonce/payment review when a node fails. Preserve identity, password, labels, settings and pending recovery on upgrade. Recheck deployed purchase review with a suitable fixture; this optional UI check and real settlement were not run here. Store-signed upgrade remains distinct from local compatibility. No real-fund transactions or user-key handling occurred.
+Browser QA should cover first optional all-HTTPS consent, denial, persistence, retained access when changing node mode (the cleanup action was removed in the follow-up below), named HTTP local grants, required-host upgrade prompts, fallback/round-robin behavior and provider nonce/payment review when a node fails. Preserve identity, password, labels, settings and pending recovery on upgrade. Recheck deployed purchase review with a suitable fixture; this optional UI check and real settlement were not run here. Store-signed upgrade remains distinct from local compatibility. No real-fund transactions or user-key handling occurred.
 
 Continue on existing item `amcobhbipbblfjonmoiicihhfglkhpce`, preserving storage and signing identity. Keep Selfhold branding, verified service URLs and support@lattice.build. Analytics is unchanged. Coordinate all dashboard actions through the store task.
 
