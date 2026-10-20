@@ -1,6 +1,6 @@
 # Selfhold Privacy Policy
 
-This policy applies to Selfhold 0.4.0, 0.4.1 and 0.4.2 when installed, including review and test builds. Lattice Wallet 0.3.1 remains covered by the [policy effective October 8, 2026](https://github.com/adalinxx/lattice-wallet/blob/dd64bbe81cdfce0cc9ddd2ae7f36d7a05bfa7cf2/docs/privacy-policy.md).
+This policy applies to Selfhold 0.4.0, 0.4.1, 0.4.2 and 0.5.0 when installed, including review and test builds. Lattice Wallet 0.3.1 remains covered by the [policy effective October 8, 2026](https://github.com/adalinxx/lattice-wallet/blob/dd64bbe81cdfce0cc9ddd2ae7f36d7a05bfa7cf2/docs/privacy-policy.md).
 
 Selfhold (previously Lattice Wallet) is a self-custodial browser extension for Lattice maintained by the Lattice project. This policy covers the extension, not third-party nodes, websites, Chrome, or community services.
 
@@ -27,6 +27,8 @@ The scripts relay wallet API calls and responses; they do not scan page text, fo
 Each record-write/payment request and each message-signing request requires a separate approval. Record keys/values, chain, payments, recipients and fees come from the requesting site and are displayed for review. Approved writes are signed and submitted by the wallet to a node; the site receives the transaction identifier, not the signed transaction bytes. Pending page writes store the chain, account, nonce, transaction identifier and node URL locally. Nodes and public chains can receive the records and payments in these transactions.
 
 Approved messages return a public key and signature to the requesting site. Signed message bytes include a distinct message prefix, the requesting origin and the message text. A message signature can prove control of an account to that site; it is not a transaction signature. The wallet does not submit signed messages to a blockchain. Sites receiving addresses, transaction identifiers or signatures have their own privacy practices. Private keys, recovery phrases, vault passwords and node cookies are not given to websites through this API.
+
+From 0.5.0, you can open a `lattice://write` request by pasting text, importing a file/QR image, scanning a QR code, or through a website's `openRequest` call. A website does not need a prior wallet connection to ask for this review. Opening a request does not approve it or create a standing connection. You choose an account and separately approve its records, payments and fee. Request labels are unverified text. The wallet uses its own node choices and nonce, checks expiry again before signing, and reads existing records when a request asks to write only if absent. These reads disclose the requested chain and record keys to the selected node. Content is checked against the node's supplied state, not independently verified consensus; records omitted as already present are shown in review. A requesting website receives the transaction identifier or error after the decision; a pasted/scanned request shows its result in the wallet without a callback to a website.
 
 ## Camera, clipboard, and backups
 
