@@ -97,6 +97,8 @@ export type Request =
       chainPath: string[];
     }
   | { type: "signMessage"; from: string; origin: string; text: string }
+  /** Review a pasted or scanned lattice://write request in the approval window. */
+  | { type: "openWriteRequest"; uri: string }
   | {
       type: "signReceipt" | "signWithdrawal";
       from: string;

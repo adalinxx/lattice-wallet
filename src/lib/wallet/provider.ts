@@ -5,6 +5,7 @@
 import { parseChainPath } from "../config.ts";
 import { isAccountAddress } from "./session.ts";
 import { utf8ToBytes } from "@noble/hashes/utils.js";
+import { decodeWriteRequest, type WriteIntent } from "./write-request.ts";
 
 export interface RecordAction { key: string; oldValue?: string; newValue?: string }
 /** Coin from the connected account to `to`, in the same transaction as the records. */
@@ -27,6 +28,8 @@ export type ProviderCall =
   | { method: "address" }
   | { method: "disconnect" }
   | { method: "writeRecords"; params: WriteRequest }
+  /** A lattice://write request, signed as the account the person chooses: no connection needed. */
+  | { method: "openRequest"; params: WriteIntent }
   | { method: "signMessage"; params: { text: string } };
 
 const INT64_MAX = (1n << 63n) - 1n;
@@ -46,6 +49,11 @@ export function parseProviderCall(raw: unknown): ProviderCall | { error: string 
     const text = (params as { text?: unknown } | null)?.text;
     const refused = messageError(text);
     return refused ? { error: refused } : { method, params: { text: text as string } };
+  }
+  if (method === "openRequest") {
+    const uri = (params as { uri?: unknown } | null)?.uri;
+    if (typeof uri !== "string") return { error: "openRequest needs a lattice://write request" };
+    try { return { method, params: decodeWriteRequest(uri) }; } catch (e) { return { error: (e as Error).message }; }
   }
   if (method !== "writeRecords") return { error: `Unknown method: ${String(method)}` };
   if (typeof params !== "object" || params === null) return { error: "writeRecords needs params" };
@@ -70,7 +78,7 @@ export function parseProviderCall(raw: unknown): ProviderCall | { error: string 
 }
 
 /** Each payee a canonical address, once; each amount above zero; all of it and the fee within one debit. */
-function parsePayments(raw: unknown, fee: bigint): Payment[] | { error: string } {
+export function parsePayments(raw: unknown, fee: bigint): Payment[] | { error: string } {
   if (raw === undefined) return [];
   if (!Array.isArray(raw) || raw.length > MAX_PAYMENTS) return { error: `payments must be a list of at most ${MAX_PAYMENTS}` };
   const clean: Payment[] = [];

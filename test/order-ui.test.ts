@@ -161,8 +161,8 @@ function button(text: string): HTMLButtonElement {
 }
 
 async function openOrder(uri: string) {
-  await settle(); button("Open order").click();
-  assert.equal(document.querySelector("h1")?.textContent, "Open order", document.body.textContent ?? "");
+  await settle(); button("Open request").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Open request", document.body.textContent ?? "");
   const paste = document.querySelector("textarea") as HTMLTextAreaElement;
   assert.ok(paste);
   paste.value = uri;
@@ -492,8 +492,8 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Find node automatically");
   button("Use this node");
   button("Back").click();
-  await settle(); button("Open order").click();
-  assert.equal(document.querySelector("h1")?.textContent, "Open order", document.body.textContent ?? "");
+  await settle(); button("Open request").click();
+  assert.equal(document.querySelector("h1")?.textContent, "Open request", document.body.textContent ?? "");
   const wanted: Selected = { demander: seller, amountDemanded: "50", amountDeposited: "300", depositNonce: "42" };
   const open = async (deposits: Selected[]) => {
     (document.querySelector("textarea") as HTMLTextAreaElement).value = buyOrderURI(deposits);
@@ -587,7 +587,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Back").click();
   await settle();
   if (document.querySelector("h1")?.textContent === "Activity") button("Back").click();
-  await settle(); button("Open order").click();
+  await settle(); button("Open request").click();
   await open([wanted]);
   acknowledge();
   button("Pay & reserve tokens").click();
@@ -601,7 +601,7 @@ test("a market buy discovers deposits, pays the parent receipt, and withdraws on
   button("Back").click();
   await settle();
   assert.equal(button("Activity").textContent, "Activity1 purchase to claim");
-  button("Open order").click();
+  button("Open request").click();
   await open([wanted]);
   acknowledge();
   button("Pay & reserve tokens").click();

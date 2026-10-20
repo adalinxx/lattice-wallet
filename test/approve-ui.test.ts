@@ -93,6 +93,40 @@ test("a payment leads with the total, its parts, and the balance after; addresse
   assert.equal(decided?.nonce, "7");
 });
 
+test("an opened request is signed as the account chosen here, and its label is shown as its own words", async () => {
+  const intent = {
+    version: 1, chainPath: ["Nexus", "fanfare", "band"], expiresAt: "2030-01-01T00:00:00Z", label: "Buy @rae",
+    actions: [{ key: "name/rae", oldValue: `${holder}@250`, newValue: "{account}" }], payments: [{ to: holder, amount: "250" }],
+  };
+  const { sent, dom } = await open({ method: "openRequest", params: intent }, "1000");
+  assert.equal(one(dom, ".from"), "from fanfare.example · it calls itself “Buy @rae”");
+  assert.equal((dom.window.document.querySelector("select.picker") as HTMLSelectElement).value, me, "the account the site is connected to, first");
+  assert.equal(one(dom, ".records:not(.raw) li .meta"), "payee@250 → you", "{account} filled in as the account chosen");
+  assert.ok(one(dom, ".summary").includes("Balance: 1,000 → 749"));
+  assert.equal(approveButton(dom).textContent, "Pay 251");
+  approveButton(dom).click();
+  await settle();
+  const decided = sent.find((m) => m.type === "decide");
+  assert.deepEqual({ address: decided?.address, present: decided?.present, fee: decided?.fee, nonce: decided?.nonce }, { address: me, present: [], fee: "1", nonce: "7" });
+});
+
+test("an opened request's proposed fee is the one shown and signed", async () => {
+  const intent = { version: 1, chainPath: ["Nexus", "fanfare", "band"], expiresAt: "2030-01-01T00:00:00Z", fee: "0", actions: [{ key: "name/rae", newValue: "{account}" }], payments: [] };
+  const { sent, dom } = await open({ method: "openRequest", params: intent }, "0");
+  assert.ok(one(dom, ".summary").startsWith("No coins move"), one(dom, ".summary"));
+  assert.equal(approveButton(dom).disabled, false, "an empty account signs a free write");
+  approveButton(dom).click();
+  await settle();
+  assert.equal(sent.find((m) => m.type === "decide")?.fee, "0");
+});
+
+test("an opened request that would pay the account chosen says so, and cannot be signed", async () => {
+  const intent = { version: 1, chainPath: ["Nexus", "fanfare", "band"], expiresAt: "2030-01-01T00:00:00Z", actions: [{ key: "k", newValue: "{account}" }], payments: [{ to: me, amount: "5" }] };
+  const { dom } = await open({ method: "openRequest", params: intent }, "1000");
+  assert.equal(one(dom, ".warn"), "This request pays the account you chose. Choose another account.");
+  assert.equal(approveButton(dom).disabled, true);
+});
+
 test("a payee no record names is shown whole, grouped, with a warning next to it", async () => {
   const stranger = deriveAccount(MNEMONIC, 3).address;
   const { dom } = await open({ ...buy, params: { ...buy.params, payments: [{ to: stranger, amount: "250" }] } }, "1000");

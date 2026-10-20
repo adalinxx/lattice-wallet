@@ -1,6 +1,6 @@
 import { isAccountAddress } from "./session.ts";
 
-const MAX_HANDOFF_LENGTH = 16_384;
+export const MAX_HANDOFF_LENGTH = 16_384;
 const UINT64_MAX = (1n << 64n) - 1n;
 
 interface OrderBase {
@@ -56,7 +56,7 @@ function amount(value: unknown, name: string): string {
   return value;
 }
 
-function decodeBase64url(value: string): string {
+export function decodeBase64url(value: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("The request encoding is invalid");
   const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   try {

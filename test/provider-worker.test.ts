@@ -231,4 +231,43 @@ test("pages connect and write only through the person's approval", async () => {
   // Disconnect forgets the site.
   assert.deepEqual(await page({ method: "disconnect" }), { ok: true, address: null });
   assert.equal((await page(writeCall)).error, "Not connected: call connect() first");
+
+  // An opened request needs no connection: the person chooses the account in
+  // the window, which says which records meant only to be new are there already.
+  await popup({ type: "addAccount" }); // the second account is `holder`, the payee
+  const request = `lattice://write?v=1&intent=${Buffer.from(JSON.stringify({
+    version: 1, chainPath: ["Nexus", "stoa"], expiresAt: "2030-01-01T00:00:00Z",
+    actions: [{ key: "name/rae", newValue: "{account}" }, { key: "user/{account}/profile", newValue: "{}", ifAbsent: true }],
+    payments: [{ to: holder, amount: "5" }],
+  })).toString("base64url")}`;
+  const filled = { ...read, nonce: "7", present: [`user/${address}/profile`], fee: "2" };
+  assert.match(String((await page({ method: "openRequest", params: { uri: "lattice://write?v=1" } })).error), /no intent/);
+  const opening = page({ method: "openRequest", params: { uri: request } });
+  await new Promise((r) => setTimeout(r, 10));
+  const asked = await approval({ type: "pending", id: requestId() });
+  assert.equal(asked.origin, "https://stoa.example");
+  assert.equal(asked.address, null, "not connected: no account is offered first");
+  assert.equal((await approval({ type: "decide", id: requestId(), approve: true, ...read, address })).error, "The wallet has not read this request's records");
+  assert.equal((await approval({ type: "decide", id: requestId(), approve: true, ...filled, address: "bafy-not-ours" })).error, "Choose one of this wallet's accounts");
+  assert.match(String((await approval({ type: "decide", id: requestId(), approve: true, ...filled, address: holder })).error), /pays the account you chose/);
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...filled, address }), { ok: true });
+  const done = await opening;
+  assert.deepEqual(Object.keys(done).sort(), ["ok", "transactionCID"]);
+  const openedBody = submitted.at(-1)!.body.transaction.body;
+  assert.deepEqual(openedBody.signers, [address], "signed as the account chosen, with no connection");
+  assert.deepEqual(openedBody.accountActions, [{ owner: address, delta: "-7" }, { owner: holder, delta: "5" }], "the fee the window showed");
+  const wire = JSON.stringify(openedBody);
+  assert.ok(wire.includes(`"name/rae"`) && !wire.includes("{account}") && !wire.includes(`user/${address}/profile`), "filled in; the record already there left out");
+
+  // Pasted into the wallet: the same window, from no page.
+  assert.match(String((await popup({ type: "openWriteRequest", uri: "lattice://write?v=1" })).error), /no intent/);
+  const windows = opened.length;
+  assert.deepEqual(await popup({ type: "openWriteRequest", uri: request }), { ok: true });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(opened.length, windows + 1);
+  assert.equal((await approval({ type: "pending", id: requestId() })).origin, null);
+  assert.equal((await popup({ type: "openWriteRequest", uri: request })).error, "A pasted request is already waiting in the wallet");
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...filled, address, nonce: "8", present: [] }), { ok: true });
+  assert.ok(JSON.stringify(submitted.at(-1)!.body.transaction.body).includes(`user/${address}/profile`), "a record not there yet is written");
+  assert.equal((await approval({ type: "pending", id: requestId() })).ok, false, "answered");
 });

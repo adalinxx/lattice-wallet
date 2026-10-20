@@ -159,6 +159,42 @@ const { publicKey, signature } = await lattice.signMessage({ text: "door check 7
 `lattice.address()` returns the site's address without asking (or null), and
 `lattice.disconnect()` forgets the site.
 
+### Requests: `lattice://write`
+
+A write can also travel as a request, for whichever account the person
+chooses. A page hands it over with `lattice.openRequest(uri)`, from a click and
+with no `connect()`. Or anyone opens it in the wallet's **Open request**
+screen by scanning its QR code, loading its image, or pasting its text. That
+is the same screen that opens `lattice://order`.
+
+```js
+// lattice://write?v=1&intent=<base64url JSON>
+{
+  "version": 1,
+  "chainPath": ["Nexus", "moniker"],
+  "actions": [
+    { "key": "name/rae", "newValue": "{account}" },
+    { "key": "user/{account}/profile", "newValue": "{\"handle\":\"rae\"}", "ifAbsent": true }
+  ],
+  "payments": [],            // optional, as for writeRecords
+  "fee": "0",                // optional: proposed, shown in review; else the wallet's default
+  "expiresAt": "2026-10-20T18:15:00Z",
+  "label": "Buy @rae"        // optional, quoted as the request's own words
+}
+const { transactionCID } = await lattice.openRequest(uri);
+```
+
+- `{account}` in a key or a new value stands for the account the person
+  chooses in the window, where the request is reviewed like any write. It may
+  not appear in an old value or a payee.
+- An action with `ifAbsent` writes its key only if the key holds nothing. The
+  window reads that from your node, checking each step against its CID, and
+  names any record it leaves out. If the key appears before the write lands,
+  the chain refuses the whole write.
+- The request is untrusted data. It carries no keys, nonces or node
+  addresses, and the wallet refuses it after `expiresAt` and when it would pay
+  the chosen account.
+
 - **Every write is approved, and shown as what it does to you.** Each
   `writeRecords` opens the wallet's own window. It leads with what you pay
   (payments plus fee, on the chain's coin, from which account), each part

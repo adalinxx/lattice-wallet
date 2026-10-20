@@ -13,8 +13,8 @@ import {
   type ResolvedEndpoint,
 } from "@adalinxx/lattice-client";
 import { HTTPTransactionSubmitter, SubmissionError, type SubmissionRefusal, type TransactionSubmitter } from "@adalinxx/lattice-relay";
-import { assertCID, decodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
-import { verifyVolume, type VolumeEntry } from "@adalinxx/lattice-volumes";
+import { assertCID, decodeCanonicalBlock, decodeCanonicalLatticeState, decodeDagCbor, type DagCborValue } from "@adalinxx/lattice-core";
+import { HTTPVolumeTransport, VolumeClient, verifyVolume, type VerifiedVolume, type VolumeEntry } from "@adalinxx/lattice-volumes";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ROOT_CHAIN } from "../config.ts";
 import type { SignedSubmit } from "./types.ts";
@@ -167,6 +167,46 @@ export function verifySparseProof(rootCID: string, key: string, expected: bigint
     if (!volume.has(next)) return false;
     cid = next;
   }
+}
+
+/**
+ * Which of `keys` hold a value in the chain's general state at the node's
+ * tip. Each node of the state trie is read by CID and checked against it, so
+ * the node can only answer for some tip of the chain, not make a value up.
+ */
+export async function recordsPresent(
+  url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,
+): Promise<string[]> {
+  if (keys.length === 0) return [];
+  const info = await reader(url, [...chainPath], fetchImpl, authorization).chainInfo();
+  if (info.tipCID === undefined) throw new TypeError("chain tip must be available");
+  const volumes = new VolumeClient(new HTTPVolumeTransport(`${url.replace(/\/$/, "")}/volumes`,
+    { fetch: fetchImpl, chainPath: [...chainPath], ...(authorization === undefined ? {} : { authorization }) }));
+  const block = decodeCanonicalBlock((await volumes.get(info.tipCID)).rootBytes());
+  const state = decodeCanonicalLatticeState((await volumes.get(block.postStateCID)).rootBytes());
+  const load = async (cid: string, within?: VerifiedVolume) => {
+    const volume = within?.has(cid) ? within : await volumes.get(cid);
+    return { volume, node: object(decodeDagCbor(volume.bytes(cid)!), "state node") };
+  };
+  // Down the radix trie: a child is filed under the first character of its prefix.
+  const holds = async (key: string): Promise<boolean> => {
+    let { volume, node } = await load(state.generalStateCID);
+    let rest = key;
+    while (rest.length > 0) {
+      const first = String.fromCodePoint(rest.codePointAt(0)!);
+      const child = Array.isArray(node.children)
+        ? node.children.find((c) => c && typeof c === "object" && !Array.isArray(c) && (c as Record<string, DagCborValue>).key === first)
+        : undefined;
+      const cid = referencedCID((child as Record<string, DagCborValue> | undefined)?.value);
+      if (cid === undefined) return false;
+      ({ volume, node } = await load(cid, volume));
+      if (typeof node.prefix !== "string" || !rest.startsWith(node.prefix)) return false;
+      rest = rest.slice(node.prefix.length);
+    }
+    return node.value !== undefined;
+  };
+  const held = await Promise.all(keys.map(holds));
+  return keys.filter((_, i) => held[i]);
 }
 
 function receiptStorageKey(directory: string, demander: string, amountDemanded: bigint, nonce: bigint): string {

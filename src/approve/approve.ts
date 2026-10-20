@@ -1,18 +1,20 @@
 // The wallet's own window for one request from a web page: connect (give the
-// site an address), write records (sign, once the person approves), or sign
-// a message. A write is shown as what it does to the person: what they pay,
+// site an address), write records (sign, once the person approves), open a
+// lattice://write request (the same, as an account the person chooses here;
+// pasted into the wallet, it comes from no page), or sign a message. A write is shown as what it does to the person: what they pay,
 // to whom, and what their balance becomes; then each record it changes.
 // Everything secondary (full addresses, records as sent, the nonce) is
 // behind one Details disclosure. What the page sent is only ever shown as
 // text, and an address the wallet knows is shown as its name in an inverted
 // tag, which no text a page sends can look like.
 
-import { totalDebit, type ProviderCall } from "../lib/wallet/provider.ts";
+import { totalDebit, type ProviderCall, type WriteRequest } from "../lib/wallet/provider.ts";
+import { absentKeys, fillWriteRequest, type WriteIntent } from "../lib/wallet/write-request.ts";
 import { addressGroups, addressNames, nameAddresses, otherHosts, payeeRecords, paymentsToShow, shortAddress } from "../lib/wallet/review.ts";
 import type { WalletState } from "../lib/wallet/types.ts";
-import { loadSettings } from "../lib/wallet/settings.ts";
+import { defaultFee, loadSettings } from "../lib/wallet/settings.ts";
 import { chosenNodes, discoveryStarts, knownPending, livePageWrites, nextNonce, type PageWrite } from "../lib/wallet/nonce.ts";
-import { browserFetch, chainNodes, reader, sentStatus } from "../lib/wallet/node.ts";
+import { browserFetch, chainNodes, reader, recordsPresent, sentStatus } from "../lib/wallet/node.ts";
 import { ALL_HTTPS_ORIGINS, originPattern } from "../lib/config.ts";
 
 const id = new URLSearchParams(location.search).get("id") ?? "";
@@ -42,8 +44,9 @@ const fmt = (n: string | bigint) => BigInt(n).toLocaleString("en-US");
 const label = (text: string) => el("p", { className: "section-label", textContent: text });
 const row = (key: string, ...value: (Node | string)[]) => el("div", { className: "row" }, el("span", { className: "k", textContent: key }), el("span", { className: "v" }, ...value));
 
-/** A site as people check it: the host, whole and in bold; the scheme only when it is not https. */
-function site(origin: string): HTMLElement {
+/** A site as people check it: the host, whole and in bold; the scheme only when it is not https. Null: pasted into the wallet. */
+function site(origin: string | null): HTMLElement {
+  if (origin === null) return el("span", { className: "origin" }, el("strong", { textContent: "a pasted request" }));
   const url = new URL(origin);
   return el("span", { className: "origin" }, ...(url.protocol === "https:" ? [] : [el("span", { className: "scheme", textContent: `${url.protocol}//` })]), el("strong", { textContent: url.host }));
 }
@@ -77,12 +80,15 @@ function fail(message: string) {
 
 // ---- the nonce, read from the person's own node choices ----
 
-/** `stale`: page writes the node's pool no longer holds (never admitted, or dropped). */
-type NonceRead = { nonce: bigint; stateNonce: bigint; balance: bigint; node: string; stale: string[] } | { missing: string[]; automatic: boolean } | { error: string };
+/**
+ * `stale`: page writes the node's pool no longer holds (never admitted, or dropped).
+ * `present`: those of the keys asked about that already hold a value there.
+ */
+type NonceRead = { nonce: bigint; stateNonce: bigint; balance: bigint; node: string; stale: string[]; present: string[] } | { missing: string[]; automatic: boolean } | { error: string };
 const permitted = (origin: string) => chrome.permissions.contains({ origins: [origin] });
 
-/** The next free nonce for `address` on `chainPath`, from a node the person chose or allowed. */
-async function readNonce(chainPath: string[], address: string): Promise<NonceRead> {
+/** The next free nonce for `address` on `chainPath`, and which of `keys` exist, from a node the person chose or allowed. */
+async function readNonce(chainPath: string[], address: string, keys: readonly string[] = []): Promise<NonceRead> {
   const settings = await loadSettings(chrome.storage.local);
   const missing = new Set<string>();
   // Only nodes the person allowed are asked; the others are named to them.
@@ -114,7 +120,8 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
       const state = await node.account(address);
       const live = livePageWrites(pageWrites, chain, state.nonce, dead);
       const stale = [...dead];
-      return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, balance: state.balance, node: url, stale };
+      const present = await recordsPresent(url, chainPath, keys, allowedFetch, auth);
+      return { nonce: nextNonce(state.nonce, chain, address, knownPending(settings, live)), stateNonce: state.nonce, balance: state.balance, node: url, stale, present };
     } catch { return undefined; /* not this node */ }
   };
   const tried = new Set<string>();
@@ -136,8 +143,8 @@ async function readNonce(chainPath: string[], address: string): Promise<NonceRea
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
-async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string; stale: string[] }) {
-  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node, stale: nonce.stale }) });
+async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string; stale: string[] }, extra?: object) {
+  const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node, stale: nonce.stale }), ...extra });
   if (answer.ok) window.close();
   else if (answer.error === "Locked") render();
   else fail(answer.error ?? "Could not finish");
@@ -232,8 +239,7 @@ function reviewGate(changed: () => void) {
 async function render() {
   const request = await send({ type: "pending", id });
   if (!request.ok) return fail(request.error ?? "This request is gone.");
-  const origin = request.origin as string;
-  const host = new URL(origin).host;
+  const origin = request.origin as string | null;
   const call = request.call as ProviderCall;
   const stateAnswer = await send({ type: "getState" });
   const state = stateAnswer.state as WalletState;
@@ -261,11 +267,13 @@ async function render() {
       decision("Connect", () => decide(true, picker.value)));
     return;
   }
+  if (call.method === "openRequest") return reviewRequest(call.params, origin, state, request.address as string | null);
   const address = String(request.address);
-  const account = state.accounts.find((a) => a.address === address);
-  const who = account?.label ?? shortAddress(address);
-  const accountDetail = row("Account", ...(account ? [`${account.label} `] : []), fullAddress(address));
-  if (call.method === "signMessage") {
+  if (call.method === "signMessage" && origin !== null) {
+    const host = new URL(origin).host;
+    const account = state.accounts.find((a) => a.address === address);
+    const who = account?.label ?? shortAddress(address);
+    const accountDetail = row("Account", ...(account ? [`${account.label} `] : []), fullAddress(address));
     const { text } = call.params;
     const elsewhere = otherHosts(text, origin);
     const message = el("pre", { className: "message", textContent: text.split("\n").map(visible).join("\n") });
@@ -291,10 +299,47 @@ async function render() {
     return;
   }
   if (call.method !== "writeRecords") return fail("Unknown request");
+  reviewWrite(call.params, address, origin, state);
+}
 
-  const { chainPath, actions, payments = [], fee } = call.params;
+const sameKeys = (a: readonly string[], b: readonly string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
+
+/**
+ * An opened request (write-request.ts), as the account chosen here: the
+ * site's connected account first, else the active one. `present`: the keys
+ * of records written only if absent that the last read found there.
+ */
+async function reviewRequest(intent: WriteIntent, origin: string | null, state: WalletState, connected: string | null, chosen?: string, present: string[] = []) {
+  const address = chosen ?? (state.accounts.some((a) => a.address === connected) ? connected! : state.active ?? state.accounts[0]!.address);
+  const settings = await loadSettings(chrome.storage.local);
+  const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${shortAddress(a.address)}`, selected: a.address === address }))) as HTMLSelectElement;
+  picker.onchange = () => { reviewRequest(intent, origin, state, connected, picker.value).catch((e) => fail(String(e?.message ?? e))); };
+  const choose = [el("label", { className: "k", textContent: "Account" }), picker];
+  let write: WriteRequest;
+  try {
+    write = fillWriteRequest(intent, address, new Set(present), intent.fee ?? defaultFee(settings, intent.chainPath.join("/")));
+  } catch (e) {
+    view.replaceChildren(el("h1", { textContent: "Review request" }), el("p", { className: "from" }, "from ", site(origin)), ...choose,
+      el("p", { className: "warn", textContent: String((e as Error)?.message ?? e) }), decision("Sign", () => {}, () => false));
+    return;
+  }
+  reviewWrite(write, address, origin, state, {
+    keys: absentKeys(intent, address), present, label: intent.label, choose,
+    reread: (now) => { reviewRequest(intent, origin, state, connected, address, now).catch((e) => fail(String(e?.message ?? e))); },
+  });
+}
+
+/** What an opened request adds to a write's review: the account picker, its label, and what was left out. */
+interface Opened { keys: string[]; present: string[]; label?: string; choose: HTMLElement[]; reread: (present: string[]) => void }
+
+/** A write's review, signed as `address`. */
+function reviewWrite(write: WriteRequest, address: string, origin: string | null, state: WalletState, opened?: Opened) {
+  const account = state.accounts.find((a) => a.address === address);
+  const who = account?.label ?? shortAddress(address);
+  const accountDetail = row("Account", ...(account ? [`${account.label} `] : []), fullAddress(address));
+  const { chainPath, actions, payments = [], fee } = write;
   const chain = chainPath.join("/");
-  const debit = totalDebit(call.params);
+  const debit = totalDebit(write);
   // Payments no record names first: those are the ones to check.
   const shown = paymentsToShow(actions, payments);
   const names = addressNames(address, shown, state.accounts);
@@ -306,11 +351,14 @@ async function render() {
   const nonceShown = el("span", { textContent: "checking…" });
   let nonceRead: NonceRead = { missing: [], automatic: false };
   const covered = (read: NonceRead) => "nonce" in read && read.balance >= debit;
+  // A record written only if absent that appeared, or went, since the records were shown: show them again.
+  const changed = (read: NonceRead) => opened !== undefined && "present" in read && !sameKeys(read.present, opened.present);
   const sign = async () => {
     // Read again at the moment of signing: the account may have moved.
-    const now = await readNonce(chainPath, address);
+    const now = await readNonce(chainPath, address, opened?.keys);
+    if (changed(now)) return opened!.reread((now as Extract<NonceRead, { nonce: bigint }>).present);
     if (!covered(now)) { nonceRead = now; showRead(); return; }
-    decide(true, undefined, now as Extract<NonceRead, { nonce: bigint }>);
+    decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
   };
   const gate = reviewGate(() => explain());
   const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => covered(nonceRead) && gate.seen());
@@ -353,7 +401,10 @@ async function render() {
     }
     bar.arm();
   }
-  const check = () => readNonce(chainPath, address).then((r) => { nonceRead = r; showRead(); }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showRead(); });
+  const check = () => readNonce(chainPath, address, opened?.keys).then((r) => {
+    if (changed(r)) return opened!.reread((r as Extract<NonceRead, { nonce: bigint }>).present);
+    nonceRead = r; showRead();
+  }, (e) => { nonceRead = { error: String(e?.message ?? e) }; showRead(); });
 
   // ---- what the person pays: each payment, then the fee, adding up to the total ----
   const line = (amount: string, ...to: (Node | string)[]) => el("li", {}, el("span", { className: "amount", textContent: fmt(amount) }), el("div", { className: "to" }, ...to));
@@ -383,12 +434,15 @@ async function render() {
     : el("div", { className: "meta" }, named(a.oldValue, names, 40), " → ", named(a.newValue, names, 40));
 
   const recordList = el("ul", { className: "records" }, ...actions.map((a) => el("li", {}, el("div", { className: "key" }, named(a.key, names, 80)), change(a))));
+  const leftOut = opened ? opened.present.filter((key) => opened.keys.includes(key)) : [];
   view.replaceChildren(
     el("h1", { textContent: payments.length ? "Review payment" : "Review write" }),
-    el("p", { className: "from" }, "from ", site(origin)),
+    el("p", { className: "from" }, "from ", site(origin), ...(opened?.label ? [` · it calls itself “${visible(opened.label)}”`] : [])),
+    ...(opened?.choose ?? []),
     summary,
     label(`Records · ${actions.length}`),
     recordList,
+    ...leftOut.map((key) => el("p", { className: "meta" }, "Left out, already there: ", named(key, names, 80))),
     el("details", { className: "advanced" },
       el("summary", { textContent: "Details" }),
       el("div", { className: "advanced-content" },

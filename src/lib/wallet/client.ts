@@ -43,6 +43,8 @@ export function walletClient(send: Send) {
     transferSend: (offer: string, password: string) => call<{ envelope: string; sas: string }>({ type: "transferSend", offer, password }),
     /** Receiver: open a scanned transfer (single use); yields the encrypted backup and the code to compare. */
     transferOpen: (envelope: string) => call<{ backup: string; sas: string }>({ type: "transferOpen", envelope }),
+    /** Open a lattice://write request in the approval window, where the person reviews it. */
+    openWriteRequest: (uri: string) => call({ type: "openWriteRequest", uri }),
     signTransfer: (args: { from: string; to: string; amount: string; fee: string; nonce: string; chainPath: string[] }) =>
       call<{ signedSubmit: SignedSubmit; summary: TransferSummary }>({ type: "signTransfer", ...args }),
     signDeposit: (args: { from: string; amountDeposited: string; amountDemanded: string; depositNonce: string; fee: string; nonce: string; chainPath: string[] }) =>

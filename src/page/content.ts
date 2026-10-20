@@ -9,10 +9,10 @@ window.addEventListener("message", (event) => {
   if (event.source !== window || data?.channel !== RELAY_CHANNEL || data.direction !== "to-wallet" || typeof data.id !== "string") return;
   const answer = (response: unknown) =>
     window.postMessage({ channel: RELAY_CHANNEL, direction: "to-page", id: data.id, response }, window.location.origin);
-  // Asking to connect needs a click or key press the person just made. This
-  // world reads the browser's own activation state, which the page cannot set.
-  if (data.call?.method === "connect" && !navigator.userActivation?.isActive) {
-    answer({ ok: false, error: "connect() must be called from a click or key press" });
+  // Asking to connect, or opening a request, needs a click or key press the person
+  // just made. This world reads the browser's own activation state, which the page cannot set.
+  if ((data.call?.method === "connect" || data.call?.method === "openRequest") && !navigator.userActivation?.isActive) {
+    answer({ ok: false, error: `${data.call.method}() must be called from a click or key press` });
     return;
   }
   chrome.runtime.sendMessage({ type: "provider", call: data.call })

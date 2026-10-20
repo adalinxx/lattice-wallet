@@ -5,6 +5,7 @@
 //   const address = await lattice.connect(); // from a click
 //   const { transactionCID } = await lattice.writeRecords({ chainPath, actions, payments, fee });
 //   const { publicKey, signature } = await lattice.signMessage({ text });
+//   const { transactionCID } = await lattice.openRequest("lattice://write?v=1&intent=…"); // from a click
 
 const CHANNEL = "lattice-wallet";
 const waiting = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -45,6 +46,11 @@ const lattice = Object.freeze({
     payments?: { to: string; amount: string }[];
     fee: string;
   }) => ({ transactionCID: (await request("writeRecords", params)).transactionCID as string }),
+  /**
+   * Hand the wallet a lattice://write request, to sign as whichever account
+   * the person chooses in its window. Needs no connect(); call it from a click.
+   */
+  openRequest: async (uri: string) => ({ transactionCID: (await request("openRequest", { uri })).transactionCID as string }),
   /** Sign `text`, once the person approves. The signed bytes are "lattice-message:" + this origin + "\n" + text. */
   signMessage: async (params: { text: string }) => {
     const { publicKey, signature } = await request("signMessage", params);
