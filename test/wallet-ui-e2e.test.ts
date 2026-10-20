@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import type { WalletClient } from "../src/lib/wallet/client.ts";
+import { CHROME_SITE_ACCESS_HELP } from "../src/lib/config.ts";
 import { DEFAULT_SETTINGS } from "../src/lib/wallet/settings.ts";
 import type { WalletState } from "../src/lib/wallet/types.ts";
 import { startWallet } from "../src/popup/app.ts";
@@ -858,4 +859,26 @@ test("wallet UI e2e: a new account opens with its name ready to type; Escape kee
   const state = await client.getState();
   assert.ok(state.ok);
   assert.deepEqual(state.state.accounts.map((a) => a.label), ["Account 1", "Savings", "Account 3"]);
+});
+
+
+test("connection settings explain retained Chrome access in both node modes without offering impossible removal", async () => {
+  for (const nodeMode of ["automatic", "custom"]) {
+    installDOM();
+    const store = memoryStore({ nodeMode });
+    let requests = 0;
+    await startWallet({ wallet: walletFor(openState()), store: store.api, fetch: nodeFetch(),
+      requestOrigins: async () => { requests += 1; return true; },
+      hasOrigins: async () => true, siteAccessHelp: CHROME_SITE_ACCESS_HELP });
+    await settle();
+    const before = requests;
+    document.getElementById("settings-button")!.click();
+    button("Connection").click();
+    assert.equal(document.querySelector('[aria-label="Site access"]')?.textContent, CHROME_SITE_ACCESS_HELP);
+    assert.match(document.body.textContent ?? "", /does not revoke previously granted access/);
+    assert.match(document.body.textContent ?? "", /Restricting site access can interrupt/);
+    assert.doesNotMatch(document.body.textContent ?? "", /Remove unused node permissions|Unused node permissions removed|node unreachable/);
+    assert.equal(store.value.settings.nodeMode, nodeMode);
+    assert.equal(requests, before, "viewing guidance does not change permission grants");
+  }
 });
