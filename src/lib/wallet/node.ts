@@ -173,8 +173,10 @@ export function verifySparseProof(rootCID: string, key: string, expected: bigint
  * Which of `keys` hold a value in the chain's general state at the node's
  * tip. Each node of the state trie is read by CID and checked against it,
  * but the tip is the node's word: a node can answer for a stale or made-up
- * state. A request's `ifAbsent` record only adds to a write, so the chain
- * still refuses the write if what the node said is not so where it lands.
+ * state. A false "absent" is caught where the write lands: the record has no
+ * old value, so the chain refuses the write. A false "present" leaves the
+ * record out, which nothing on chain catches; the approval window names each
+ * record left out, before Sign arms, so the person sees it.
  */
 export async function recordsPresent(
   url: string, chainPath: readonly string[], keys: readonly string[], fetchImpl: Fetch = browserFetch, authorization?: string,

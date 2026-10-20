@@ -1689,7 +1689,7 @@ function orderFlow() {
   const scan = scanner({
     camera: platform.camera === true,
     openFullPage: platform.openFullPage && (() => platform.openFullPage!("wallet")),
-    pasteHint: "paste the lattice://order or lattice://write request",
+    pasteHint: platform.writeRequests ? "paste the lattice://order or lattice://write request" : "paste the lattice://order request",
     onText: (text) => openOrderText(text, scan.status),
   });
   render(h("div", { class: "stack" },
@@ -1928,7 +1928,11 @@ function enableOrderDrop() {
         for (const file of Array.from(transfer.files)) texts.push(...await scannerFileTexts(file));
       }
       for (const text of new Set(texts)) {
-        if (openOrderText(text, notice!)) { hide(); return; }
+        if (openOrderText(text, notice!)) {
+          // A write request answers later, in this notice: leave it up a while.
+          if (/^lattice:\/\/write\b/i.test(text.trim())) setTimeout(hide, 4000); else hide();
+          return;
+        }
       }
       notice!.className = "order-drop error";
       if (!texts.length) notice!.textContent = "Drop order text, a text file, or a QR image.";

@@ -74,7 +74,13 @@ function named(text: string, names: ReadonlyMap<string, string>, limit = Infinit
   return out;
 }
 
+// Each screen drawn: a read begun for an earlier one (another account, say) is dropped when it returns.
+let drawn = 0;
+// The account chosen for an opened request, kept across unlocking.
+let chosenAccount: string | undefined;
+
 function fail(message: string) {
+  drawn += 1;
   view.replaceChildren(el("p", { className: "warn", textContent: message }), el("button", { className: "btn block", textContent: "Close", onclick: () => window.close() }));
 }
 
@@ -149,11 +155,15 @@ async function readNonce(chainPath: string[], address: string, keys: readonly st
     : { error: `None of your nodes serves ${chainPath.join("/")}. Choose a node for it in the wallet, then try again.` };
 }
 
+let answered = false;
 async function decide(approve: boolean, address?: string, nonce?: { nonce: bigint; stateNonce: bigint; node: string; stale: string[] }, extra?: object) {
   const answer = await send({ type: "decide", id, approve, address, ...(nonce && { nonce: String(nonce.nonce), stateNonce: String(nonce.stateNonce), node: nonce.node, stale: nonce.stale }), ...extra });
+  if (answered) return; // a second answer (say, a double click's) never covers the first
   const outcome = answer.outcome as { ok: boolean; error?: string; transactionCID?: string } | undefined;
   if (answer.ok && outcome) {
     // A pasted request: no page hears how it went, so say it here.
+    answered = true;
+    drawn += 1;
     view.replaceChildren(
       el("h1", { textContent: outcome.ok ? "Sent" : "Sent, unconfirmed" }),
       el("p", { className: outcome.ok ? "" : "warn", textContent: outcome.ok ? "Your node took it. It lands with the next block." : outcome.error ?? "" }),
@@ -251,6 +261,7 @@ function reviewGate(changed: () => void) {
 }
 
 async function render() {
+  drawn += 1;
   const request = await send({ type: "pending", id });
   if (!request.ok) return fail(request.error ?? "This request is gone.");
   const origin = request.origin as string | null;
@@ -281,7 +292,7 @@ async function render() {
       decision("Connect", () => decide(true, picker.value)));
     return;
   }
-  if (call.method === "openRequest") return reviewRequest(call.params, origin, state, request.address as string | null);
+  if (call.method === "openRequest") return reviewRequest(call.params, origin, state, request.address as string | null, chosenAccount);
   const address = String(request.address);
   if (call.method === "signMessage" && origin !== null) {
     const host = new URL(origin).host;
@@ -313,7 +324,7 @@ async function render() {
     return;
   }
   if (call.method !== "writeRecords") return fail("Unknown request");
-  reviewWrite(call.params, address, origin, state);
+  reviewWrite(++drawn, call.params, address, origin, state);
 }
 
 const sameKeys = (a: readonly string[], b: readonly string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
@@ -324,8 +335,11 @@ const sameKeys = (a: readonly string[], b: readonly string[]) => [...a].sort().j
  * of records written only if absent that the last read found there.
  */
 async function reviewRequest(intent: WriteIntent, origin: string | null, state: WalletState, connected: string | null, chosen?: string, present: string[] = []) {
+  const mine = ++drawn;
   const address = chosen ?? (state.accounts.some((a) => a.address === connected) ? connected! : state.active ?? state.accounts[0]!.address);
+  chosenAccount = address;
   const settings = await loadSettings(chrome.storage.local);
+  if (mine !== drawn) return;
   const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${shortAddress(a.address)}`, selected: a.address === address }))) as HTMLSelectElement;
   picker.onchange = () => { reviewRequest(intent, origin, state, connected, picker.value).catch((e) => fail(String(e?.message ?? e))); };
   const choose = [el("label", { className: "k", textContent: "Account" }), picker];
@@ -337,21 +351,17 @@ async function reviewRequest(intent: WriteIntent, origin: string | null, state: 
       el("p", { className: "warn", textContent: String((e as Error)?.message ?? e) }), decision("Sign", () => {}, () => false));
     return;
   }
-  reviewWrite(write, address, origin, state, {
-    keys: absentKeys(intent, address), present, label: intent.label, expiresAt: intent.expiresAt, choose,
+  reviewWrite(mine, write, address, origin, state, {
+    keys: absentKeys(intent, address), present, label: intent.label, choose,
     reread: (now) => { reviewRequest(intent, origin, state, connected, address, now).catch((e) => fail(String(e?.message ?? e))); },
   });
 }
 
 /** What an opened request adds to a write's review: the account picker, its label, and what was left out. */
-interface Opened { keys: string[]; present: string[]; label?: string; expiresAt: string; choose: HTMLElement[]; reread: (present: string[]) => void }
+interface Opened { keys: string[]; present: string[]; label?: string; choose: HTMLElement[]; reread: (present: string[]) => void }
 
-/** A write's review, signed as `address`. */
-// Each review drawn: a read begun for an earlier one (another account, say) is dropped when it returns.
-let drawn = 0;
-
-function reviewWrite(write: WriteRequest, address: string, origin: string | null, state: WalletState, opened?: Opened) {
-  const mine = ++drawn;
+/** A write's review, signed as `address`; `mine`: its place in `drawn`. */
+function reviewWrite(mine: number, write: WriteRequest, address: string, origin: string | null, state: WalletState, opened?: Opened) {
   const current = () => mine === drawn;
   const account = state.accounts.find((a) => a.address === address);
   const who = account?.label ?? shortAddress(address);
@@ -372,18 +382,21 @@ function reviewWrite(write: WriteRequest, address: string, origin: string | null
   const covered = (read: NonceRead) => "nonce" in read && read.balance >= debit;
   // A record written only if absent that appeared, or went, since the records were shown: show them again.
   const changed = (read: NonceRead) => opened !== undefined && "present" in read && !sameKeys(read.present, opened.present);
+  let signing = false;
   const sign = async () => {
-    // Read again at the moment of signing: the account may have moved.
-    if (opened && Date.parse(opened.expiresAt) <= Date.now()) return fail("This request has expired. Nothing was signed.");
-    // The account can't change under a signing in progress.
+    if (signing) return;
+    // Neither the account nor a second click can change a signing in progress.
+    signing = true;
     const picker = view.querySelector("select.picker") as HTMLSelectElement | null;
     if (picker) picker.disabled = true;
+    bar.approve.disabled = true;
+    const release = () => { signing = false; if (picker) picker.disabled = false; bar.arm(); };
+    // Read again at the moment of signing: the account may have moved.
     const now = await readNonce(chainPath, address, opened?.keys);
     if (!current()) return;
-    if (picker) picker.disabled = false;
     if (changed(now)) return opened!.reread((now as Extract<NonceRead, { nonce: bigint }>).present);
-    if (!covered(now)) { nonceRead = now; showRead(); return; }
-    decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
+    if (!covered(now)) { nonceRead = now; release(); showRead(); return; }
+    await decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
   };
   const gate = reviewGate(() => explain());
   const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => covered(nonceRead) && gate.seen());
