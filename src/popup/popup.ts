@@ -4,7 +4,7 @@
 
 import { startWallet } from "./app.ts";
 import { walletClient } from "../lib/wallet/client.ts";
-import { HOSTED_NODE_ORIGINS, originPattern } from "../lib/config.ts";
+import { CHROME_SITE_ACCESS_HELP, HOSTED_NODE_ORIGINS, originPattern } from "../lib/config.ts";
 import { NodePermissionError } from "../lib/wallet/node.ts";
 
 // The popup opens backup flows in a tab of this same page: a tab may hold the
@@ -20,12 +20,9 @@ startWallet({
   store: chrome.storage.local,
   requestOrigins: (origins) => chrome.permissions.request({ origins }),
   hasOrigins: (origins) => chrome.permissions.contains({ origins }),
-  releaseUnusedOrigins: async (keep) => {
-    const granted = await chrome.permissions.getAll();
-    const unused = (granted.origins ?? []).filter((origin) => !keep.includes(origin)
-      && !HOSTED_NODE_ORIGINS.some((required) => required === origin));
-    if (unused.length && !await chrome.permissions.remove({ origins: unused })) throw new Error("Could not remove node permissions.");
-  },
+  // Chrome treats node origins covered by static content scripts as required.
+  // permissions.remove() rejects them, even when also declared optional.
+  siteAccessHelp: CHROME_SITE_ACCESS_HELP,
   fetch: async (url, init) => {
     const origin = originPattern(String(url));
     if (!await chrome.permissions.contains({ origins: [origin] })) {

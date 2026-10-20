@@ -29,8 +29,8 @@ export interface Platform {
   requestOrigins(origins: string[]): Promise<boolean>;
   /** Whether these origins were already granted, used to resume after Chrome closes a permission prompt. */
   hasOrigins?(origins: string[]): Promise<boolean>;
-  /** Explicitly revoke grants not needed by saved node choices. */
-  releaseUnusedOrigins?(keep: string[]): Promise<void>;
+  /** Browser-specific guidance for managing site access outside the wallet. */
+  siteAccessHelp?: string;
   /**
    * The host's own node (its loopback operator URL), when it runs one: every
    * chain then reads and submits through it, and no endpoint is chosen. A
@@ -1662,7 +1662,6 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
 }
 
 function connectionScreen() {
-  const status = h("div", { class: "toast" });
   render(h("div", { class: "stack" },
     h("h1", {}, "Connection"),
     h("p", { class: "muted" }, "Automatic uses the explorer directory to find a node serving each chain. These are operator declarations, not independently verified consensus. Choose custom when you operate or trust a specific node."),
@@ -1676,20 +1675,7 @@ function connectionScreen() {
       await update((s) => ({ ...s, nodeMode: "custom" }));
       endpointScreen();
     } }, "Use a custom node"),
-    ...(platform.releaseUnusedOrigins ? [h("button", { class: "btn block", onclick: async () => {
-      try {
-        const current = await loadSettings(store);
-        // Automatic mode keeps its reach to every declared node; a custom choice needs only its own nodes.
-        const keep = current.nodeMode === "automatic" ? discoveryOrigins(discoveryStarts(current)) : [];
-        keep.push(...Object.values(current.endpoints).map((node) => originPattern(node.url)));
-        for (const url of [current.pendingEndpoint?.url, current.pendingDiscovery?.url]) if (url) keep.push(originPattern(url));
-        await platform.releaseUnusedOrigins!(keep);
-        status.textContent = current.nodeMode === "automatic"
-          ? "Unused node permissions removed. Saved nodes and automatic discovery remain available."
-          : "Unused node permissions removed. Saved nodes and the hosted nodes remain available.";
-      } catch (error) { status.textContent = describe(error); }
-    } }, "Remove unused node permissions")] : []),
-    status,
+    ...(platform.siteAccessHelp ? [h("p", { class: "muted", "aria-label": "Site access" }, platform.siteAccessHelp)] : []),
     h("button", { class: "btn block", onclick: settingsScreen }, "Back"),
   ));
 }

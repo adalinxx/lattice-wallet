@@ -43,3 +43,15 @@ test("automatic discovery asks once to reach every HTTPS node, since the hosts i
   assert.equal(await ensureOrigins(host, discoveryOrigins(LATTICE_EXPLORER_RPC)), true);
   assert.equal(prompts, 1, "granted once, not again on the next discovery");
 });
+
+
+test("all optional node origins overlap required content scripts: do not offer API revocation", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../public/manifest.json", import.meta.url), "utf8"));
+  const scriptOrigins = new Set(manifest.content_scripts.flatMap((script: { matches: string[] }) => script.matches));
+  for (const origin of manifest.optional_host_permissions) assert.ok(scriptOrigins.has(origin));
+  // Chromium UnpackOriginPermissions classifies these as required_scriptable_hosts;
+  // PermissionsRemoveFunction rejects the entire batch before revoking anything.
+  const popup = await readFile(new URL("../src/popup/popup.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(popup, /chrome\.permissions\.(remove|getAll)\(/);
+  assert.match(popup, /siteAccessHelp: CHROME_SITE_ACCESS_HELP/);
+});

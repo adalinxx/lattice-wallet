@@ -81,3 +81,6 @@ export function originPattern(nodeURL: string): string {
   const url = new URL(nodeURL);
   return `${url.protocol}//${url.hostname}/*`;
 }
+
+/** Shared node/content-script origins cannot be removed through Chrome permissions.remove. */
+export const CHROME_SITE_ACCESS_HELP = "Manage site access in Chrome: Extensions → Selfhold → Details → Site access. Switching to Custom nodes does not revoke previously granted access. Restricting site access can interrupt node discovery and website connections.";
