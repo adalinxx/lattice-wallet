@@ -399,7 +399,7 @@ function reviewWrite(mine: number, write: WriteRequest, address: string, origin:
     await decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
   };
   const gate = reviewGate(() => explain());
-  const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => covered(nonceRead) && gate.seen());
+  const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => !signing && covered(nonceRead) && gate.seen());
   /** The one line the bar shows: why the account stops it (showRead), else what is left to see. */
   function explain() {
     if ("nonce" in nonceRead && nonceRead.balance >= debit) {
