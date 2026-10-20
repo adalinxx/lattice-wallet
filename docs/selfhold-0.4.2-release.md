@@ -39,7 +39,7 @@ The older 0.4.1 ZIP remains untouched with SHA-256 `5e835bd4842da2cb51112ce6551a
 
 ## Handoff and remaining checks
 
-The public main CI passed at the baseline, but this local version-bump commit has no hosted CI until a push/PR is authorized. No public commit/push, merge or submission is performed here. Version 0.4.2 is the next version after repository 0.4.1 and is already anticipated by main's policy; the independent store task must confirm no equal/newer uploaded version before use.
+The public main CI passed at the baseline, but this local version-bump commit has no hosted CI until a push/PR is authorized. No public commit/push, merge or submission is performed here. The independent store task confirms public 0.4.1 and a separate unpublished 0.4.1 draft, with no pending review. Version 0.4.2 is therefore the next candidate and is already anticipated by main's policy. The exact published 0.4.1 bytes are unverified: the retained tested ZIP is only an explicit comparison baseline, not proof of what the store distributes.
 
 Browser QA should cover first optional all-HTTPS consent, denial, persistence, cleanup when changing node mode, named HTTP local grants, required-host upgrade prompts, fallback/round-robin behavior and provider nonce/payment review when a node fails. Preserve identity, password, labels, settings and pending recovery on upgrade. Recheck deployed purchase review with a suitable fixture; this optional UI check and real settlement were not run here. Store-signed upgrade remains distinct from local compatibility. No real-fund transactions or user-key handling occurred.
 
