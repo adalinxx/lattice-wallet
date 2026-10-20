@@ -33,7 +33,10 @@
   "host_permissions": [
     "https://rpc.lattice.build/*",
     "https://lattice-mainnet-read.fly.dev/*",
-    "https://lattice-mainnet-testnet.fly.dev/*"
+    "https://lattice-mainnet-testnet.fly.dev/*",
+    "https://lattice-mainnet-iad.fly.dev/*",
+    "https://lattice-mainnet-ams.fly.dev/*",
+    "https://lattice-mainnet-sjc.fly.dev/*"
   ],
   "optional_host_permissions": [
     "https://*/*",

@@ -8,8 +8,9 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
-import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, spread, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, NEXUS_DEFAULT_NODES, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
+import { discoveryStarts } from "../lib/wallet/nonce.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
 import type { WalletState, AccountView, SignedSubmit } from "../lib/wallet/types.ts";
 import { decodeOrderRequest, type BuyOrder, type SellOrder } from "../lib/wallet/order.ts";
@@ -429,10 +430,12 @@ export async function ensureOrigins(host: Pick<Platform, "hasOrigins" | "request
   return host.requestOrigins(origins).catch(() => false);
 }
 
-/** Only the selected bootstrap and the two hosted chains get automatic reach.
- * Other discovered operators require an explicit custom-node choice. */
-export function discoveryOrigins(bootstrap: string): string[] {
-  return [...new Set([bootstrap, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC].map(originPattern))];
+/** Only the selected bootstrap, the default Nexus nodes and the two hosted
+ * chains get automatic reach. Other discovered operators require an explicit
+ * custom-node choice. */
+export function discoveryOrigins(bootstrap: string | readonly string[]): string[] {
+  const starts = typeof bootstrap === "string" ? [bootstrap] : bootstrap;
+  return [...new Set([...starts, LATTICE_BUILD_RPC, ...NEXUS_DEFAULT_NODES, LATTICE_TESTNET_RPC].map(originPattern))];
 }
 
 function syncBadge() {
@@ -462,7 +465,7 @@ async function switchToChain(chain: string, status: El) {
   }
   if (settings.nodeMode === "automatic" && !platform.ownNode && !settings.endpoints[chain] && chain !== ROOT_CHAIN) {
     status.textContent = `Finding a node for ${chain}…`;
-    const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+    const bootstrap = discoveryStarts(settings);
     // Persist before Chrome opens its permission prompt: the prompt can close
     // this popup and destroy the remainder of this async handler.
     await update((s) => ({
@@ -482,9 +485,10 @@ async function switchToChain(chain: string, status: El) {
 }
 
 async function finishAutomaticChain(chain: string, status: El): Promise<boolean> {
-  const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
+  const bootstrap = discoveryStarts(settings);
   try {
-    const candidates = (await declaredHosts(bootstrap, parseChainPath(chain)!, platform.fetch)).filter((candidate) => candidate.declaresSubmit);
+    // Begun at a random host, so wallets spread over the hosts of a chain.
+    const candidates = spread((await declaredHosts(bootstrap, parseChainPath(chain)!, platform.fetch)).filter((candidate) => candidate.declaresSubmit));
     for (const candidate of candidates) {
       if (await chooseEndpoint(candidate.url, "discovered", status, true, undefined, true, true)) {
         await update((s) => { const { pendingAutomaticChain: _, ...rest } = s; return rest; });
@@ -641,8 +645,7 @@ export async function refresh() {
     }
   }
   if (settings.pendingAutomaticChain === settings.chain && !endpoint() && platform.hasOrigins) {
-    const bootstrap = settings.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC;
-    const origins = discoveryOrigins(bootstrap);
+    const origins = discoveryOrigins(discoveryStarts(settings));
     if (await platform.hasOrigins(origins).catch(() => false)) {
       const status = h("div");
       if (await finishAutomaticChain(settings.chain, status)) { route(); return; }
@@ -989,7 +992,7 @@ function endpointScreen() {
       const list = await declaredHosts(n, chainPath(), platform.fetch);
       err.textContent = list.length ? "" : "No declared node serves this chain.";
       if (autoSelect) {
-        const candidates = list.filter((endpoint) => endpoint.declaresSubmit);
+        const candidates = spread(list.filter((endpoint) => endpoint.declaresSubmit));
         if (!candidates.length) {
           err.textContent = "No verified node declares transaction submission for this chain.";
           return;
@@ -1676,7 +1679,7 @@ function connectionScreen() {
     ...(platform.releaseUnusedOrigins ? [h("button", { class: "btn block", onclick: async () => {
       try {
         const current = await loadSettings(store);
-        const keep = discoveryOrigins(current.endpoints[ROOT_CHAIN]?.url ?? LATTICE_EXPLORER_RPC);
+        const keep = discoveryOrigins(discoveryStarts(current));
         keep.push(...Object.values(current.endpoints).map((node) => originPattern(node.url)));
         for (const url of [current.pendingEndpoint?.url, current.pendingDiscovery?.url]) if (url) keep.push(originPattern(url));
         await platform.releaseUnusedOrigins!(keep);
