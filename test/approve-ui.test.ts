@@ -19,7 +19,7 @@ async function settle() { for (let i = 0; i < 40; i += 1) await tick(); }
 let loads = 0;
 /** Opens the window on `call`, with the node reporting `balance`. Returns what it sent the worker. */
 async function open(call: unknown, balance: string, layout?: (dom: JSDOM) => void,
-  env: { settings?: unknown; fetch?: (url: URL) => Response | undefined } = {}) {
+  env: { settings?: unknown; fetch?: (url: URL) => Response | undefined; answer?: (msg: Record<string, unknown>) => unknown } = {}) {
   const dom = new JSDOM('<main id="view"></main>', { url: "chrome-extension://wallet-id/approve/index.html?id=r1", pretendToBeVisual: true });
   for (const name of ["window", "document", "location", "Node", "HTMLElement", "HTMLButtonElement", "HTMLSelectElement", "Event"]) {
     Object.defineProperty(globalThis, name, { configurable: true, value: (dom.window as unknown as Record<string, unknown>)[name] });
@@ -30,6 +30,8 @@ async function open(call: unknown, balance: string, layout?: (dom: JSDOM) => voi
   Object.defineProperty(globalThis, "chrome", { configurable: true, value: {
     runtime: { sendMessage: async (msg: Record<string, unknown>) => {
       sent.push(msg);
+      const answer = env.answer?.(msg);
+      if (answer) return answer;
       if (msg.type === "pending") return { ok: true, origin: "https://fanfare.example", call, address: me };
       if (msg.type === "getState") return { ok: true, state: { initialized: true, locked: false, active: me, accounts: [{ address: me, label: "Main" }] } };
       if (msg.type === "nodeAuthorization") return { ok: true };
@@ -304,4 +306,40 @@ test("conditional records changing before approval force a new review without au
   assert.match(text(), /optional/);
   assert.match(text(), /left out|already/i);
   assert.equal(approveButton(dom).disabled, true, "the changed review must rearm, not reuse the earlier approval");
+});
+
+test("connecting can make a new account, which is then the one chosen and connected", async () => {
+  const accounts = [{ address: me, label: "Main" }];
+  let active = me;
+  const { sent, dom } = await open({ method: "connect" }, "0", undefined, { answer: (msg) => {
+    if (msg.type === "getState") return { ok: true, state: { initialized: true, locked: false, active, accounts } };
+    if (msg.type === "addAccount") {
+      accounts.push({ address: holder, label: "Account 2" });
+      active = holder;
+      return { ok: true };
+    }
+  } });
+  const picker = () => dom.window.document.querySelector("select.picker") as HTMLSelectElement;
+  assert.equal(picker().value, me);
+  picker().value = "__new";
+  picker().dispatchEvent(new dom.window.Event("change"));
+  await settle();
+  await new Promise((r) => setTimeout(r, 900)); // drawn again: the Connect button arms again
+  assert.deepEqual(sent.filter((m) => m.type === "addAccount"), [{ type: "addAccount" }], "added once, named by default");
+  assert.equal(picker().value, holder, "the new account is chosen");
+  approveButton(dom).click();
+  await settle();
+  assert.equal(sent.find((m) => m.type === "decide")?.address, holder, "and connected");
+});
+
+test("a new account the wallet cannot add says why, and the choice goes back", async () => {
+  const { sent, dom } = await open({ method: "connect" }, "0", undefined, { answer: (msg) =>
+    msg.type === "addAccount" ? { ok: false, error: "Locked or no recovery phrase" } : undefined });
+  const picker = dom.window.document.querySelector("select.picker") as HTMLSelectElement;
+  picker.value = "__new";
+  picker.dispatchEvent(new dom.window.Event("change"));
+  await settle();
+  assert.equal(picker.value, me);
+  assert.equal(one(dom, ".warn"), "Locked or no recovery phrase");
+  assert.equal(sent.filter((m) => m.type === "decide").length, 0, "nothing connected");
 });
