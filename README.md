@@ -243,6 +243,15 @@ const { transactionCID } = await lattice.openRequest(uri);
 - **Connecting needs a click.** `connect()` is answered only during a click
   or key press the person just made (pages call `address()` on load), and a
   site whose request was declined waits a few seconds before asking again.
+  The connect window can also make a new account (**+ New account**) to
+  connect instead of an existing one.
+- **A label follows its handle, from what it signs.** When a write the node
+  took sets the signing account's own Moniker handle
+  (`user/<account>/name` to `<handle>`, on `Nexus/moniker` or the trial
+  chain), an account still under the wallet's own label (`Account N`,
+  `Imported N`, or an earlier `@handle`) is renamed `@<handle>`. A name you
+  gave it stays. The wallet never looks handles up: asking one node about
+  every account would link them.
 
 ## Why an extension (not a web page)
 

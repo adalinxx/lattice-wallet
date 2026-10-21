@@ -11,6 +11,7 @@ import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../li
 import type { PageWrite } from "../lib/wallet/nonce.ts";
 import type { WriteRequest } from "../lib/wallet/provider.ts";
 import { decodeWriteRequest, fillWriteRequest } from "../lib/wallet/write-request.ts";
+import { handleLabel } from "../lib/wallet/moniker.ts";
 
 const AUTO_LOCK_MINUTES = 10;
 const store = chrome.storage.local;
@@ -257,8 +258,19 @@ async function signAndSend(request: Pending, write: WriteRequest, from: string, 
     ? { ok: true, transactionCID: signedSubmit.transactionCID } as Response // the CID only: never bytes a page could send later
     : { ok: false, error: `Sent, but the node did not confirm it (${failure}); it may still land`, transactionCID: signedSubmit.transactionCID } as Response;
   request.settle(outcome);
+  // Only a label: the write is sent whatever becomes of it.
+  if (delivered === "yes") await followHandle(write, from).catch(() => {});
   // A pasted request has no page to hear the outcome: the window shows it.
   return request.origin === null ? { ok: true, outcome } as Response : { ok: true };
+}
+
+/** A sent write that sets the signer's own handle on Moniker names the account after it (moniker.ts). */
+async function followHandle(write: WriteRequest, from: string) {
+  const state = await signer.handle({ type: "getState" });
+  const account = state.ok ? (state as unknown as { state: WalletState }).state.accounts.find((a) => a.address === from) : undefined;
+  const label = account && handleLabel(write, account);
+  // A name another account already has is refused; the label then stays as it was.
+  if (label) await signer.handle({ type: "renameAccount", address: from, label });
 }
 
 chrome.windows.onRemoved.addListener((closed) => {
@@ -281,12 +293,14 @@ chrome.runtime.onMessage.addListener((message: { type?: unknown }, sender, sendR
     return true;
   }
   if (page === APPROVE_PAGE) {
-    // The approval window answers its request, and may read state and unlock.
+    // The approval window answers its request, and may read state, unlock and add an account.
     const kind = message?.type;
     const answer = kind === "pending" || kind === "decide" ? fromApproval(message as never)
       : msg.type === "getState" || msg.type === "unlock" || msg.type === "nodeAuthorization" ? signer.handle(msg)
+      // A new account to connect, named by default.
+      : msg.type === "addAccount" ? signer.handle({ type: "addAccount" })
       : Promise.resolve({ ok: false, error: "Not allowed here" } as Response);
-    if (kind === "unlock" || kind === "decide") chrome.alarms.create("auto-lock", { delayInMinutes: AUTO_LOCK_MINUTES });
+    if (kind === "unlock" || kind === "decide" || kind === "addAccount") chrome.alarms.create("auto-lock", { delayInMinutes: AUTO_LOCK_MINUTES });
     answer.then(sendResponse).catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
     return true;
   }

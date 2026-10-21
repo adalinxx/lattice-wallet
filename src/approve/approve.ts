@@ -284,11 +284,22 @@ async function render() {
     return;
   }
   if (call.method === "connect") {
-    const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${shortAddress(a.address)}`, selected: a.address === state.active }))) as HTMLSelectElement;
+    const picker = el("select", { className: "picker" }, ...state.accounts.map((a) => el("option", { value: a.address, textContent: `${a.label} · ${shortAddress(a.address)}`, selected: a.address === state.active })),
+      el("option", { value: "__new", textContent: "+ New account" })) as HTMLSelectElement;
+    const error = el("p", { className: "warn", hidden: true });
+    // A new account becomes the active one, so drawn again it is the one chosen.
+    picker.onchange = async () => {
+      if (picker.value !== "__new") return;
+      const added = await send({ type: "addAccount" });
+      if (added.ok) return render();
+      picker.value = state.active ?? state.accounts[0]!.address;
+      error.textContent = added.error ?? "Could not add an account";
+      error.hidden = false;
+    };
     view.replaceChildren(
       el("h1", { textContent: "Connect" }),
       el("p", {}, site(origin), " wants to know your address. It can then ask you to sign writes and messages; you approve each one here."),
-      el("label", { className: "k", textContent: "Account" }), picker,
+      el("label", { className: "k", textContent: "Account" }), picker, error,
       decision("Connect", () => decide(true, picker.value)));
     return;
   }
