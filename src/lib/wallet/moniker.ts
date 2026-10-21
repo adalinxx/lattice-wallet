@@ -5,8 +5,8 @@
 
 import type { AccountView } from "./types.ts";
 
-/** Moniker's chains. The trial path changes when the trial chain is relaunched. */
-export const MONIKER_CHAINS: readonly (readonly string[])[] = [["Nexus", "moniker"], ["Nexus", "testnet", "moniker-da6f57"]];
+/** Moniker's chains. The trial path changes when the trial chain is relaunched; the old one stays while apps move. */
+export const MONIKER_CHAINS: readonly (readonly string[])[] = [["Nexus", "moniker"], ["Nexus", "testnet", "moniker-da6f57"], ["Nexus", "testnet", "moniker-8eb926"]];
 
 const HANDLE = /^[a-z0-9_]+$/;
 
