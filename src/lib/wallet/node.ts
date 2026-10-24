@@ -463,6 +463,38 @@ export function feeWarning(fee: bigint, minRelayFee: bigint | undefined): string
   return `This node relays only fees of at least ${minRelayFee}; it will likely refuse a fee of ${fee}.`;
 }
 
+/** A fee that is at least half of what is sent: likely a slip, worth a second look. */
+export function highFeeWarning(fee: bigint, amount: bigint): string | undefined {
+  if (fee <= 0n || fee * 2n < amount) return undefined;
+  return `The fee is ${fee >= amount ? "more than" : "at least half of"} the amount you send. Check it before signing.`;
+}
+
+/**
+ * Where a same-nonce replacement's fee starts: a quarter more than the
+ * attempt it replaces (at least 1 more, as the pool requires strictly more),
+ * and never under the node's floor. Miners rank by fee per byte, and a
+ * replacement is the same size, so +1 on a large fee rarely moves it up.
+ */
+export function nextReplacementFee(previous: bigint, minRelayFee?: bigint): bigint {
+  const raised = previous + (previous / 4n > 1n ? previous / 4n : 1n);
+  return minRelayFee !== undefined && minRelayFee > raised ? minRelayFee : raised;
+}
+
+/**
+ * How long the next block usually takes, from recent block timestamps (any
+ * order, milliseconds): the time within which four in five recent blocks
+ * followed the one before, as "~25 min" or "~2 h". Proof-of-work blocks come
+ * at random, so this is a description of the recent past, not a promise.
+ * Undefined with fewer than four intervals to go on.
+ */
+export function usualBlockWait(timestamps: readonly bigint[]): string | undefined {
+  const sorted = [...timestamps].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const gaps = sorted.slice(1).map((t, i) => Number(t - sorted[i]!)).filter((gap) => gap > 0).sort((a, b) => a - b);
+  if (gaps.length < 4) return undefined;
+  const minutes = Math.ceil(gaps[Math.ceil(gaps.length * 0.8) - 1]! / 60_000);
+  return minutes <= 90 ? `~${Math.max(5, Math.ceil(minutes / 5) * 5)} min` : `~${Math.ceil(minutes / 60)} h`;
+}
+
 export type SentStatus =
   | { kind: "included"; height: bigint; hash: string }
   | { kind: "pending" }

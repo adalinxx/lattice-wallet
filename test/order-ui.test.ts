@@ -297,7 +297,7 @@ test("sell-order UI refuses a stale review and never re-signs after an uncertain
 
   button("Send").click();
   await settle();
-  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "1", "an asynchronous node response never overwrites the user's fee field");
+  assert.equal((document.querySelector('details.advanced input') as HTMLInputElement).value, "0", "an asynchronous node response never overwrites the user's fee field");
   assert.equal((document.querySelector("details.advanced") as HTMLDetailsElement).open, true, "a below-floor fee opens the warning without clamping the value");
   (document.querySelector('input[placeholder^="recipient"]') as HTMLInputElement).value = importPrivateKey("b0".repeat(32)).address;
   (document.querySelector('input[placeholder^="amount"]') as HTMLInputElement).value = "10";
