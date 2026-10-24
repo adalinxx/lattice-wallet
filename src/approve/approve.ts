@@ -324,7 +324,12 @@ async function render() {
     return;
   }
   if (call.method !== "writeRecords") return fail("Unknown request");
-  reviewWrite(++drawn, call.params, address, origin, state);
+  // A page that asks no fee pays the person's default for the chain: shown
+  // here, and signed as shown.
+  const mine = ++drawn;
+  const fee = call.params.fee ?? defaultFee(await loadSettings(chrome.storage.local), call.params.chainPath.join("/"));
+  if (mine !== drawn) return;
+  reviewWrite(mine, { ...call.params, fee }, address, origin, state);
 }
 
 const sameKeys = (a: readonly string[], b: readonly string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
@@ -396,7 +401,7 @@ function reviewWrite(mine: number, write: WriteRequest, address: string, origin:
     if (!current()) return;
     if (changed(now)) return opened!.reread((now as Extract<NonceRead, { nonce: bigint }>).present);
     if (!covered(now)) { nonceRead = now; release(); showRead(); return; }
-    await decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened && { present: opened.present, fee });
+    await decide(true, opened ? address : undefined, now as Extract<NonceRead, { nonce: bigint }>, opened ? { present: opened.present, fee } : { fee });
   };
   const gate = reviewGate(() => explain());
   const bar = decision(approveLabel, () => { sign().catch((e) => fail(String(e?.message ?? e))); }, () => !signing && covered(nonceRead) && gate.seen());

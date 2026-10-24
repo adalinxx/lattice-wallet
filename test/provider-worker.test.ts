@@ -199,6 +199,22 @@ test("pages connect and write only through the person's approval", async () => {
   assert.ok((await buying).ok);
   assert.deepEqual(submitted.at(-1)!.body.transaction.body.accountActions, [{ owner: address, delta: "-251" }, { owner: holder, delta: "250" }]);
 
+  // A write that asks no fee is signed at the one the window showed, the
+  // person's default; a window that shows none signs nothing, and a fee the
+  // page asked for is the one signed, whatever the window sends.
+  const { fee: _, ...unpriced } = writeCall.params;
+  const asking = page({ method: "writeRecords", params: unpriced });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "7" })).error, "The wallet has not chosen this write's fee");
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "7", fee: "2" }), { ok: true });
+  assert.ok((await asking).ok);
+  assert.deepEqual(submitted.at(-1)!.body.transaction.body.accountActions, [{ owner: address, delta: "-2" }]);
+  const priced = page(writeCall);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(await approval({ type: "decide", id: requestId(), approve: true, ...read, nonce: "8", fee: "9" }), { ok: true });
+  assert.ok((await priced).ok);
+  assert.deepEqual(submitted.at(-1)!.body.transaction.body.accountActions, [{ owner: address, delta: "-1" }], "the page's fee, not the window's");
+
   // A message: approved in the window, answered with the key and signature only.
   const text = "fanfare-door band berlin/A12 7f3c";
   const signing = page({ method: "signMessage", params: { text } });
@@ -240,7 +256,7 @@ test("pages connect and write only through the person's approval", async () => {
     actions: [{ key: "name/rae", newValue: "{account}" }, { key: "user/{account}/profile", newValue: "{}", ifAbsent: true }],
     payments: [{ to: holder, amount: "5" }],
   })).toString("base64url")}`;
-  const filled = { ...read, nonce: "7", present: [`user/${address}/profile`], fee: "2" };
+  const filled = { ...read, nonce: "9", present: [`user/${address}/profile`], fee: "2" };
   assert.match(String((await page({ method: "openRequest", params: { uri: "lattice://write?v=1" } })).error), /no intent/);
   const opening = page({ method: "openRequest", params: { uri: request } });
   await new Promise((r) => setTimeout(r, 10));
@@ -267,7 +283,7 @@ test("pages connect and write only through the person's approval", async () => {
   assert.equal(opened.length, windows + 1);
   assert.equal((await approval({ type: "pending", id: requestId() })).origin, null);
   assert.equal((await popup({ type: "openWriteRequest", uri: request })).error, "A pasted request is already waiting in the wallet");
-  const pasted = await approval({ type: "decide", id: requestId(), approve: true, ...filled, address, nonce: "8", present: [] });
+  const pasted = await approval({ type: "decide", id: requestId(), approve: true, ...filled, address, nonce: "10", present: [] });
   assert.equal((pasted.outcome as Answer).ok, true, "no page hears it, so the window is told how it went");
   assert.equal(typeof (pasted.outcome as Answer).transactionCID, "string");
   assert.ok(JSON.stringify(submitted.at(-1)!.body.transaction.body).includes(`user/${address}/profile`), "a record not there yet is written");
@@ -278,11 +294,11 @@ test("pages connect and write only through the person's approval", async () => {
   await new Promise((r) => setTimeout(r, 10));
   const lateId = requestId();
   await popup({ type: "lock" });
-  assert.equal((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "9" })).error, "Locked");
+  assert.equal((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "11" })).error, "Locked");
   assert.equal((await approval({ type: "unlock", password: "pw" })).ok, true);
   const sentBefore = submitted.length;
   skew += 10 * 365 * 86_400_000;
-  assert.match(String((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "9" })).error), /expired/);
+  assert.match(String((await approval({ type: "decide", id: lateId, approve: true, ...filled, address, nonce: "11" })).error), /expired/);
   assert.deepEqual(await late, { ok: false, error: "This request has expired" });
   assert.equal(submitted.length, sentBefore);
 });
