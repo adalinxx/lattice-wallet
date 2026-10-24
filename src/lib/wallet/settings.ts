@@ -116,8 +116,10 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = { chain: ROOT_CHAIN, chains: [ROOT_CHAIN], nodeMode: "automatic", endpoints: {}, sent: {}, pendingSubmissions: [], confirmedSubmissions: [], openDeposits: [], openPurchases: [], confirmedPurchases: [], fees: {} };
 
-/** With no per-chain choice, a send starts at 1 unit: the smallest positive fee, not an estimate. */
-export const FALLBACK_FEE = "1";
+/** With no per-chain choice, a send starts at 0: no fee, not an estimate.
+ * Consensus accepts it; a node whose relay floor is higher refuses it, and
+ * the wallet warns before signing. */
+export const FALLBACK_FEE = "0";
 
 export function defaultFee(settings: Settings, chain: string): string {
   return settings.fees[chain] ?? FALLBACK_FEE;

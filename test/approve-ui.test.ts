@@ -102,12 +102,12 @@ test("an opened request is signed as the account chosen here, and its label is s
   assert.equal(one(dom, ".from"), "from fanfare.example · it calls itself “Buy @rae”");
   assert.equal((dom.window.document.querySelector("select.picker") as HTMLSelectElement).value, me, "the account the site is connected to, first");
   assert.equal(one(dom, ".records:not(.raw) li .meta"), "payee@250 → you", "{account} filled in as the account chosen");
-  assert.ok(one(dom, ".summary").includes("Balance: 1,000 → 749"));
-  assert.equal(approveButton(dom).textContent, "Pay 251");
+  assert.ok(one(dom, ".summary").includes("Balance: 1,000 → 750"));
+  assert.equal(approveButton(dom).textContent, "Pay 250");
   approveButton(dom).click();
   await settle();
   const decided = sent.find((m) => m.type === "decide");
-  assert.deepEqual({ address: decided?.address, present: decided?.present, fee: decided?.fee, nonce: decided?.nonce }, { address: me, present: [], fee: "1", nonce: "7" });
+  assert.deepEqual({ address: decided?.address, present: decided?.present, fee: decided?.fee, nonce: decided?.nonce }, { address: me, present: [], fee: "0", nonce: "7" });
 });
 
 test("an opened request's proposed fee is the one shown and signed", async () => {

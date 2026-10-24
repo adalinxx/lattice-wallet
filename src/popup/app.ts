@@ -8,7 +8,7 @@ import type { Fetch } from "@adalinxx/lattice-client";
 import { nodeCookieAuthorization } from "@adalinxx/lattice-core";
 import type { WalletClient } from "../lib/wallet/client.ts";
 import { newMnemonic, isValidMnemonic, keyFilePrivateKey } from "../lib/crypto/accounts.ts";
-import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, spread, describe, feeWarning, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
+import { reader, submitter, submitChecked, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, spread, describe, feeWarning, highFeeWarning, nextReplacementFee, usualBlockWait, sentStatus, statusText, activeDeposits, depositValues, receiptWithdrawer, type ActiveDeposit, OPERATOR_DECLARED } from "../lib/wallet/node.ts";
 import { ALL_HTTPS_ORIGINS, HOSTED_NODE_ORIGINS, LATTICE_BUILD_RPC, LATTICE_EXPLORER_RPC, LATTICE_TESTNET_RPC, ROOT_CHAIN, parseChainPath, normalizeNodeURL, originPattern, isLoopbackNodeURL } from "../lib/config.ts";
 import { discoveryStarts } from "../lib/wallet/nonce.ts";
 import { loadSettings, saveSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordWithdrawalAttempt, purchaseWithdrawalAttempts, recordSent, recordPendingSubmission, archivePendingSubmission, defaultFee, parseFee, type Settings, type ChosenEndpoint, type KeyValueStore, type OpenPurchase, type SentTransaction } from "../lib/wallet/settings.ts";
@@ -1485,7 +1485,7 @@ function purchaseScreen(purchase: OpenPurchase, openingMessage?: string) {
       const oldFee = oldCredit === undefined ? 0n : totalReceive - BigInt(oldCredit);
       const replacementFee = h("input", {
         type: "text", inputmode: "numeric",
-        value: (oldFee + 1n > BigInt(defaultFee(settings, childName)) ? oldFee + 1n : BigInt(defaultFee(settings, childName))).toString(),
+        value: (nextReplacementFee(oldFee) > BigInt(defaultFee(settings, childName)) ? nextReplacementFee(oldFee) : BigInt(defaultFee(settings, childName))).toString(),
       }) as HTMLInputElement;
       const replace = h("button", { class: "btn block", onclick: async () => {
         const fee = parseFee(replacementFee.value);
@@ -2125,7 +2125,14 @@ async function sendFlow() {
   const amount = h("input", { type: "text", inputmode: "numeric", placeholder: `amount on ${sendContext.chain}`, "aria-label": "Amount" }) as HTMLInputElement;
   const fee = h("input", { type: "text", inputmode: "numeric", value: defaultFee(settings, settings.chain) }) as HTMLInputElement;
   const feeNote = h("div", { class: "warn" });
-  const feeHelp = h("p", { class: "muted" }, "The wallet never changes your fee. A node minimum is only a warning; confirmation depends on miners and current demand.");
+  // The fee in one line, so the common case needs no field: what it is, and
+  // how long blocks have lately taken.
+  let wait: string | undefined;
+  const feeHelp = h("p", { class: "muted" });
+  const showFee = () => {
+    const f = parseFee(fee.value);
+    feeHelp.textContent = f === null ? "" : `Network fee ${fmt(f.toString())}${wait ? ` · blocks lately come within ${wait}` : ""}.`;
+  };
   const feeAdvanced = h("details", { class: "advanced" },
     h("summary", {}, "Custom fee"),
     h("div", { class: "advanced-content" },
@@ -2141,11 +2148,18 @@ async function sendFlow() {
     const warning = f === null ? "" : feeWarning(f, minRelayFee) ?? "";
     feeNote.textContent = warning;
     if (warning) feeAdvanced.open = true;
+    showFee();
   };
   fee.addEventListener("input", checkFee);
-  void authorizationFor(sendContext.chosen.url).then((auth) => reader(sendContext.chosen.url, sendContext.path, platform.fetch, auth).chainInfo()).then((info) => {
+  showFee();
+  const reads = authorizationFor(sendContext.chosen.url).then((auth) => reader(sendContext.chosen.url, sendContext.path, platform.fetch, auth));
+  void reads.then((node) => node.chainInfo()).then((info) => {
     minRelayFee = info.minRelayFee;
     checkFee();
+  }).catch(() => {});
+  void reads.then((node) => node.blocks({ limit: 25 })).then((page) => {
+    wait = usualBlockWait(page.blocks.map((block) => block.timestamp));
+    showFee();
   }).catch(() => {});
   render(
     h("div", { class: "stack" },
@@ -2187,7 +2201,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
   const { acct, chain, path, chosen } = context;
   let acknowledgedPending: string | undefined;
   const toast = h("div", { class: "toast" });
-  const warning = feeWarning(fee, minRelayFee);
+  const warnings = [feeWarning(fee, minRelayFee), highFeeWarning(fee, amount)].filter((w): w is string => w !== undefined);
   const sendButton = h("button", { class: "block", onclick: confirm }, "Sign & send") as HTMLButtonElement;
   render(
     h("div", { class: "stack" },
@@ -2209,7 +2223,7 @@ function reviewScreen(to: string, amount: bigint, fee: bigint, nonce: bigint, mi
           h("div", { class: "row" }, h("span", { class: "k" }, "Node"), h("span", { class: "v mono" }, short(chosen.url))),
         ),
       ),
-      ...(warning ? [h("p", { class: "warn" }, warning)] : []),
+      ...warnings.map((w) => h("p", { class: "warn" }, w)),
       toast,
       sendButton,
       h("button", { class: "btn block", onclick: mainScreen }, "Cancel"),
@@ -2402,7 +2416,7 @@ function pendingSubmissionsScreen() {
 function replacementScreen(original: Parameters<typeof replacementTransfer>[0], chosen: ChosenEndpoint) {
   const terms = replacementTransfer(original);
   if (!terms) return pendingSubmissionsScreen();
-  const fee = h("input", { type: "text", inputmode: "numeric", value: (terms.fee + 1n).toString(), "aria-label": "Replacement fee" }) as HTMLInputElement;
+  const fee = h("input", { type: "text", inputmode: "numeric", value: nextReplacementFee(terms.fee).toString(), "aria-label": "Replacement fee" }) as HTMLInputElement;
   const message = h("div", { class: "toast", role: "status" });
   const confirm = h("button", { class: "block", onclick: async () => {
     if (confirm.disabled) return;
@@ -2541,7 +2555,7 @@ function feeScreen() {
   render(
     h("div", { class: "stack" },
       h("h1", {}, "Default fee on " + settings.chain),
-      h("p", { class: "muted" }, "Paid to the miner as the debit over the credit. There is no estimate: you choose it, and you can change it on each send."),
+      h("p", { class: "muted" }, "Paid to the miner as the debit over the credit. There is no estimate: you choose it (0 until you do), and you can change it on each send. A node with a higher minimum refuses a lower fee."),
       input, note, err,
       h("button", { class: "block", onclick: async () => {
         const f = parseFee(input.value);

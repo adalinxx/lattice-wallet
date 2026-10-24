@@ -70,16 +70,24 @@ Reads go through the SDK's `NodeClient` (`/api/state/account`,
 
 ### Fees
 
-The fee is yours: there is no fee field and no estimate service. It is the
-debit-over-credit excess the miner collects (the SDK's `buildTransfer`).
+The fee is yours: there is no estimate service. It is the debit-over-credit
+excess the miner collects (the SDK's `buildTransfer`).
 
-- Every send has an editable fee field, prefilled with the chain's default.
-- Each chain's default fee is set under **Fee** (1 unit until you change it).
+- Each chain's default fee is set under **Default fee** (0 until you change
+  it). Consensus accepts a zero fee; whether a node relays it is its
+  operator's policy.
+- The send screen states the fee in one line, with how long recent blocks
+  have taken (four in five of the last 25 came within that time). The field
+  stays editable under **Custom fee**.
 - The chosen endpoint reports its own relay floor (`minRelayFee` in
   `/api/chain/info`, its operator's policy, never consensus). A fee below it
   is **warned about, not raised**: the send goes as you set it, and the node
-  may refuse it (`belowMinRelayFee`).
-- The review screen shows the fee, the total, and the node's minimum.
+  may refuse it (`belowMinRelayFee`). The hosted nodes' floor is 1.
+- The review screen shows the fee, the total, and the node's minimum, and
+  warns when the fee is at least half the amount.
+- **Increase fee** on a pending send starts a quarter above the previous fee
+  (at least 1 more). Miners rank by fee per byte and a replacement is the same
+  size, so +1 on a large fee rarely moves it up.
 
 ### Status
 

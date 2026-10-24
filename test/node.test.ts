@@ -10,7 +10,7 @@ import { NodeError } from "@adalinxx/lattice-client";
 import { normalizeNodeURL, parseChainPath, originPattern, isLoopbackNodeURL } from "../src/lib/config.ts";
 import { loadSettings, recordOpenDeposit, completeOpenDeposit, recordOpenPurchase, archiveOpenPurchase, recordSent, forgetSent, recordPendingSubmission, completePendingSubmission, archivePendingSubmission, recordWithdrawalAttempt, forgetWithdrawalAttempt, defaultFee, parseFee, DEFAULT_SETTINGS, FALLBACK_FEE, type Settings } from "../src/lib/wallet/settings.ts";
 import type { SignedSubmit } from "../src/lib/wallet/types.ts";
-import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, chainNodes, spread, describe, feeWarning, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
+import { reader, submitter, submitChecked, CIDMismatchError, isDefiniteSubmissionRefusal, shouldOfferFeeReplacement, isTransientSubmissionRefusal, isTooLargeRefusal, declaredHosts, chainNodes, spread, describe, feeWarning, highFeeWarning, nextReplacementFee, usualBlockWait, sentStatus, statusText, OPERATOR_DECLARED, verifySparseProof } from "../src/lib/wallet/node.ts";
 import type { VolumeEntry } from "@adalinxx/lattice-volumes";
 import { importPrivateKey } from "../src/lib/crypto/accounts.ts";
 import { signTransfer } from "../src/lib/wallet/session.ts";
@@ -187,6 +187,7 @@ test("fees: per-chain default, whole units, warned below the node's floor but ne
   const stored = await loadSettings({ get: async () => ({ settings: { chain: "Nexus", chains: ["Nexus"], endpoints: {}, sent: {} } }), set: async () => {} });
   assert.deepEqual(stored.fees, {}, "settings saved before fees existed still load");
   assert.equal(defaultFee(stored, "Nexus"), FALLBACK_FEE);
+  assert.equal(FALLBACK_FEE, "0", "a chain with no saved default starts at no fee");
   assert.equal(defaultFee({ ...stored, fees: { "Nexus/testnet": "25" } }, "Nexus/testnet"), "25");
   assert.equal(parseFee("0"), 0n);
   assert.equal(parseFee(" 42 "), 42n);
@@ -194,6 +195,26 @@ test("fees: per-chain default, whole units, warned below the node's floor but ne
   assert.equal(feeWarning(5n, undefined), undefined, "no floor reported");
   assert.equal(feeWarning(5n, 5n), undefined);
   assert.match(feeWarning(4n, 5n)!, /at least 5/);
+});
+
+test("fees: a fee of half the amount or more is flagged; replacements start a quarter higher", () => {
+  assert.equal(highFeeWarning(1n, 100n), undefined);
+  assert.equal(highFeeWarning(0n, 0n), undefined, "no fee, nothing to flag");
+  assert.match(highFeeWarning(50n, 100n)!, /at least half/);
+  assert.match(highFeeWarning(101n, 100n)!, /more than/);
+  assert.equal(nextReplacementFee(1n), 2n, "at least one more");
+  assert.equal(nextReplacementFee(7n), 8n);
+  assert.equal(nextReplacementFee(100n), 125n);
+  assert.equal(nextReplacementFee(1n, 10n), 10n, "never under the node's floor");
+});
+
+test("fees: the usual wait for a block, from recent timestamps", () => {
+  const minute = 60_000n;
+  const at = (gaps: number[]) => gaps.reduce<bigint[]>((times, gap) => [...times, times.at(-1)! + BigInt(gap) * minute], [0n]);
+  assert.equal(usualBlockWait(at([10, 20, 30])), undefined, "too few blocks to say");
+  assert.equal(usualBlockWait(at([10, 12, 20, 22, 48]).reverse()), "~25 min", "four in five within 22 min, in any order");
+  assert.equal(usualBlockWait(at([1, 1, 1, 1, 1])), "~5 min");
+  assert.equal(usualBlockWait(at([30, 60, 90, 150, 400])), "~3 h");
 });
 
 type Route = (url: URL, init?: RequestInit) => { status: number; body: unknown } | undefined;

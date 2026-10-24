@@ -282,7 +282,7 @@ test("wallet UI e2e: fee validation, review, signing, submission, and persistenc
   button("Send").click();
   await settle();
 
-  assert.match(document.body.textContent ?? "", /depends on miners and current demand/);
+  assert.match(document.body.textContent ?? "", /Network fee 0\./, "the fee is stated in one line");
 
   const recipient = input("recipient address (bafy…)");
   const amount = (document.querySelector('input[aria-label="Amount"]') as HTMLInputElement);
@@ -297,7 +297,7 @@ test("wallet UI e2e: fee validation, review, signing, submission, and persistenc
   amount.value = "0";
   button("Review").click();
   assert.match(document.body.textContent ?? "", /whole, positive amount/);
-  amount.value = "100";
+  amount.value = "101";
   button("Review").click();
   await settle();
   assert.match(document.body.textContent ?? "", /Insufficient balance/);
@@ -305,14 +305,14 @@ test("wallet UI e2e: fee validation, review, signing, submission, and persistenc
   button("Review").click();
   await settle();
   assert.equal(document.querySelector("h1")?.textContent, "Review");
-  assert.match(document.body.textContent ?? "", /Network fee1/);
-  assert.match(document.body.textContent ?? "", /Total11/);
+  assert.match(document.body.textContent ?? "", /Network fee0/);
+  assert.match(document.body.textContent ?? "", /Total10/);
   assert.match(document.body.textContent ?? "", new RegExp(alice));
   assert.match(document.body.textContent ?? "", new RegExp(bob));
   button("Sign & send").click();
   await settle();
   assert.equal(submitted, 1);
-  assert.deepEqual(signedArgs, { from: alice, to: bob, amount: "10", fee: "1", nonce: "3", chainPath: ["Nexus"] });
+  assert.deepEqual(signedArgs, { from: alice, to: bob, amount: "10", fee: "0", nonce: "3", chainPath: ["Nexus"] });
   assert.equal(store.value.settings.sent.Nexus?.[0]?.cid, "bafysent");
   assert.match(document.body.textContent ?? "", /bafysent/);
 });
@@ -764,7 +764,7 @@ test("the home screen says what the host says, in words, with the one thing to d
   button("Review").click();
   await settle();
   const review = document.querySelector("#view .kv") as HTMLElement;
-  assert.match(review.textContent ?? "", /Amount10 on NexusNetwork fee1 on NexusTotal11 on Nexus/);
+  assert.match(review.textContent ?? "", /Amount10 on NexusNetwork fee0 on NexusTotal10 on Nexus/);
   assert.doesNotMatch(review.textContent ?? "", /Nonce/);
   assert.match(document.querySelector("details.advanced")?.textContent ?? "", /Nonce3/);
   // One filled button: the one that sends. The way back is outlined.
