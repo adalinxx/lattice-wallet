@@ -44,7 +44,8 @@ const lattice = Object.freeze({
     chainPath: string[];
     actions: { key: string; oldValue?: string; newValue?: string }[];
     payments?: { to: string; amount: string }[];
-    fee: string;
+    /** Omit it to pay the person's own default fee for the chain, shown for approval. */
+    fee?: string;
   }) => ({ transactionCID: (await request("writeRecords", params)).transactionCID as string }),
   /**
    * Hand the wallet a lattice://write request, to sign as whichever account

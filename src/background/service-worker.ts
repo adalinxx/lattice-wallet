@@ -7,7 +7,7 @@ import { createSigner } from "../lib/wallet/signer.ts";
 import type { Vault } from "../lib/crypto/keystore.ts";
 import type { Request, Response, SignedSubmit, WalletState } from "../lib/wallet/types.ts";
 import { browserFetch, describe, isDefiniteSubmissionRefusal, submitChecked, submitter } from "../lib/wallet/node.ts";
-import { isNonce, pageOrigin, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
+import { isFee, isNonce, pageOrigin, parsePayments, parseProviderCall, type ProviderCall } from "../lib/wallet/provider.ts";
 import type { PageWrite } from "../lib/wallet/nonce.ts";
 import type { WriteRequest } from "../lib/wallet/provider.ts";
 import { decodeWriteRequest, fillWriteRequest } from "../lib/wallet/write-request.ts";
@@ -199,7 +199,13 @@ async function decideNow(msg: { type: string; id?: string; approve?: boolean; ad
     }
     if (request.call.method !== "writeRecords") return { ok: false, error: "Unknown request" };
     from = request.address;
-    write = request.call.params;
+    // The page's fee, else the one the window showed: the person's default for
+    // the chain. A window never changes a fee the page asked for.
+    const fee = request.call.params.fee ?? msg.fee;
+    if (!isFee(fee)) return { ok: false, error: "The wallet has not chosen this write's fee" };
+    write = { ...request.call.params, fee };
+    const paid = parsePayments(write.payments ?? [], BigInt(fee));
+    if ("error" in paid) return { ok: false, error: paid.error };
   }
   // The nonce the window read from the person's node (nonce.ts); never the page's.
   if (!isNonce(msg.nonce) || !isNonce(msg.stateNonce) || typeof msg.node !== "string") {

@@ -23,11 +23,17 @@ export interface WriteRequest {
   fee: string; // decimal
 }
 
+/**
+ * A write as a page asks for it. Without `fee` the wallet uses the person's
+ * own default for the chain, shows it in the review, and signs it as shown.
+ */
+export type PageWriteRequest = Omit<WriteRequest, "fee"> & { fee?: string };
+
 export type ProviderCall =
   | { method: "connect" }
   | { method: "address" }
   | { method: "disconnect" }
-  | { method: "writeRecords"; params: WriteRequest }
+  | { method: "writeRecords"; params: PageWriteRequest }
   /** A lattice://write request, signed as the account the person chooses: no connection needed. */
   | { method: "openRequest"; params: WriteIntent }
   | { method: "signMessage"; params: { text: string } };
@@ -39,6 +45,8 @@ export const MAX_MESSAGE_BYTES = 4096;
 const decimal = (value: unknown, max: bigint): value is string =>
   typeof value === "string" && /^(0|[1-9][0-9]{0,19})$/.test(value) && BigInt(value) <= max;
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";
+/** A fee: a decimal integer, 0 or more, that fits a transaction's debit. */
+export const isFee = (value: unknown): value is string => decimal(value, INT64_MAX);
 
 /** The call, or why it is refused. Nothing outside these shapes is passed on. */
 export function parseProviderCall(raw: unknown): ProviderCall | { error: string } {
@@ -71,10 +79,11 @@ export function parseProviderCall(raw: unknown): ProviderCall | { error: string 
     if (oldValue === undefined && newValue === undefined) return { error: "An action must change its key" };
     clean.push({ key, ...(oldValue === undefined ? {} : { oldValue: oldValue as string }), ...(newValue === undefined ? {} : { newValue: newValue as string }) });
   }
-  if (!decimal(fee, INT64_MAX)) return { error: "fee must be a decimal integer" };
-  const paid = parsePayments(payments, BigInt(fee));
+  // No fee: the wallet's own default for the chain, chosen in the review.
+  if (fee !== undefined && !isFee(fee)) return { error: "fee must be a decimal integer" };
+  const paid = parsePayments(payments, fee === undefined ? 0n : BigInt(fee));
   if ("error" in paid) return paid;
-  return { method, params: { chainPath: path, actions: clean, ...(paid.length ? { payments: paid } : {}), fee } };
+  return { method, params: { chainPath: path, actions: clean, ...(paid.length ? { payments: paid } : {}), ...(fee === undefined ? {} : { fee }) } };
 }
 
 /** Each payee a canonical address, once; each amount above zero; all of it and the fee within one debit. */
@@ -125,9 +134,13 @@ export const messageBytes = (origin: string, text: string): Uint8Array => utf8To
 /** A nonce as the signer takes it: a decimal UInt64. */
 export const isNonce = (value: unknown): value is string => decimal(value, (1n << 64n) - 1n);
 
+/** A write as it is signed: its fee chosen, as a page's may not be yet. */
 export function parseRecordsWrite(params: unknown): WriteRequest | { error: string } {
   const call = parseProviderCall({ method: "writeRecords", params });
-  return "error" in call ? call : call.method === "writeRecords" ? call.params : { error: "Malformed request" };
+  if ("error" in call) return call;
+  if (call.method !== "writeRecords") return { error: "Malformed request" };
+  const { fee } = call.params;
+  return fee === undefined ? { error: "fee must be a decimal integer" } : { ...call.params, fee };
 }
 
 /** The origin a request comes from: only a top-level http(s) page. */

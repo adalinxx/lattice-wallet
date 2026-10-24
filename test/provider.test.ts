@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { messageBytes, parseProviderCall, pageOrigin, totalDebit } from "../src/lib/wallet/provider.ts";
+import { messageBytes, parseProviderCall, parseRecordsWrite, pageOrigin, totalDebit } from "../src/lib/wallet/provider.ts";
 import { deriveAccount } from "../src/lib/crypto/accounts.ts";
 import { SIGNATURE_DOMAIN } from "@adalinxx/lattice-core";
 import { ed25519 } from "@noble/curves/ed25519.js";
@@ -33,6 +33,15 @@ test("a page may connect, read its address, disconnect, and ask to write records
   const extra = parseProviderCall(write({ actions: [{ key: "k", newValue: "v", owner: "someone" }], accountActions: [{ owner: "x", delta: "-5" }], nonce: "7" }));
   assert.ok(!("error" in extra) && extra.method === "writeRecords");
   assert.deepEqual(extra.params, { chainPath: ["Nexus", "stoa", "bitcoin"], actions: [{ key: "k", newValue: "v" }], fee: "1" }, "unknown fields (a page's nonce too) are dropped");
+});
+
+test("a page write may ask no fee: the wallet chooses it, and nothing signs without one", () => {
+  const asked = parseProviderCall(write({ fee: undefined }));
+  assert.ok(!("error" in asked) && asked.method === "writeRecords");
+  assert.equal("fee" in asked.params, false, "no fee is passed on as none, not as 0");
+  assert.ok(!("error" in parseProviderCall(write({ fee: undefined, payments: [{ to: deriveAccount(MNEMONIC, 1).address, amount: "5" }] }))));
+  assert.deepEqual(parseRecordsWrite({ ...write().params, fee: undefined }), { error: "fee must be a decimal integer" }, "the signer's parse still needs one");
+  assert.equal((parseRecordsWrite(write().params) as { fee: string }).fee, "1");
 });
 
 test("only a top-level http(s) page is a page origin", () => {
@@ -75,7 +84,7 @@ test("a write may pay addresses from the connected account; each payment is chec
   const paying = parseProviderCall(write({ payments: [{ to: payee, amount: "250" }, { to: other, amount: "5", memo: "dropped" }] }));
   assert.ok(!("error" in paying) && paying.method === "writeRecords");
   assert.deepEqual(paying.params.payments, [{ to: payee, amount: "250" }, { to: other, amount: "5" }]);
-  assert.equal(totalDebit(paying.params), 256n, "the payments plus the fee");
+  assert.equal(totalDebit({ ...paying.params, fee: paying.params.fee! }), 256n, "the payments plus the fee");
   const none = parseProviderCall(write({ payments: [] }));
   assert.ok(!("error" in none) && none.method === "writeRecords" && !("payments" in none.params), "no payments is a write as before");
   const max = (1n << 63n) - 1n;
