@@ -23,8 +23,8 @@ You control your keys. Keep an offline backup of your recovery phrase. Node avai
 
 Homepage: https://lattice.build/
 Support email: support@lattice.build
-Support: https://github.com/adalinxx/lattice-wallet/issues
-Privacy policy: https://github.com/adalinxx/lattice-wallet/blob/main/docs/privacy-policy.md
+Support: https://github.com/adalinxx/selfhold-wallet/issues
+Privacy policy: https://github.com/adalinxx/selfhold-wallet/blob/main/docs/privacy-policy.md
 
 The main-branch privacy URL returned HTTP 200 during October 10 release validation after PR #16 merged. Recheck it at submission time; do not submit a draft branch URL as the permanent policy URL.
 

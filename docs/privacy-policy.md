@@ -1,6 +1,6 @@
 # Selfhold Privacy Policy
 
-This policy applies to Selfhold 0.4.0, 0.4.1, 0.4.2 and 0.5.0 when installed, including review and test builds. Lattice Wallet 0.3.1 remains covered by the [policy effective October 8, 2026](https://github.com/adalinxx/lattice-wallet/blob/dd64bbe81cdfce0cc9ddd2ae7f36d7a05bfa7cf2/docs/privacy-policy.md).
+This policy applies to Selfhold 0.4.0, 0.4.1, 0.4.2 and 0.5.0 when installed, including review and test builds. Lattice Wallet 0.3.1 remains covered by the [policy effective October 8, 2026](https://github.com/adalinxx/selfhold-wallet/blob/dd64bbe81cdfce0cc9ddd2ae7f36d7a05bfa7cf2/docs/privacy-policy.md).
 
 Selfhold (previously Lattice Wallet) is a self-custodial browser extension for Lattice maintained by the Lattice project. This policy covers the extension, not third-party nodes, websites, Chrome, or community services.
 
@@ -46,4 +46,4 @@ Local data, including site connections and pending page-write metadata, remains 
 
 ## Contact and changes
 
-For privacy questions, contact support@lattice.build or use https://github.com/adalinxx/lattice-wallet/issues without including sensitive information. Security reports should follow SECURITY.md in that repository. Policy changes will be published with an updated effective date.
+For privacy questions, contact support@lattice.build or use https://github.com/adalinxx/selfhold-wallet/issues without including sensitive information. Security reports should follow SECURITY.md in that repository. Policy changes will be published with an updated effective date.

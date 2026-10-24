@@ -2,7 +2,7 @@
 
 No independent audit has been carried out. This scope is kept for review and future audits; it does not assert that one occurred.
 
-Target: reviewed Selfhold commit and its SHA-256 release package, with the exact recorded lattice-sdk revision. Source: https://github.com/adalinxx/lattice-wallet
+Target: reviewed Selfhold commit and its SHA-256 release package, with the exact recorded lattice-sdk revision. Source: https://github.com/adalinxx/selfhold-wallet
 
 Review boundaries: popup to background signer; encrypted vault to settings; untrusted node to verified proof; parent commitment to child state; imported order/QR/file to signing; storage across multiple wallet pages; backup and device transfer.
 
