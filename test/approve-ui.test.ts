@@ -305,3 +305,21 @@ test("conditional records changing before approval force a new review without au
   assert.match(text(), /left out|already/i);
   assert.equal(approveButton(dom).disabled, true, "the changed review must rearm, not reuse the earlier approval");
 });
+
+test("a page's omitted fee uses the reviewed chain default, even if settings change before the answer", async () => {
+  const { fee: _, ...params } = buy.params;
+  const settings = { endpoints: { "Nexus/fanfare/band": { url: NODE, acceptsSubmit: true, source: "user" } }, nodeMode: "custom", fees: { "Nexus/fanfare/band": "7" } };
+  const { sent, dom } = await open({ method: "writeRecords", params }, "1000", undefined, { settings });
+  assert.equal(approveButton(dom).textContent, "Pay 257");
+  settings.fees["Nexus/fanfare/band"] = "9";
+  approveButton(dom).click(); await settle();
+  assert.equal(sent.find((m) => m.type === "decide")?.fee, "7", "answer carries the fee actually reviewed");
+});
+
+test("an explicit zero page fee is not replaced by the saved default", async () => {
+  const settings = { endpoints: { "Nexus/fanfare/band": { url: NODE, acceptsSubmit: true, source: "user" } }, nodeMode: "custom", fees: { "Nexus/fanfare/band": "7" } };
+  const { sent, dom } = await open({ ...buy, params: { ...buy.params, fee: "0" } }, "1000", undefined, { settings });
+  assert.equal(approveButton(dom).textContent, "Pay 250");
+  approveButton(dom).click(); await settle();
+  assert.equal(sent.find((m) => m.type === "decide")?.fee, "0");
+});

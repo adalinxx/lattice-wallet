@@ -1,6 +1,6 @@
 # Chrome Web Store submission materials
 
-Local draft for Selfhold 0.5.0. The Selfhold name and round-two logo A are selected; the production reconstruction and final declarations remain available for review.
+Local draft for Selfhold 0.5.1. The Selfhold name and round-two logo A are selected; the production reconstruction and final declarations remain available for review.
 
 Name: Selfhold
 
@@ -48,7 +48,7 @@ Content scripts: A page-world API and an isolated relay run at document start on
 
 Local storage also retains site-origin/account connections and pending page-write chain/account/nonce/CID/node metadata. Approved writes go to the selected node and the site receives the CID; approved messages return the public key and origin-bound signature to the site. The privacy policy must describe these disclosures before submission. Reassess the dashboard data categories against this behavior; do not automatically carry forward the prior certifications.
 
-From 0.5.0, `openRequest` can open a write approval without a prior site connection. Pasted/scanned requests use the same approval flow with no website callback. Opening does not authorize signing or create a standing connection. Selected nodes receive chain and content-identifier reads for write-if-absent checks; these access patterns may reveal the records being checked. Approved records/payments are submitted only after explicit approval. Request labels and node-provided state are not independently authenticated. No new manifest permissions are introduced in 0.5.0.
+From 0.5.0, `openRequest` can open a write approval without a prior site connection. Pasted/scanned requests use the same approval flow with no website callback. Opening does not authorize signing or create a standing connection. Selected nodes receive chain and content-identifier reads for write-if-absent checks; these access patterns may reveal the records being checked. Approved records/payments are submitted only after explicit approval. Request labels and node-provided state are not independently authenticated. No new manifest permissions are introduced in 0.5.0 or 0.5.1. From 0.5.1, website record writes may omit the fee; review then uses the saved default for the requested chain. Explicit fees, including zero, are preserved.
 
 Remote code: No. JavaScript and WebAssembly dependencies are bundled in the package; node responses are data.
 
@@ -66,7 +66,7 @@ Certifications: No sale of user data; no use unrelated to the wallet's single pu
 6. Lock from Settings, then unlock with the test password. A wrong password must fail.
 7. Backup and import can be tested with disposable accounts. Camera permission is needed only for camera scanning; paste/file import is also available.
 8. On a disposable HTTPS or loopback test site, call `connect()` from a click. Confirm the correct origin and account in the extension window. Decline and close requests, test a second simultaneous request, and navigate/reload the requesting page before approval. Confirm these cannot produce a signature or payment without a valid request and explicit approval.
-9. Inspect a record write with payments: check each recipient, total, fee, chain and record change. Check message-signing review and a message naming a different origin. Use disposable local funds only for submission tests; do not provide shared funded credentials.
+9. For 0.5.1, test a website record write with no fee and verify the saved chain default is shown; an explicit zero or nonzero fee must remain unchanged. Decline during read-only checks. Inspect a record write with payments: check each recipient, total, fee, chain and record change. Check message-signing review and a message naming a different origin. Use disposable local funds only for submission tests; do not provide shared funded credentials.
 10. Open a current `lattice://write` request via Open request (paste/file/QR), and through `window.lattice.openRequest(uri)` on a disposable test site without connecting first. Check account selection, unverified label, record changes, skipped existing records, recipients, total and fee. Decline/close it and verify no submission or standing connection. Expired/malformed requests must be rejected; a changed account must redraw review. Do not sign during read-only acceptance.
 11. Actual submission needs funds on the selected chain. No funded shared credential is included. For repeatable funded verification, run the isolated-node tests described in docs/release.md.
 
